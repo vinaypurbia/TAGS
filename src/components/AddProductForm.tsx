@@ -1,6 +1,12 @@
 import React, { useState, useRef } from 'react';
 
+const ADMIN_PASSWORD = 'Khushi123$'; // Change this to your own password
+
 const AddProductForm = () => {
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [passwordInput, setPasswordInput] = useState('');
+  const [passwordError, setPasswordError] = useState('');
+
   const [formData, setFormData] = useState({
     name: '',
     originalPrice: '',
@@ -16,6 +22,16 @@ const AddProductForm = () => {
   const [embedUrl, setEmbedUrl] = useState<string | null>(null);
 
   const imageInputRef = useRef<HTMLInputElement>(null);
+
+  const handlePasswordSubmit = () => {
+    if (passwordInput === ADMIN_PASSWORD) {
+      setIsAuthenticated(true);
+      setPasswordError('');
+    } else {
+      setPasswordError('Incorrect password. Please try again.');
+      setPasswordInput('');
+    }
+  };
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
     setFormData({ ...formData, [e.target.name]: e.target.value });
@@ -87,9 +103,50 @@ const AddProductForm = () => {
 
   const detectedPlatform = detectPlatform(formData.videoUrl);
 
+  // PASSWORD SCREEN
+  if (!isAuthenticated) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <div className="bg-white p-10 rounded-2xl shadow-2xl border border-gray-100 w-full max-w-sm">
+          <div className="text-center mb-8">
+            <div className="text-5xl mb-4">🔒</div>
+            <h2 className="text-2xl font-bold text-gray-900">Admin Access</h2>
+            <p className="text-sm text-gray-500 mt-1">Enter your password to continue</p>
+          </div>
+          <input
+            type="password"
+            value={passwordInput}
+            onChange={(e) => setPasswordInput(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && handlePasswordSubmit()}
+            placeholder="Enter password"
+            className="w-full border border-gray-300 rounded-lg p-3 text-center text-lg focus:ring-2 focus:ring-green-500 outline-none mb-3"
+          />
+          {passwordError && (
+            <p className="text-red-500 text-sm text-center mb-3">{passwordError}</p>
+          )}
+          <button
+            onClick={handlePasswordSubmit}
+            className="w-full bg-green-600 text-white font-bold py-3 rounded-lg hover:bg-green-700 transition duration-300"
+          >
+            Enter
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // MAIN FORM (only shown after correct password)
   return (
     <div className="max-w-3xl mx-auto p-8 bg-white shadow-xl rounded-xl mt-10 border border-gray-100">
-      <h2 className="text-3xl font-bold mb-8 text-gray-900 border-b pb-4">Add New Product</h2>
+      <div className="flex justify-between items-center border-b pb-4 mb-8">
+        <h2 className="text-3xl font-bold text-gray-900">Add New Product</h2>
+        <button
+          onClick={() => setIsAuthenticated(false)}
+          className="text-sm text-gray-400 hover:text-red-500 transition"
+        >
+          🔓 Lock
+        </button>
+      </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
 
@@ -190,7 +247,7 @@ const AddProductForm = () => {
         <div className="md:col-span-2">
           <label className="block text-sm font-semibold text-gray-700 mb-1">
             Product Video URL
-            <span className="ml-2 text-xs font-normal text-gray-400">(Optional — customers will watch it on your site)</span>
+            <span className="ml-2 text-xs font-normal text-gray-400">(Optional)</span>
           </label>
           <div className="flex gap-2">
             <div className="relative flex-1">
@@ -226,7 +283,7 @@ const AddProductForm = () => {
           {embedUrl && (
             <div className="mt-4 rounded-xl overflow-hidden border border-gray-200 shadow-md bg-black">
               <div className="bg-gray-800 text-white text-xs px-3 py-2 flex items-center justify-between">
-                <span>📺 Video Preview — this is how customers will see it on your website</span>
+                <span>📺 Video Preview</span>
                 <button
                   onClick={() => { setEmbedUrl(null); setFormData(f => ({ ...f, videoUrl: '' })); }}
                   className="text-gray-400 hover:text-white ml-4"
