@@ -1,0 +1,6 @@
+{
+  "name": "Play & Gear - WhatsApp Orders",
+  "description": "An online catalog for toys, adventure gear, and gadgets. Orders are generated as a PDF and placed directly via WhatsApp.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
