@@ -1,6 +1,6 @@
 import React, { useState, useRef } from 'react';
 
-const ADMIN_PASSWORD = 'Khushi123$'; // Change this to your own password
+const ADMIN_PASSWORD = process.env.NEXT_PUBLIC_ADMIN_PASSWORD ?? '';
 
 const AddProductForm = () => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -83,47 +83,13 @@ const AddProductForm = () => {
 
   const handlePreviewVideo = () => {
     const url = formData.videoUrl.trim();
-   const handleSubmit = async () => {
-  if (formData.videoUrl && !getEmbedUrl(formData.videoUrl)) {
-    setVideoUrlError('Could not embed this URL. Supported: YouTube, Facebook, Instagram, TikTok.');
-    return;
-  }
-
-  // 1. Upload image to Cloudinary
-  let imageUrl = '';
-  if (imageFile) {
-    try {
-      const res = await fetch('/api/upload', {
-        method: 'POST',
-        body: imageFile,
-        headers: { 'Content-Type': imageFile.type },
-      });
-      const data = await res.json();
-      imageUrl = data.url;
-    } catch (err) {
-      alert('Image upload failed. Please try again.');
+    if (!url) { setVideoUrlError('Please enter a video URL first.'); return; }
+    const embed = getEmbedUrl(url);
+    if (!embed) {
+      setVideoUrlError('Could not embed this URL. Supported: YouTube, Facebook, Instagram, TikTok.');
       return;
     }
-  }
-
-  // 2. Save product to MongoDB
-  try {
-    const res = await fetch('/api/products', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...formData, imageUrl }),
-    });
-    if (!res.ok) throw new Error('Failed to save product');
-    alert('Product added successfully!');
-    // Reset form
-    setFormData({ name: '', originalPrice: '', discountedPrice: '', category: '', description: '', videoUrl: '' });
-    setImageFile(null);
-    setImagePreview(null);
-    setEmbedUrl(null);
-  } catch (err) {
-    alert('Failed to save product. Please try again.');
-  }
-};
+    setEmbedUrl(embed);
   };
 
   const handleSubmit = async () => {
@@ -131,8 +97,38 @@ const AddProductForm = () => {
       setVideoUrlError('Could not embed this URL. Supported: YouTube, Facebook, Instagram, TikTok.');
       return;
     }
-    console.log('New Product Submission:', { ...formData, imageFile });
-    alert('Product details captured!');
+
+    let imageUrl = '';
+    if (imageFile) {
+      try {
+        const res = await fetch('/api/upload', {
+          method: 'POST',
+          body: imageFile,
+          headers: { 'Content-Type': imageFile.type },
+        });
+        const data = await res.json();
+        imageUrl = data.url;
+      } catch (err) {
+        alert('Image upload failed. Please try again.');
+        return;
+      }
+    }
+
+    try {
+      const res = await fetch('/api/products', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...formData, imageUrl }),
+      });
+      if (!res.ok) throw new Error('Failed to save product');
+      alert('Product added successfully!');
+      setFormData({ name: '', originalPrice: '', discountedPrice: '', category: '', description: '', videoUrl: '' });
+      setImageFile(null);
+      setImagePreview(null);
+      setEmbedUrl(null);
+    } catch (err) {
+      alert('Failed to save product. Please try again.');
+    }
   };
 
   const detectedPlatform = detectPlatform(formData.videoUrl);
@@ -169,7 +165,7 @@ const AddProductForm = () => {
     );
   }
 
-  // MAIN FORM (only shown after correct password)
+  // MAIN FORM
   return (
     <div className="max-w-3xl mx-auto p-8 bg-white shadow-xl rounded-xl mt-10 border border-gray-100">
       <div className="flex justify-between items-center border-b pb-4 mb-8">
@@ -219,135 +215,4 @@ const AddProductForm = () => {
             name="originalPrice"
             value={formData.originalPrice}
             onChange={handleChange}
-            className="mt-1 block w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 outline-none"
-            required
-          />
-        </div>
-
-        <div>
-          <label className="block text-sm font-semibold text-gray-700">Discounted Price</label>
-          <input
-            type="number"
-            name="discountedPrice"
-            value={formData.discountedPrice}
-            onChange={handleChange}
-            className="mt-1 block w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 outline-none"
-          />
-        </div>
-
-        <div className="md:col-span-2">
-          <label className="block text-sm font-semibold text-gray-700">Description</label>
-          <textarea
-            name="description"
-            value={formData.description}
-            onChange={handleChange}
-            rows={4}
-            className="mt-1 block w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 outline-none"
-          ></textarea>
-        </div>
-
-        <div className="md:col-span-2">
-          <label className="block text-sm font-semibold text-gray-700 mb-1">Product Image</label>
-          <div
-            onClick={() => imageInputRef.current?.click()}
-            className="cursor-pointer border-2 border-dashed border-gray-300 rounded-lg p-5 text-center hover:border-blue-400 hover:bg-blue-50 transition"
-          >
-            {imagePreview ? (
-              <div className="relative inline-block">
-                <img src={imagePreview} alt="Preview" className="max-h-48 mx-auto rounded-lg object-contain" />
-                <button
-                  onClick={(e) => { e.stopPropagation(); handleRemoveImage(); }}
-                  className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full w-6 h-6 flex items-center justify-center text-xs font-bold shadow hover:bg-red-600"
-                >✕</button>
-                <p className="text-xs text-gray-500 mt-2">{imageFile?.name}</p>
-              </div>
-            ) : (
-              <div>
-                <div className="text-4xl text-gray-300 mb-2">🖼️</div>
-                <p className="text-sm text-gray-500">Click to upload a product image</p>
-                <p className="text-xs text-gray-400 mt-1">PNG, JPG, WEBP up to 10MB</p>
-              </div>
-            )}
-          </div>
-          <input
-            ref={imageInputRef}
-            type="file"
-            accept="image/png, image/jpeg, image/webp"
-            onChange={handleImageChange}
-            className="hidden"
-          />
-        </div>
-
-        <div className="md:col-span-2">
-          <label className="block text-sm font-semibold text-gray-700 mb-1">
-            Product Video URL
-            <span className="ml-2 text-xs font-normal text-gray-400">(Optional)</span>
-          </label>
-          <div className="flex gap-2">
-            <div className="relative flex-1">
-              <input
-                type="url"
-                name="videoUrl"
-                value={formData.videoUrl}
-                onChange={handleChange}
-                placeholder="Paste a YouTube, Facebook, Instagram or TikTok link..."
-                className={`block w-full border rounded-lg p-3 pr-32 focus:ring-2 focus:ring-blue-500 outline-none ${
-                  videoUrlError ? 'border-red-400' : 'border-gray-300'
-                }`}
-              />
-              {detectedPlatform && (
-                <span className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-1 bg-gray-100 text-gray-600 text-xs font-medium px-2 py-1 rounded-full pointer-events-none">
-                  {detectedPlatform.icon} {detectedPlatform.label}
-                </span>
-              )}
-            </div>
-            <button
-              onClick={handlePreviewVideo}
-              className="bg-blue-600 text-white text-sm font-semibold px-4 rounded-lg hover:bg-blue-700 transition whitespace-nowrap"
-            >
-              Preview
-            </button>
-          </div>
-          {videoUrlError && <p className="text-red-500 text-xs mt-1">{videoUrlError}</p>}
-          <div className="flex gap-3 mt-2">
-            {['▶️ YouTube', '📘 Facebook', '📸 Instagram', '🎵 TikTok'].map((p) => (
-              <span key={p} className="text-xs text-gray-400">{p}</span>
-            ))}
-          </div>
-          {embedUrl && (
-            <div className="mt-4 rounded-xl overflow-hidden border border-gray-200 shadow-md bg-black">
-              <div className="bg-gray-800 text-white text-xs px-3 py-2 flex items-center justify-between">
-                <span>📺 Video Preview</span>
-                <button
-                  onClick={() => { setEmbedUrl(null); setFormData(f => ({ ...f, videoUrl: '' })); }}
-                  className="text-gray-400 hover:text-white ml-4"
-                >✕ Remove</button>
-              </div>
-              <div className="relative w-full" style={{ paddingTop: '56.25%' }}>
-                <iframe
-                  src={embedUrl}
-                  className="absolute top-0 left-0 w-full h-full"
-                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                  allowFullScreen
-                  frameBorder="0"
-                />
-              </div>
-            </div>
-          )}
-        </div>
-
-        <div className="md:col-span-2">
-          <button
-            onClick={handleSubmit}
-            className="w-full bg-green-600 text-white font-bold py-4 rounded-lg hover:bg-green-700 transition duration-300 shadow-lg"
-          >
-            Add Product to Database
-          </button>
-        </div>
-
-      </div>
-    </div>
-  );
-};
-
-export default AddProductForm;
+            className="mt-1 block w-full border border-gray-300 rounded-lg p-3 focus:ring-2 f
