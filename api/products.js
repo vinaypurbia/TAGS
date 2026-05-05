@@ -1,27 +1,18 @@
 import { MongoClient } from 'mongodb';
 
 const uri = process.env.TAGS_MONGO;
-let client;
-
-async function getClient() {
-  if (!client) {
-    client = new MongoClient(uri);
-    await client.connect();
-  }
-  return client;
-}
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end();
-  }
+  if (req.method === 'OPTIONS') return res.status(200).end();
+
+  const client = new MongoClient(uri);
 
   try {
-    const client = await getClient();
+    await client.connect();
     const db = client.db('tagsdb');
     const collection = db.collection('products');
 
@@ -40,8 +31,11 @@ export default async function handler(req, res) {
     }
 
     return res.status(405).json({ error: 'Method not allowed' });
+
   } catch (error) {
     console.error('MongoDB error:', error);
     return res.status(500).json({ error: 'Database error', details: error.message });
+  } finally {
+    await client.close();
   }
 }
