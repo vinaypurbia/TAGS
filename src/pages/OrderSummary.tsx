@@ -229,3 +229,4 @@ export function OrderSummary() {
     </div>
   );
 }
+export default OrderSummary;
