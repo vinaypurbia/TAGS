@@ -11,19 +11,19 @@ const AddProductForm = () => {
     description: ''
   });
 
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
+    setFormData({
+      ...formData,
+      [e.target.name]: e.target.value
+    });
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
     // Logic to send data to MongoDB will go here next
     console.log('New Product Submission:', formData);
     alert('Product details captured! Ready for the database connection.');
-  });
-)
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
-    setFormData({
-      ...formData,
-      [e.target.name]: e.target.value
-    });
   };
 
   return (
@@ -54,6 +54,7 @@ const AddProductForm = () => {
             value={formData.category} 
             onChange={handleChange}
             className="mt-1 block w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 outline-none"
+            required
           >
             <option value="">Select Category</option>
             <option value="electronics">Electronics</option>
@@ -135,8 +136,7 @@ const AddProductForm = () => {
         </div>
       </form>
     </div>
-  )};
-)
+  );
+};
 
 export default AddProductForm;
-)))
