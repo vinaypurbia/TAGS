@@ -20,10 +20,8 @@ const AddProductForm = () => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
-    // Logic to send data to MongoDB will go here next
     console.log('New Product Submission:', formData);
-    alert('Product details captured! Ready for the database connection.');
+    alert('Product details captured!');
   };
 
   return (
@@ -31,14 +29,11 @@ const AddProductForm = () => {
       <h2 className="text-3xl font-bold mb-8 text-gray-900 border-b pb-4">Add New Product</h2>
       
       <form onSubmit={handleSubmit} className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        
-        {/* Product Name */}
         <div className="md:col-span-2">
           <label className="block text-sm font-semibold text-gray-700">Product Name</label>
           <input
             type="text"
             name="name"
-            placeholder="e.g. DJI Osmo Action 4"
             value={formData.name}
             onChange={handleChange}
             className="mt-1 block w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 outline-none"
@@ -46,7 +41,6 @@ const AddProductForm = () => {
           />
         </div>
 
-        {/* Category */}
         <div>
           <label className="block text-sm font-semibold text-gray-700">Category</label>
           <select 
@@ -54,7 +48,6 @@ const AddProductForm = () => {
             value={formData.category} 
             onChange={handleChange}
             className="mt-1 block w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 outline-none"
-            required
           >
             <option value="">Select Category</option>
             <option value="electronics">Electronics</option>
@@ -63,9 +56,8 @@ const AddProductForm = () => {
           </select>
         </div>
 
-        {/* Original Price */}
         <div>
-          <label className="block text-sm font-semibold text-gray-700">Original Price (KWD/INR)</label>
+          <label className="block text-sm font-semibold text-gray-700">Original Price</label>
           <input
             type="number"
             name="originalPrice"
@@ -76,7 +68,6 @@ const AddProductForm = () => {
           />
         </div>
 
-        {/* Discounted Price */}
         <div>
           <label className="block text-sm font-semibold text-gray-700">Discounted Price</label>
           <input
@@ -88,33 +79,6 @@ const AddProductForm = () => {
           />
         </div>
 
-        {/* Image URL */}
-        <div>
-          <label className="block text-sm font-semibold text-gray-700">Image URL</label>
-          <input
-            type="text"
-            name="imageUrl"
-            placeholder="https://example.com/image.jpg"
-            value={formData.imageUrl}
-            onChange={handleChange}
-            className="mt-1 block w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 outline-none"
-          />
-        </div>
-
-        {/* Video URL */}
-        <div className="md:col-span-2">
-          <label className="block text-sm font-semibold text-gray-700">YouTube Video Link</label>
-          <input
-            type="text"
-            name="videoUrl"
-            placeholder="https://youtube.com/watch?v=..."
-            value={formData.videoUrl}
-            onChange={handleChange}
-            className="mt-1 block w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 outline-none"
-          />
-        </div>
-
-        {/* Description */}
         <div className="md:col-span-2">
           <label className="block text-sm font-semibold text-gray-700">Description</label>
           <textarea
