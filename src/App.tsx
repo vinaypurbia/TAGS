@@ -10,6 +10,7 @@ import { Home } from './pages/Home';
 import { Catalog } from './pages/Catalog';
 import { ProductDetail } from './pages/ProductDetail';
 import { OrderSummary } from './pages/OrderSummary';
+import { AddProductform } from './component/AddProductForm';
 
 export default function App() {
   return (
