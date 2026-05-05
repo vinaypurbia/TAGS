@@ -1,106 +1,38 @@
-import React, { useState } from 'react';
-
-const AddProductForm = () => {
-  const [formData, setFormData] = useState({
-    name: '',
-    originalPrice: '',
-    discountedPrice: '',
-    category: '',
-    imageUrl: '',
-    videoUrl: '',
-    description: ''
-  });
-
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
-    setFormData({
-      ...formData,
-      [e.target.name]: e.target.value
-    });
-  };
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    console.log('New Product Submission:', formData);
-    alert('Product details captured!');
-  };
-
-  return (
-    <div className="max-w-3xl mx-auto p-8 bg-white shadow-xl rounded-xl mt-10 border border-gray-100">
-      <h2 className="text-3xl font-bold mb-8 text-gray-900 border-b pb-4">Add New Product</h2>
-      
-      <form onSubmit={handleSubmit} className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div className="md:col-span-2">
-          <label className="block text-sm font-semibold text-gray-700">Product Name</label>
-          <input
-            type="text"
-            name="name"
-            value={formData.name}
-            onChange={handleChange}
-            className="mt-1 block w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 outline-none"
-            required
-          />
-        </div>
-
-        <div>
-          <label className="block text-sm font-semibold text-gray-700">Category</label>
-          <select 
-            name="category" 
-            value={formData.category} 
-            onChange={handleChange}
-            className="mt-1 block w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 outline-none"
-          >
-            <option value="">Select Category</option>
-            <option value="electronics">Electronics</option>
-            <option value="automotive">Automotive</option>
-            <option value="travel">Travel Gear</option>
-          </select>
-        </div>
-
-        <div>
-          <label className="block text-sm font-semibold text-gray-700">Original Price</label>
-          <input
-            type="number"
-            name="originalPrice"
-            value={formData.originalPrice}
-            onChange={handleChange}
-            className="mt-1 block w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 outline-none"
-            required
-          />
-        </div>
-
-        <div>
-          <label className="block text-sm font-semibold text-gray-700">Discounted Price</label>
-          <input
-            type="number"
-            name="discountedPrice"
-            value={formData.discountedPrice}
-            onChange={handleChange}
-            className="mt-1 block w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 outline-none"
-          />
-        </div>
-
-        <div className="md:col-span-2">
-          <label className="block text-sm font-semibold text-gray-700">Description</label>
-          <textarea
-            name="description"
-            value={formData.description}
-            onChange={handleChange}
-            rows={4}
-            className="mt-1 block w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 outline-none"
-          ></textarea>
-        </div>
-
-        <div className="md:col-span-2">
-          <button
-            type="submit"
-            className="w-full bg-green-600 text-white font-bold py-4 rounded-lg hover:bg-green-700 transition duration-300 shadow-lg"
-          >
-            Add Product to Database
-          </button>
-        </div>
-      </form>
-    </div>
-  );
+/** @type {import('next').NextConfig} */
+const nextConfig = {
+  images: {
+    domains: [
+      'www.youtube.com',
+      'youtube.com',
+      'www.facebook.com',
+      'facebook.com',
+      'www.instagram.com',
+      'instagram.com',
+      'www.tiktok.com',
+      'tiktok.com',
+    ],
+  },
+  async headers() {
+    return [
+      {
+        source: '/(.*)',
+        headers: [
+          {
+            key: 'Content-Security-Policy',
+            value: [
+              "default-src 'self'",
+              "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
+              "style-src 'self' 'unsafe-inline'",
+              "img-src 'self' data: blob: https:",
+              "media-src 'self' blob:",
+              "frame-src 'self' https://www.youtube.com https://youtube.com https://www.facebook.com https://www.tiktok.com https://www.instagram.com",
+              "connect-src 'self' https:",
+            ].join('; '),
+          },
+        ],
+      },
+    ];
+  },
 };
 
-export default AddProductForm;
+module.exports = nextConfig;
