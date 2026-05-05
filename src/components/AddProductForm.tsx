@@ -1,6 +1,6 @@
 import React, { useState, useRef } from 'react';
 
-const ADMIN_PASSWORD = process.env.NEXT_PUBLIC_ADMIN_PASSWORD ?? '';
+const ADMIN_PASSWORD = import.meta.env.VITE_ADMIN_PASSWORD ?? '';
 
 const AddProductForm = () => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
