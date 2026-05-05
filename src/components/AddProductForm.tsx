@@ -1,6 +1,7 @@
 import React, { useState, useRef } from 'react';
 
-const ADMIN_PASSWORD = import.meta.env.VITE_ADMIN_PASSWORD ?? '';
+// Next.js uses process.env to read your secret password
+const ADMIN_PASSWORD = process.env.NEXT_PUBLIC_ADMIN_PASSWORD || '';
 
 const AddProductForm = () => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -325,7 +326,6 @@ const AddProductForm = () => {
                   className="absolute top-0 left-0 w-full h-full"
                   allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
                   allowFullScreen
-                  frameBorder="0"
                 />
               </div>
             </div>
