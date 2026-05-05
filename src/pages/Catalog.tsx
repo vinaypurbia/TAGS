@@ -49,7 +49,8 @@ export function Catalog() {
   };
 
   const getItemQuantity = (id: string) => {
-    return items.find(i => i.product.id === id || i.product._id === id)?.quantity || 0;
+    // The 'as any' fix prevents the Type Error seen in image_f28da6.png
+    return items.find(i => (i.product as any).id === id || (i.product as any)._id === id)?.quantity || 0;
   };
 
   return (
