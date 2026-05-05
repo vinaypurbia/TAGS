@@ -119,3 +119,6 @@ export function Home() {
     </div>
   )
 }
+
+// THIS LINE IS CRITICAL: Fixes "found pages without a React Component as default export"
+export default Home;
