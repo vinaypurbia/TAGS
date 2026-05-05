@@ -83,13 +83,47 @@ const AddProductForm = () => {
 
   const handlePreviewVideo = () => {
     const url = formData.videoUrl.trim();
-    if (!url) { setVideoUrlError('Please enter a video URL first.'); return; }
-    const embed = getEmbedUrl(url);
-    if (!embed) {
-      setVideoUrlError('Could not embed this URL. Supported: YouTube, Facebook, Instagram, TikTok.');
+   const handleSubmit = async () => {
+  if (formData.videoUrl && !getEmbedUrl(formData.videoUrl)) {
+    setVideoUrlError('Could not embed this URL. Supported: YouTube, Facebook, Instagram, TikTok.');
+    return;
+  }
+
+  // 1. Upload image to Cloudinary
+  let imageUrl = '';
+  if (imageFile) {
+    try {
+      const res = await fetch('/api/upload', {
+        method: 'POST',
+        body: imageFile,
+        headers: { 'Content-Type': imageFile.type },
+      });
+      const data = await res.json();
+      imageUrl = data.url;
+    } catch (err) {
+      alert('Image upload failed. Please try again.');
       return;
     }
-    setEmbedUrl(embed);
+  }
+
+  // 2. Save product to MongoDB
+  try {
+    const res = await fetch('/api/products', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...formData, imageUrl }),
+    });
+    if (!res.ok) throw new Error('Failed to save product');
+    alert('Product added successfully!');
+    // Reset form
+    setFormData({ name: '', originalPrice: '', discountedPrice: '', category: '', description: '', videoUrl: '' });
+    setImageFile(null);
+    setImagePreview(null);
+    setEmbedUrl(null);
+  } catch (err) {
+    alert('Failed to save product. Please try again.');
+  }
+};
   };
 
   const handleSubmit = async () => {
