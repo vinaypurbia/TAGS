@@ -18,7 +18,7 @@ const AddProductForm = () => {
     console.log('New Product Submission:', formData);
     alert('Product details captured! Ready for the database connection.');
   });
-
+)
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
     setFormData({
       ...formData,
