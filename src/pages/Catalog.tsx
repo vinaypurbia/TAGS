@@ -49,7 +49,7 @@ export function Catalog() {
   };
 
   const getItemQuantity = (id: string) => {
-    return items.find(i => i.product.id === id)?.quantity || 0;
+    return items.find(i => i.product.id === id || i.product._id === id)?.quantity || 0;
   };
 
   return (
@@ -65,7 +65,7 @@ export function Catalog() {
                   onClick={() => handleCategoryClick(null)}
                   className={cn(
                     "w-full text-left px-4 py-2 border-2 border-black font-bold uppercase text-[10px] tracking-widest whitespace-nowrap transition-colors",
-                    !categoryFilter ? "bg-black text-white" : "bg-white text-black hover:bg-slate-100 pt-2"
+                    !categoryFilter ? "bg-black text-white" : "bg-white text-black hover:bg-slate-100"
                   )}
                 >
                   All Products
@@ -114,7 +114,7 @@ export function Catalog() {
 
                 return (
                   <div key={product._id} className="bg-white border-2 border-black p-4 card-hover relative group flex flex-col">
-                    <Link to={`/products/${product._id}`} className="block relative focus:outline-none focus:ring-4 focus:ring-[var(--color-wa-green)]">
+                    <Link to={`/products/${product._id}`} className="block relative focus:outline-none focus:ring-4 focus:ring-green-500">
                       <div className="aspect-square bg-slate-100 mb-4 flex items-center justify-center p-4 border border-black/10 group-hover:border-black transition-colors overflow-hidden">
                         <img
                           src={product.imageUrl || 'https://placehold.co/400x400?text=No+Image'}
@@ -127,7 +127,7 @@ export function Catalog() {
                       </div>
 
                       <div className="mb-4">
-                        <h3 className="font-black uppercase text-lg leading-tight mb-2 group-hover:text-[var(--color-wa-green)] transition-colors line-clamp-1">{product.name}</h3>
+                        <h3 className="font-black uppercase text-lg leading-tight mb-2 group-hover:text-green-600 transition-colors line-clamp-1">{product.name}</h3>
                         <p className="text-xs font-bold text-slate-500 uppercase line-clamp-2">{product.description}</p>
                       </div>
                     </Link>
@@ -140,4 +140,40 @@ export function Catalog() {
                             <span className="text-sm text-slate-400 line-through ml-2">${Number(product.originalPrice).toFixed(2)}</span>
                           </>
                         ) : (
-                          <span classNa
+                          <span className="text-xl font-black">${Number(product.originalPrice).toFixed(2)}</span>
+                        )}
+                      </div>
+
+                      <button
+                        onClick={(e) => handleAddItem(e, product)}
+                        className={cn(
+                          "p-2 border-2 border-black transition-all relative overflow-hidden",
+                          isRecentlyAdded ? "bg-green-500 text-white" : "bg-black text-white hover:bg-slate-800"
+                        )}
+                      >
+                        {isRecentlyAdded ? (
+                          <Check className="w-5 h-5" />
+                        ) : (
+                          <div className="relative">
+                            <ShoppingBag className="w-5 h-5" />
+                            {quantityInCart > 0 && (
+                              <span className="absolute -top-3 -right-3 bg-red-500 text-white text-[10px] font-black w-5 h-5 rounded-full flex items-center justify-center border-2 border-white shadow-sm">
+                                {quantityInCart}
+                              </span>
+                            )}
+                          </div>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default Catalog;
