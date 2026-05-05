@@ -135,8 +135,8 @@ const AddProductForm = () => {
         </div>
       </form>
     </div>
-  );
-};
+  )};
+)
 
 export default AddProductForm;
 )
