@@ -1,88 +1,141 @@
-export type Category = 'Toys' | 'Adventure Gear' | 'Gadgets' | 'Sports Items';
+import React, { useState } from 'react';
 
-export interface Product {
-  id: string;
-  name: string;
-  description: string;
-  price: number;
-  category: Category;
-  image: string;
-  specs: string[];
-}
+const AddProductForm = () => {
+  const [formData, setFormData] = useState({
+    name: '',
+    originalPrice: '',
+    discountedPrice: '',
+    category: '',
+    imageUrl: '',
+    videoUrl: '',
+    description: ''
+  });
 
-export const CATEGORIES: Category[] = ['Toys', 'Adventure Gear', 'Gadgets', 'Sports Items'];
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    
+    // Logic to send data to MongoDB will go here next
+    console.log('New Product Submission:', formData);
+    alert('Product details captured! Ready for the database connection.');
+  };
 
-export const PRODUCTS: Product[] = [
-  {
-    id: 'T001',
-    name: 'Mega Building Blocks Set',
-    description: 'A 500-piece building block set to enhance creativity and motor skills. Perfect for kids aged 4 and up.',
-    price: 35.99,
-    category: 'Toys',
-    image: 'https://images.unsplash.com/photo-1587654780291-39c9404d746b?auto=format&fit=crop&q=80&w=800',
-    specs: ['500 pieces', 'Non-toxic plastic', 'Ages 4+']
-  },
-  {
-    id: 'T002',
-    name: 'Interactive Robot Dog',
-    description: 'Smart robotic dog that responds to voice commands, does tricks, and plays music.',
-    price: 59.99,
-    category: 'Toys',
-    image: 'https://images.unsplash.com/photo-1596461404969-9ae70f2830c1?auto=format&fit=crop&q=80&w=800',
-    specs: ['Rechargeable battery', 'Voice recognition', 'Touch sensors']
-  },
-  {
-    id: 'A001',
-    name: 'Pro Explorer Backpack',
-    description: 'Durable, water-resistant 45L backpack suitable for hiking, camping, and outdoor adventures.',
-    price: 89.99,
-    category: 'Adventure Gear',
-    image: 'https://images.unsplash.com/photo-1622560480605-d83c853bc5c3?auto=format&fit=crop&q=80&w=800',
-    specs: ['45L capacity', 'Water-resistant', 'Ergonomic back support', 'Molle webbing']
-  },
-  {
-    id: 'A002',
-    name: 'All-Weather Camping Tent',
-    description: 'Lightweight 3-person dome tent with rainfly and easy 5-minute setup.',
-    price: 120.00,
-    category: 'Adventure Gear',
-    image: 'https://images.unsplash.com/photo-1504280390224-340788ee5c60?auto=format&fit=crop&q=80&w=800',
-    specs: ['3-person capacity', 'Fiberglass poles', 'Rainfly included']
-  },
-  {
-    id: 'G001',
-    name: 'HD Drone with 4K Camera',
-    description: 'Foldable quadcopter drone with 4K camera, real-time transmission, and auto-return feature.',
-    price: 249.99,
-    category: 'Gadgets',
-    image: 'https://images.unsplash.com/photo-1579829366248-204fe8413f31?auto=format&fit=crop&q=80&w=800',
-    specs: ['4K Camera', '25 mins flight time', 'Altitude hold', 'One-key return']
-  },
-  {
-    id: 'G002',
-    name: 'Solar Power Bank 20000mAh',
-    description: 'Rugged, waterproof portable charger with solar panels. Perfect for keeping your devices alive off-grid.',
-    price: 45.00,
-    category: 'Gadgets',
-    image: 'https://images.unsplash.com/photo-1609091839311-d5365f9ff1c5?auto=format&fit=crop&q=80&w=800',
-    specs: ['20000mAh', 'Dual USB output', 'Waterproof & dustproof', 'Built-in LED flashlight']
-  },
-  {
-    id: 'S001',
-    name: 'Pro Grip Basketball',
-    description: 'Official size and weight outdoor/indoor basketball with enhanced grip surface.',
-    price: 29.50,
-    category: 'Sports Items',
-    image: 'https://images.unsplash.com/photo-1519861531473-920026076da6?auto=format&fit=crop&q=80&w=800',
-    specs: ['Size 7 (Official)', 'Composite leather', 'Indoor/Outdoor use']
-  },
-  {
-    id: 'S002',
-    name: 'Adjustable Dumbbell Set',
-    description: 'Space-saving adjustable dumbbells that combine 15 sets of weights into one, ranging from 5 to 52.5 lbs.',
-    price: 199.99,
-    category: 'Sports Items',
-    image: 'https://images.unsplash.com/photo-1638204642436-b51fb1c5ee23?auto=format&fit=crop&q=80&w=800',
-    specs: ['5, 7.5, 10... up to 52.5 lbs', 'Dial adjustment', 'Space-saving design']
-  }
-];
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
+    setFormData({
+      ...formData,
+      [e.target.name]: e.target.value
+    });
+  };
+
+  return (
+    <div className="max-w-3xl mx-auto p-8 bg-white shadow-xl rounded-xl mt-10 border border-gray-100">
+      <h2 className="text-3xl font-bold mb-8 text-gray-900 border-b pb-4">Add New Product</h2>
+      
+      <form onSubmit={handleSubmit} className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        
+        {/* Product Name */}
+        <div className="md:col-span-2">
+          <label className="block text-sm font-semibold text-gray-700">Product Name</label>
+          <input
+            type="text"
+            name="name"
+            placeholder="e.g. DJI Osmo Action 4"
+            value={formData.name}
+            onChange={handleChange}
+            className="mt-1 block w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 outline-none"
+            required
+          />
+        </div>
+
+        {/* Category */}
+        <div>
+          <label className="block text-sm font-semibold text-gray-700">Category</label>
+          <select 
+            name="category" 
+            value={formData.category} 
+            onChange={handleChange}
+            className="mt-1 block w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 outline-none"
+          >
+            <option value="">Select Category</option>
+            <option value="electronics">Electronics</option>
+            <option value="automotive">Automotive</option>
+            <option value="travel">Travel Gear</option>
+          </select>
+        </div>
+
+        {/* Original Price */}
+        <div>
+          <label className="block text-sm font-semibold text-gray-700">Original Price (KWD/INR)</label>
+          <input
+            type="number"
+            name="originalPrice"
+            value={formData.originalPrice}
+            onChange={handleChange}
+            className="mt-1 block w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 outline-none"
+            required
+          />
+        </div>
+
+        {/* Discounted Price */}
+        <div>
+          <label className="block text-sm font-semibold text-gray-700">Discounted Price</label>
+          <input
+            type="number"
+            name="discountedPrice"
+            value={formData.discountedPrice}
+            onChange={handleChange}
+            className="mt-1 block w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 outline-none"
+          />
+        </div>
+
+        {/* Image URL */}
+        <div>
+          <label className="block text-sm font-semibold text-gray-700">Image URL</label>
+          <input
+            type="text"
+            name="imageUrl"
+            placeholder="https://example.com/image.jpg"
+            value={formData.imageUrl}
+            onChange={handleChange}
+            className="mt-1 block w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 outline-none"
+          />
+        </div>
+
+        {/* Video URL */}
+        <div className="md:col-span-2">
+          <label className="block text-sm font-semibold text-gray-700">YouTube Video Link</label>
+          <input
+            type="text"
+            name="videoUrl"
+            placeholder="https://youtube.com/watch?v=..."
+            value={formData.videoUrl}
+            onChange={handleChange}
+            className="mt-1 block w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 outline-none"
+          />
+        </div>
+
+        {/* Description */}
+        <div className="md:col-span-2">
+          <label className="block text-sm font-semibold text-gray-700">Description</label>
+          <textarea
+            name="description"
+            value={formData.description}
+            onChange={handleChange}
+            rows={4}
+            className="mt-1 block w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 outline-none"
+          ></textarea>
+        </div>
+
+        <div className="md:col-span-2">
+          <button
+            type="submit"
+            className="w-full bg-green-600 text-white font-bold py-4 rounded-lg hover:bg-green-700 transition duration-300 shadow-lg"
+          >
+            Add Product to Database
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+};
+
+export default AddProductForm;
