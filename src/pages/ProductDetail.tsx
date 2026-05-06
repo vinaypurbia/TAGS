@@ -1,7 +1,7 @@
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { useCart } from '../context/CartContext';
 import { useState, useEffect } from 'react';
-import { ArrowLeft, ShoppingBag, Check } from 'lucide-react';
+import { ArrowLeft, ShoppingBag, Check, Pencil } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 export function ProductDetail() {
@@ -171,6 +171,14 @@ export function ProductDetail() {
                   <><ShoppingBag className="w-5 h-5" /> Add to Order List {quantityInCart > 0 && `(${quantityInCart})`}</>
                 )}
               </button>
+
+              {/* Edit Product Button */}
+              <button
+                onClick={() => navigate(`/products/${id}/edit`)}
+                className="w-full py-3 px-6 font-black uppercase tracking-tighter flex items-center justify-center gap-2 transition-all text-sm border-2 border-black bg-white text-black hover:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:translate-y-1 hover:shadow-none">
+                <Pencil className="w-4 h-4" /> Edit Product
+              </button>
+
               <p className="text-center text-[10px] text-slate-400 font-bold uppercase tracking-widest">
                 Order via WhatsApp / No checkout required
               </p>
