@@ -21,7 +21,7 @@ export function Home() {
             <Link to="/products" className="bg-black hover:bg-slate-800 text-white font-black uppercase text-sm tracking-widest py-4 px-8 w-full sm:w-auto flex items-center justify-center gap-2 transition-all">
               Browse Catalog <ArrowRight className="w-5 h-5" />
             </Link>
-            <a href="https://wa.me/15551234567" target="_blank" rel="noopener noreferrer" className="flex items-center justify-center gap-2 bg-[var(--color-wa-green)] text-white font-black uppercase text-sm tracking-widest py-4 px-8 hover:bg-[#20bd5a] transition-all w-full sm:w-auto">
+            <a href="https://wa.me/916350021226" target="_blank" rel="noopener noreferrer" className="flex items-center justify-center gap-2 bg-[var(--color-wa-green)] text-white font-black uppercase text-sm tracking-widest py-4 px-8 hover:bg-[#20bd5a] transition-all w-full sm:w-auto">
               <MessageCircle className="w-5 h-5" /> Chat with Us
             </a>
           </div>
