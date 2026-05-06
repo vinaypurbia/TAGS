@@ -11,6 +11,7 @@ import { Catalog } from './pages/Catalog';
 import { ProductDetail } from './pages/ProductDetail';
 import { OrderSummary } from './pages/OrderSummary';
 import { ManageCategories } from './pages/ManageCategories';
+import { Contact } from './pages/Contact';
 import AddProductForm from './components/AddProductForm';
 import EditProductForm from './pages/EditProductForm';
 
@@ -27,6 +28,7 @@ export default function App() {
             <Route path="/order" element={<OrderSummary />} />
             <Route path="/add-product" element={<AddProductForm />} />
             <Route path="/manage-categories" element={<ManageCategories />} />
+            <Route path="/contact" element={<Contact />} />
             <Route path="*" element={<Home />} />
           </Routes>
         </Layout>
