@@ -26,7 +26,7 @@ export default async function handler(req, res) {
     if (req.method === 'POST') {
       const product = { ...req.body, createdAt: new Date() };
       const result = await collection.insertOne(product);
-      return res.status(201).json({ success: true, id: result.insertedId });
+      return res.status(201).json({ success: true, _id: result.insertedId });
     }
 
     if (req.method === 'PUT') {
