@@ -58,12 +58,14 @@ export function ProductDetail() {
   }
 
   const handleAddItem = () => {
-    addItem(product);
+    // Normalize _id → id so CartContext can match items correctly
+    const normalizedProduct = { ...product, id: product.id || product._id };
+    addItem(normalizedProduct);
     setIsRecentlyAdded(true);
     setTimeout(() => setIsRecentlyAdded(false), 1500);
   };
 
-  const quantityInCart = items.find(i => i.product.id === product._id)?.quantity || 0;
+  const quantityInCart = items.find(i => i.product.id === (product.id || product._id))?.quantity || 0;
   const displayPrice = product.discountedPrice || product.originalPrice || product.price;
 
   // Normalize images — support imageUrls[], imageUrl, or image
