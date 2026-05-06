@@ -1,7 +1,6 @@
 import React, { useState, useRef } from 'react';
 
-// Next.js uses process.env to read your secret password
-const ADMIN_PASSWORD = process.env.NEXT_PUBLIC_ADMIN_PASSWORD || '';
+const ADMIN_PASSWORD = import.meta.env.VITE_ADMIN_PASSWORD || 'playgear2024';
 
 const AddProductForm = () => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -21,6 +20,9 @@ const AddProductForm = () => {
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [videoUrlError, setVideoUrlError] = useState('');
   const [embedUrl, setEmbedUrl] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitSuccess, setSubmitSuccess] = useState(false);
+  const [submitError, setSubmitError] = useState('');
 
   const imageInputRef = useRef<HTMLInputElement>(null);
 
@@ -46,7 +48,9 @@ const AddProductForm = () => {
     const file = e.target.files?.[0];
     if (file) {
       setImageFile(file);
-      setImagePreview(URL.createObjectURL(file));
+      const reader = new FileReader();
+      reader.onloadend = () => setImagePreview(reader.result as string);
+      reader.readAsDataURL(file);
     }
   };
 
@@ -64,8 +68,7 @@ const AddProductForm = () => {
       url.match(/youtube\.com\/shorts\/([\w-]+)/);
     if (ytMatch) return `https://www.youtube.com/embed/${ytMatch[1]}?rel=0`;
     if (url.includes('facebook.com') || url.includes('fb.watch')) {
-      const encoded = encodeURIComponent(url);
-      return `https://www.facebook.com/plugins/video.php?href=${encoded}&show_text=false&autoplay=false`;
+      return `https://www.facebook.com/plugins/video.php?href=${encodeURIComponent(url)}&show_text=false`;
     }
     const igMatch = url.match(/instagram\.com\/(reel|p)\/([\w-]+)/);
     if (igMatch) return `https://www.instagram.com/${igMatch[1]}/${igMatch[2]}/embed`;
@@ -94,41 +97,61 @@ const AddProductForm = () => {
   };
 
   const handleSubmit = async () => {
-    if (formData.videoUrl && !getEmbedUrl(formData.videoUrl)) {
-      setVideoUrlError('Could not embed this URL. Supported: YouTube, Facebook, Instagram, TikTok.');
+    if (!formData.name || !formData.originalPrice || !formData.category) {
+      setSubmitError('Please fill in Product Name, Category and Original Price.');
       return;
     }
 
-    let imageUrl = '';
-    if (imageFile) {
-      try {
-        const res = await fetch('/api/upload', {
-          method: 'POST',
-          body: imageFile,
-          headers: { 'Content-Type': imageFile.type },
-        });
-        const data = await res.json();
-        imageUrl = data.url;
-      } catch (err) {
-        alert('Image upload failed. Please try again.');
-        return;
-      }
-    }
+    setIsSubmitting(true);
+    setSubmitError('');
 
     try {
-      const res = await fetch('/api/products', {
+      // Step 1: Upload image to Cloudinary if one was selected
+      let imageUrl = '';
+      if (imagePreview && imageFile) {
+        const uploadRes = await fetch('/api/upload', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ image: imagePreview }),
+        });
+        const uploadData = await uploadRes.json();
+        if (!uploadData.success) throw new Error('Image upload failed');
+        imageUrl = uploadData.url;
+      }
+
+      // Step 2: Save product to MongoDB
+      const productData = {
+        name: formData.name,
+        description: formData.description,
+        price: parseFloat(formData.discountedPrice) || parseFloat(formData.originalPrice),
+        originalPrice: parseFloat(formData.originalPrice),
+        discountedPrice: parseFloat(formData.discountedPrice) || null,
+        category: formData.category,
+        image: imageUrl,
+        videoUrl: formData.videoUrl || null,
+      };
+
+      const saveRes = await fetch('/api/products', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...formData, imageUrl }),
+        body: JSON.stringify(productData),
       });
-      if (!res.ok) throw new Error('Failed to save product');
-      alert('Product added successfully!');
+
+      const saveData = await saveRes.json();
+      if (!saveData.success) throw new Error('Failed to save product');
+
+      // Success! Reset form
+      setSubmitSuccess(true);
       setFormData({ name: '', originalPrice: '', discountedPrice: '', category: '', description: '', videoUrl: '' });
       setImageFile(null);
       setImagePreview(null);
       setEmbedUrl(null);
-    } catch (err) {
-      alert('Failed to save product. Please try again.');
+      setTimeout(() => setSubmitSuccess(false), 4000);
+
+    } catch (error: any) {
+      setSubmitError(error.message || 'Something went wrong. Please try again.');
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -152,9 +175,7 @@ const AddProductForm = () => {
             placeholder="Enter password"
             className="w-full border border-gray-300 rounded-lg p-3 text-center text-lg focus:ring-2 focus:ring-green-500 outline-none mb-3"
           />
-          {passwordError && (
-            <p className="text-red-500 text-sm text-center mb-3">{passwordError}</p>
-          )}
+          {passwordError && <p className="text-red-500 text-sm text-center mb-3">{passwordError}</p>}
           <button
             onClick={handlePasswordSubmit}
             className="w-full bg-green-600 text-white font-bold py-3 rounded-lg hover:bg-green-700 transition duration-300"
@@ -168,39 +189,38 @@ const AddProductForm = () => {
 
   // MAIN FORM
   return (
-    <div className="max-w-3xl mx-auto p-8 bg-white shadow-xl rounded-xl mt-10 border border-gray-100">
+    <div className="max-w-3xl mx-auto p-8 bg-white shadow-xl rounded-xl mt-10 border border-gray-100 mb-10">
       <div className="flex justify-between items-center border-b pb-4 mb-8">
         <h2 className="text-3xl font-bold text-gray-900">Add New Product</h2>
-        <button
-          onClick={() => setIsAuthenticated(false)}
-          className="text-sm text-gray-400 hover:text-red-500 transition"
-        >
+        <button onClick={() => setIsAuthenticated(false)} className="text-sm text-gray-400 hover:text-red-500 transition">
           🔓 Lock
         </button>
       </div>
 
+      {submitSuccess && (
+        <div className="mb-6 p-4 bg-green-50 border border-green-200 rounded-lg text-green-700 font-semibold text-center">
+          ✅ Product added successfully! It will appear in the catalog shortly.
+        </div>
+      )}
+
+      {submitError && (
+        <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700 text-center">
+          ❌ {submitError}
+        </div>
+      )}
+
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
 
         <div className="md:col-span-2">
-          <label className="block text-sm font-semibold text-gray-700">Product Name</label>
-          <input
-            type="text"
-            name="name"
-            value={formData.name}
-            onChange={handleChange}
-            className="mt-1 block w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 outline-none"
-            required
-          />
+          <label className="block text-sm font-semibold text-gray-700">Product Name *</label>
+          <input type="text" name="name" value={formData.name} onChange={handleChange}
+            className="mt-1 block w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 outline-none" required />
         </div>
 
         <div>
-          <label className="block text-sm font-semibold text-gray-700">Category</label>
-          <select
-            name="category"
-            value={formData.category}
-            onChange={handleChange}
-            className="mt-1 block w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 outline-none"
-          >
+          <label className="block text-sm font-semibold text-gray-700">Category *</label>
+          <select name="category" value={formData.category} onChange={handleChange}
+            className="mt-1 block w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 outline-none">
             <option value="">Select Category</option>
             <option value="Electronics">Electronics</option>
             <option value="Automotive">Automotive</option>
@@ -210,52 +230,32 @@ const AddProductForm = () => {
         </div>
 
         <div>
-          <label className="block text-sm font-semibold text-gray-700">Original Price</label>
-          <input
-            type="number"
-            name="originalPrice"
-            value={formData.originalPrice}
-            onChange={handleChange}
-            className="mt-1 block w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 outline-none"
-            required
-          />
+          <label className="block text-sm font-semibold text-gray-700">Original Price *</label>
+          <input type="number" name="originalPrice" value={formData.originalPrice} onChange={handleChange}
+            className="mt-1 block w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 outline-none" required />
         </div>
 
         <div>
-          <label className="block text-sm font-semibold text-gray-700">Discounted Price</label>
-          <input
-            type="number"
-            name="discountedPrice"
-            value={formData.discountedPrice}
-            onChange={handleChange}
-            className="mt-1 block w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 outline-none"
-          />
+          <label className="block text-sm font-semibold text-gray-700">Discounted Price <span className="text-gray-400 font-normal">(Optional)</span></label>
+          <input type="number" name="discountedPrice" value={formData.discountedPrice} onChange={handleChange}
+            className="mt-1 block w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 outline-none" />
         </div>
 
         <div className="md:col-span-2">
           <label className="block text-sm font-semibold text-gray-700">Description</label>
-          <textarea
-            name="description"
-            value={formData.description}
-            onChange={handleChange}
-            rows={4}
-            className="mt-1 block w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 outline-none"
-          ></textarea>
+          <textarea name="description" value={formData.description} onChange={handleChange} rows={4}
+            className="mt-1 block w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 outline-none" />
         </div>
 
         <div className="md:col-span-2">
           <label className="block text-sm font-semibold text-gray-700 mb-1">Product Image</label>
-          <div
-            onClick={() => imageInputRef.current?.click()}
-            className="cursor-pointer border-2 border-dashed border-gray-300 rounded-lg p-5 text-center hover:border-blue-400 hover:bg-blue-50 transition"
-          >
+          <div onClick={() => imageInputRef.current?.click()}
+            className="cursor-pointer border-2 border-dashed border-gray-300 rounded-lg p-5 text-center hover:border-blue-400 hover:bg-blue-50 transition">
             {imagePreview ? (
               <div className="relative inline-block">
                 <img src={imagePreview} alt="Preview" className="max-h-48 mx-auto rounded-lg object-contain" />
-                <button
-                  onClick={(e) => { e.stopPropagation(); handleRemoveImage(); }}
-                  className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full w-6 h-6 flex items-center justify-center text-xs font-bold shadow hover:bg-red-600"
-                >✕</button>
+                <button onClick={(e) => { e.stopPropagation(); handleRemoveImage(); }}
+                  className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full w-6 h-6 flex items-center justify-center text-xs font-bold shadow hover:bg-red-600">✕</button>
                 <p className="text-xs text-gray-500 mt-2">{imageFile?.name}</p>
               </div>
             ) : (
@@ -266,42 +266,26 @@ const AddProductForm = () => {
               </div>
             )}
           </div>
-          <input
-            ref={imageInputRef}
-            type="file"
-            accept="image/png, image/jpeg, image/webp"
-            onChange={handleImageChange}
-            className="hidden"
-          />
+          <input ref={imageInputRef} type="file" accept="image/png, image/jpeg, image/webp" onChange={handleImageChange} className="hidden" />
         </div>
 
         <div className="md:col-span-2">
           <label className="block text-sm font-semibold text-gray-700 mb-1">
-            Product Video URL
-            <span className="ml-2 text-xs font-normal text-gray-400">(Optional)</span>
+            Product Video URL <span className="text-xs font-normal text-gray-400">(Optional)</span>
           </label>
           <div className="flex gap-2">
             <div className="relative flex-1">
-              <input
-                type="url"
-                name="videoUrl"
-                value={formData.videoUrl}
-                onChange={handleChange}
+              <input type="url" name="videoUrl" value={formData.videoUrl} onChange={handleChange}
                 placeholder="Paste a YouTube, Facebook, Instagram or TikTok link..."
-                className={`block w-full border rounded-lg p-3 pr-32 focus:ring-2 focus:ring-blue-500 outline-none ${
-                  videoUrlError ? 'border-red-400' : 'border-gray-300'
-                }`}
-              />
+                className={`block w-full border rounded-lg p-3 pr-32 focus:ring-2 focus:ring-blue-500 outline-none ${videoUrlError ? 'border-red-400' : 'border-gray-300'}`} />
               {detectedPlatform && (
                 <span className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-1 bg-gray-100 text-gray-600 text-xs font-medium px-2 py-1 rounded-full pointer-events-none">
                   {detectedPlatform.icon} {detectedPlatform.label}
                 </span>
               )}
             </div>
-            <button
-              onClick={handlePreviewVideo}
-              className="bg-blue-600 text-white text-sm font-semibold px-4 rounded-lg hover:bg-blue-700 transition whitespace-nowrap"
-            >
+            <button onClick={handlePreviewVideo}
+              className="bg-blue-600 text-white text-sm font-semibold px-4 rounded-lg hover:bg-blue-700 transition whitespace-nowrap">
               Preview
             </button>
           </div>
@@ -315,29 +299,22 @@ const AddProductForm = () => {
             <div className="mt-4 rounded-xl overflow-hidden border border-gray-200 shadow-md bg-black">
               <div className="bg-gray-800 text-white text-xs px-3 py-2 flex items-center justify-between">
                 <span>📺 Video Preview</span>
-                <button
-                  onClick={() => { setEmbedUrl(null); setFormData(f => ({ ...f, videoUrl: '' })); }}
-                  className="text-gray-400 hover:text-white ml-4"
-                >✕ Remove</button>
+                <button onClick={() => { setEmbedUrl(null); setFormData(f => ({ ...f, videoUrl: '' })); }}
+                  className="text-gray-400 hover:text-white ml-4">✕ Remove</button>
               </div>
               <div className="relative w-full" style={{ paddingTop: '56.25%' }}>
-                <iframe
-                  src={embedUrl}
-                  className="absolute top-0 left-0 w-full h-full"
+                <iframe src={embedUrl} className="absolute top-0 left-0 w-full h-full"
                   allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                  allowFullScreen
-                />
+                  allowFullScreen frameBorder="0" />
               </div>
             </div>
           )}
         </div>
 
         <div className="md:col-span-2">
-          <button
-            onClick={handleSubmit}
-            className="w-full bg-green-600 text-white font-bold py-4 rounded-lg hover:bg-green-700 transition duration-300 shadow-lg"
-          >
-            Add Product to Database
+          <button onClick={handleSubmit} disabled={isSubmitting}
+            className={`w-full text-white font-bold py-4 rounded-lg transition duration-300 shadow-lg ${isSubmitting ? 'bg-gray-400 cursor-not-allowed' : 'bg-green-600 hover:bg-green-700'}`}>
+            {isSubmitting ? '⏳ Uploading & Saving...' : 'Add Product to Database'}
           </button>
         </div>
 
