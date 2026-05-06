@@ -7,15 +7,13 @@ export function Home() {
   const [banner, setBanner] = useState<{ image?: string; text?: string } | null>(null);
 
   useEffect(() => {
-    // Load categories - sorted by createdAt ascending (oldest first)
     fetch('/api/categories')
       .then(res => res.json())
       .then(data => {
         if (Array.isArray(data)) {
           const filtered = data
-            .filter((c: any) => !c.parentId && c.name && c.name.trim() !== '') // remove empty/unnamed
+            .filter((c: any) => !c.parentId && c.name && c.name.trim() !== '')
             .sort((a: any, b: any) => {
-              // Sort oldest first (ascending by createdAt)
               const dateA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
               const dateB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
               return dateA - dateB;
@@ -25,7 +23,6 @@ export function Home() {
       })
       .catch(() => {});
 
-    // Load banner settings
     fetch('/api/banner')
       .then(res => res.json())
       .then(data => { if (data && !data.error) setBanner(data); })
@@ -49,15 +46,6 @@ export function Home() {
   return (
     <div>
       {/* ===== DYNAMIC HERO BANNER ===== */}
-      {/*
-        HOW TO UPDATE THE BANNER:
-        - Image & text are loaded from your /api/banner endpoint (MongoDB).
-        - To update, use your admin panel to POST/PUT to /api/banner with:
-            { "image": "<image URL>", "text": "<headline text>" }
-        - If no banner is set in DB, the default gradient + default heading shows.
-        - Category cover images: update the `image` field on each category
-          via your admin panel (POST/PUT to /api/categories with the category _id).
-      */}
       <section
         className="relative overflow-hidden border-b-4 border-[#FA5600] min-h-[400px] lg:min-h-[500px] flex items-center"
         style={{
@@ -66,16 +54,12 @@ export function Home() {
             : 'linear-gradient(135deg, #1A1A1A 0%, #2d2d2d 100%)'
         }}
       >
-        {/* Overlay */}
         <div className="absolute inset-0 bg-black/50" />
-
-        {/* Content */}
         <div className="relative z-10 w-full max-w-5xl mx-auto px-8 py-20 lg:py-28 text-center flex flex-col items-center">
           <div className="inline-flex items-center gap-2 px-4 py-2 bg-[#FA5600] text-white text-[10px] font-bold uppercase tracking-widest mb-6 rounded-full">
             <MessageCircle className="w-4 h-4" /> Order Directly via WhatsApp
           </div>
 
-          {/* Dynamic banner text or default */}
           {banner?.text ? (
             <div className="text-4xl md:text-6xl font-black text-white tracking-tighter leading-tight uppercase mb-6 max-w-3xl">
               {banner.text}
@@ -105,7 +89,7 @@ export function Home() {
         </div>
       </section>
 
-      {/* ===== HOW IT WORKS — 3 steps only (removed empty 4th box) ===== */}
+      {/* ===== HOW IT WORKS ===== */}
       <section className="py-20 bg-white">
         <div className="max-w-5xl mx-auto px-8">
           <div className="text-center mb-16">
@@ -113,8 +97,8 @@ export function Home() {
             <p className="text-sm font-bold uppercase tracking-widest text-slate-400">Quick, personalized service via chat</p>
           </div>
 
-          {/* FIX: Changed grid from md:grid-cols-4 to md:grid-cols-3, removed empty 4th box */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {/* Step 1 */}
             <div className="relative overflow-hidden p-6 bg-slate-50 border-2 border-black card-hover">
               <span className="step-number">1</span>
               <div className="relative z-10 flex flex-col h-full items-start">
@@ -124,6 +108,7 @@ export function Home() {
               </div>
             </div>
 
+            {/* Step 2 */}
             <div className="relative overflow-hidden p-6 bg-slate-50 border-2 border-black card-hover">
               <span className="step-number">2</span>
               <div className="relative z-10 flex flex-col h-full items-start">
@@ -133,12 +118,13 @@ export function Home() {
               </div>
             </div>
 
+            {/* Step 3 */}
             <div className="relative overflow-hidden p-6 bg-[#FA5600] border-2 border-black card-hover text-white">
               <span className="step-number text-black opacity-10">3</span>
               <div className="relative z-10 flex flex-col h-full items-start">
-                <MessageCircle className="w-6 h-6 mb-4 text-white" />
-                <h3 className="font-black text-lg mb-2 uppercase">Send on WhatsApp</h3>
-                <p className="text-xs font-bold text-white/80 uppercase tracking-wide">One click sends your order directly on WhatsApp!</p>
+                <CheckCircle className="w-6 h-6 mb-4 text-white" />
+                <h3 className="font-black text-lg mb-2 uppercase">Confirm</h3>
+                <p className="text-xs font-bold text-white/80 uppercase tracking-wide">We reply with payment instructions & delivery.</p>
               </div>
             </div>
           </div>
@@ -158,12 +144,6 @@ export function Home() {
             </Link>
           </div>
 
-          {/*
-            FIX: Categories are now sorted oldest-first (done in useEffect above).
-            FIX: Empty/unnamed categories are filtered out (done in useEffect above).
-            To update a category's cover image: use your admin panel to update
-            the `image` field on the category document in MongoDB.
-          */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             {(categories.length > 0 ? categories : ['Electronics', 'Automotive', 'Travel Gear', 'Toys'].map(name => ({ _id: name, name }))).map((cat: any, index) => (
               <Link
