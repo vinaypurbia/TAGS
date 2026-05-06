@@ -64,7 +64,7 @@ export function CustomerRegistrationModal() {
               value={form.name}
               onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
               onKeyDown={e => e.key === 'Enter' && handleSubmit()}
-              placeholder="e.g. Ahmed Ali"
+              placeholder="e.g. Rahul Sharma"
               className="w-full border-2 border-gray-200 rounded-lg p-3 font-bold focus:border-[#25D366] outline-none transition"
               autoFocus
             />
@@ -80,7 +80,7 @@ export function CustomerRegistrationModal() {
               value={form.phone}
               onChange={e => setForm(f => ({ ...f, phone: e.target.value }))}
               onKeyDown={e => e.key === 'Enter' && handleSubmit()}
-              placeholder="e.g. +965 9999 9999"
+              placeholder="e.g. +91 98765 43210"
               className="w-full border-2 border-gray-200 rounded-lg p-3 font-bold focus:border-[#25D366] outline-none transition"
             />
             {errors.phone && <p className="text-red-500 text-xs mt-1">{errors.phone}</p>}
