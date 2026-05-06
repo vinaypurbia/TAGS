@@ -10,6 +10,10 @@ const AddProductForm = () => {
   const [passwordError, setPasswordError] = useState('');
   const [newProductId, setNewProductId] = useState<string | null>(null);
 
+  // Edit existing product search
+  const [allProducts, setAllProducts] = useState<any[]>([]);
+  const [searchQuery, setSearchQuery] = useState('');
+
   const [formData, setFormData] = useState({
     name: '',
     originalPrice: '',
@@ -42,10 +46,7 @@ const AddProductForm = () => {
   }, []);
 
   useEffect(() => {
-    if (!formData.category) {
-      setSubcategories([]);
-      return;
-    }
+    if (!formData.category) { setSubcategories([]); return; }
     const selectedCat = categories.find(c => c.name === formData.category);
     if (selectedCat) {
       const subs = categories.filter(c => c.parentId === String(selectedCat._id));
@@ -53,7 +54,21 @@ const AddProductForm = () => {
     }
   }, [formData.category, categories]);
 
+  // Fetch all products once authenticated (for edit search)
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    fetch('/api/products')
+      .then(res => res.json())
+      .then(data => setAllProducts(Array.isArray(data) ? data : []))
+      .catch(() => {});
+  }, [isAuthenticated]);
+
   const parentCategories = categories.filter(c => !c.parentId);
+
+  const filteredProducts = allProducts.filter(p =>
+    p.name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    p.category?.toLowerCase().includes(searchQuery.toLowerCase())
+  );
 
   const handlePasswordSubmit = () => {
     if (passwordInput === ADMIN_PASSWORD) {
@@ -72,10 +87,7 @@ const AddProductForm = () => {
       [name]: value,
       ...(name === 'category' ? { subcategory: '' } : {})
     }));
-    if (name === 'videoUrl') {
-      setVideoUrlError('');
-      setEmbedUrl(null);
-    }
+    if (name === 'videoUrl') { setVideoUrlError(''); setEmbedUrl(null); }
   };
 
   const handleImageChange = (index: number, e: React.ChangeEvent<HTMLInputElement>) => {
@@ -107,9 +119,8 @@ const AddProductForm = () => {
       url.match(/youtu\.be\/([\w-]+)/) ||
       url.match(/youtube\.com\/shorts\/([\w-]+)/);
     if (ytMatch) return `https://www.youtube.com/embed/${ytMatch[1]}?rel=0`;
-    if (url.includes('facebook.com') || url.includes('fb.watch')) {
+    if (url.includes('facebook.com') || url.includes('fb.watch'))
       return `https://www.facebook.com/plugins/video.php?href=${encodeURIComponent(url)}&show_text=false&autoplay=false`;
-    }
     const igMatch = url.match(/instagram\.com\/(reel|p)\/([\w-]+)/);
     if (igMatch) return `https://www.instagram.com/${igMatch[1]}/${igMatch[2]}/embed`;
     const ttMatch = url.match(/tiktok\.com\/@[\w.]+\/video\/(\d+)/);
@@ -178,7 +189,6 @@ const AddProductForm = () => {
       });
 
       if (!res.ok) throw new Error('Failed to save product');
-
       const data = await res.json();
       const createdId = data._id || data.id;
       setNewProductId(createdId);
@@ -196,6 +206,7 @@ const AddProductForm = () => {
     setImageFiles([null, null, null]);
     setImagePreviews([null, null, null]);
     setEmbedUrl(null);
+    setSearchQuery('');
     imageInputRefs.forEach(ref => { if (ref.current) ref.current.value = ''; });
   };
 
@@ -222,8 +233,7 @@ const AddProductForm = () => {
           {passwordError && <p className="text-red-500 text-sm text-center mb-3">{passwordError}</p>}
           <button
             onClick={handlePasswordSubmit}
-            className="w-full bg-green-600 text-white font-bold py-3 rounded-lg hover:bg-green-700 transition duration-300"
-          >
+            className="w-full bg-green-600 text-white font-bold py-3 rounded-lg hover:bg-green-700 transition duration-300">
             Enter
           </button>
         </div>
@@ -263,14 +273,69 @@ const AddProductForm = () => {
 
   // MAIN FORM
   return (
-    <div className="max-w-3xl mx-auto p-8 bg-white shadow-xl rounded-xl mt-10 border border-gray-100">
+    <div className="max-w-3xl mx-auto p-8 bg-white shadow-xl rounded-xl mt-10 mb-10 border border-gray-100">
       <div className="flex justify-between items-center border-b pb-4 mb-8">
-        <h2 className="text-3xl font-bold text-gray-900">Add New Product</h2>
+        <h2 className="text-3xl font-bold text-gray-900">Add & Edit Products</h2>
         <button onClick={() => setIsAuthenticated(false)} className="text-sm text-gray-400 hover:text-red-500 transition">
           🔓 Lock
         </button>
       </div>
 
+      {/* ── EDIT EXISTING PRODUCT SECTION ── */}
+      <div className="mb-10">
+        <h3 className="text-lg font-bold text-gray-800 mb-1">Edit an Existing Product</h3>
+        <p className="text-sm text-gray-400 mb-3">Search by name or category and click to edit.</p>
+        <input
+          type="text"
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          placeholder="Search products..."
+          className="w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 outline-none mb-3"
+        />
+        {searchQuery.trim() !== '' && (
+          <div className="border border-gray-200 rounded-lg overflow-hidden divide-y divide-gray-100 max-h-64 overflow-y-auto">
+            {filteredProducts.length === 0 ? (
+              <p className="text-sm text-gray-400 text-center py-4">No products found.</p>
+            ) : (
+              filteredProducts.map(p => {
+                const pid = p._id?.toString() || p.id;
+                const img = p.imageUrls?.[0] || p.imageUrl || null;
+                return (
+                  <button
+                    key={pid}
+                    onClick={() => navigate(`/products/${pid}/edit`)}
+                    className="w-full flex items-center gap-3 px-4 py-3 hover:bg-blue-50 transition text-left">
+                    {img ? (
+                      <img src={img} alt={p.name} className="w-10 h-10 rounded-lg object-cover border border-gray-200 shrink-0" />
+                    ) : (
+                      <div className="w-10 h-10 rounded-lg bg-gray-100 flex items-center justify-center text-lg shrink-0">📦</div>
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <p className="font-bold text-sm text-gray-900 truncate">{p.name}</p>
+                      <p className="text-xs text-gray-400">{p.category}{p.subcategory ? ` › ${p.subcategory}` : ''}</p>
+                    </div>
+                    <span className="text-xs text-blue-500 font-bold shrink-0">✏️ Edit</span>
+                  </button>
+                );
+              })
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* ── DIVIDER ── */}
+      <div className="relative mb-10">
+        <div className="absolute inset-0 flex items-center">
+          <div className="w-full border-t border-gray-200" />
+        </div>
+        <div className="relative flex justify-center">
+          <span className="bg-white px-4 text-sm font-bold text-gray-400 uppercase tracking-widest">
+            Or Add a New Product
+          </span>
+        </div>
+      </div>
+
+      {/* ── ADD NEW PRODUCT FORM ── */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
 
         {/* Name */}
@@ -300,9 +365,7 @@ const AddProductForm = () => {
           <select name="subcategory" value={formData.subcategory} onChange={handleChange}
             disabled={subcategories.length === 0}
             className="mt-1 block w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 outline-none disabled:bg-gray-100 disabled:text-gray-400">
-            <option value="">
-              {subcategories.length === 0 ? 'No subcategories' : 'Select Subcategory'}
-            </option>
+            <option value="">{subcategories.length === 0 ? 'No subcategories' : 'Select Subcategory'}</option>
             {subcategories.map(sub => (
               <option key={sub._id} value={sub.name}>{sub.name}</option>
             ))}
@@ -342,16 +405,16 @@ const AddProductForm = () => {
               <div key={index}>
                 <div
                   onClick={() => imageInputRefs[index].current?.click()}
-                  className="cursor-pointer border-2 border-dashed border-gray-300 rounded-lg p-3 text-center hover:border-blue-400 hover:bg-blue-50 transition aspect-square flex items-center justify-center relative overflow-hidden"
-                >
+                  className="cursor-pointer border-2 border-dashed border-gray-300 rounded-lg p-3 text-center hover:border-blue-400 hover:bg-blue-50 transition aspect-square flex items-center justify-center relative overflow-hidden">
                   {imagePreviews[index] ? (
                     <>
                       <img src={imagePreviews[index]!} alt={`Preview ${index + 1}`}
                         className="w-full h-full object-cover rounded-lg" />
                       <button
                         onClick={(e) => { e.stopPropagation(); handleRemoveImage(index); }}
-                        className="absolute top-1 right-1 bg-red-500 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs font-bold shadow hover:bg-red-600"
-                      >✕</button>
+                        className="absolute top-1 right-1 bg-red-500 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs font-bold shadow hover:bg-red-600">
+                        ✕
+                      </button>
                     </>
                   ) : (
                     <div>
