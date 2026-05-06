@@ -69,7 +69,7 @@ export function OrderSummary() {
                       <h3 className="font-black uppercase text-lg group-hover:text-[var(--color-wa-green)] transition-colors leading-tight mb-1">{item.product.name}</h3>
                       <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">{item.product.category}</p>
                     </div>
-                    <div className="font-black text-xl mt-4 sm:mt-2">${item.product.price.toFixed(2)}</div>
+                    <div className="font-black text-xl mt-4 sm:mt-2">₹${item.product.price.toFixed(2)}</div>
                   </div>
                   
                   <div className="flex flex-col sm:items-end gap-4 h-full">
@@ -105,7 +105,7 @@ export function OrderSummary() {
             
             <div className="mt-6 p-4 bg-black text-white flex justify-between items-center shadow-[4px_4px_0px_0px_var(--color-wa-green)] border-2 border-black">
                <span className="text-xs uppercase font-bold tracking-widest opacity-80">Estimated Total</span>
-               <span className="text-3xl font-black">${subtotal.toFixed(2)}</span>
+               <span className="text-3xl font-black">₹${subtotal.toFixed(2)}</span>
             </div>
           </div>
           
@@ -205,7 +205,7 @@ export function OrderSummary() {
 
                 <div className="space-y-3 pt-6 border-t-2 border-slate-100">
                   <a 
-                    href={getWhatsAppLink('15551234567', orderState.orderId || '', formData.name)}
+                    href={getWhatsAppLink('916350021226', orderState.orderId || '', formData.name)}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="w-full bg-[var(--color-wa-green)] hover:bg-[#20bd5a] text-white font-black py-4 uppercase tracking-tighter flex items-center justify-center gap-2 text-sm shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] transition-transform hover:translate-y-1 hover:shadow-none border-2 border-black"
