@@ -1,7 +1,7 @@
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { useCart } from '../context/CartContext';
 import { useState, useEffect } from 'react';
-import { ArrowLeft, ShoppingBag, Check, CheckCircle2 } from 'lucide-react';
+import { ArrowLeft, ShoppingBag, Check } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 export function ProductDetail() {
@@ -42,7 +42,8 @@ export function ProductDetail() {
       <div className="max-w-7xl mx-auto px-4 sm:px-6 py-20 text-center">
         <h2 className="text-3xl font-black text-gray-900 tracking-tight mb-4">Product Not Found</h2>
         <p className="text-gray-500 mb-8">We couldn't find the product you're looking for.</p>
-        <button onClick={() => navigate('/products')}
+        <button
+          onClick={() => navigate('/products')}
           className="inline-flex items-center justify-center bg-[#25D366] text-white font-bold py-3 px-8 rounded-full shadow-md hover:bg-green-600 transition-colors">
           <ArrowLeft className="w-5 h-5 mr-2" /> Back to Catalog
         </button>
@@ -60,7 +61,6 @@ export function ProductDetail() {
   const displayPrice = product.discountedPrice || product.originalPrice;
   const allImages = product.imageUrls?.length > 0 ? product.imageUrls : (product.imageUrl ? [product.imageUrl] : []);
 
-  // Get embed URL for video
   const getEmbedUrl = (url: string): string | null => {
     if (!url) return null;
     const ytMatch =
@@ -81,7 +81,8 @@ export function ProductDetail() {
 
   return (
     <div className="p-8">
-      <Link to="/products"
+      <Link
+        to="/products"
         className="inline-flex items-center text-xs font-bold uppercase tracking-widest hover:text-[var(--color-wa-green)] transition-colors mb-8 text-slate-500 border-b-2 border-transparent hover:border-[var(--color-wa-green)] pb-1">
         <ArrowLeft className="w-4 h-4 mr-1" /> Back to Catalog
       </Link>
@@ -91,10 +92,11 @@ export function ProductDetail() {
 
           {/* Image Gallery */}
           <div className="overflow-hidden bg-slate-50 border-b-2 md:border-b-0 md:border-r-2 border-black flex flex-col">
-            {/* Main Image */}
             <div className="flex-1 flex items-center justify-center p-4">
               {selectedImage ? (
-                <img src={selectedImage} alt={product.name}
+                <img
+                  src={selectedImage}
+                  alt={product.name}
                   className="w-full h-full object-contain aspect-square mix-blend-multiply" />
               ) : (
                 <div className="w-full aspect-square bg-slate-100 flex items-center justify-center">
@@ -103,17 +105,17 @@ export function ProductDetail() {
               )}
             </div>
 
-            {/* Thumbnail Strip - only show if multiple images */}
             {allImages.length > 1 && (
               <div className="flex gap-2 p-3 border-t-2 border-black bg-white">
                 {allImages.map((img: string, i: number) => (
-                  <button key={i} onClick={() => setSelectedImage(img)}
+                  <button
+                    key={i}
+                    onClick={() => setSelectedImage(img)}
                     className={cn(
                       "w-16 h-16 border-2 overflow-hidden flex-shrink-0 transition-all",
                       selectedImage === img ? "border-black" : "border-gray-200 hover:border-gray-400"
                     )}>
-                    <img src={img} alt={`${product.name} ${i + 1}`}
-                      className="w-full h-full object-cover" />
+                    <img src={img} alt={`${product.name} ${i + 1}`} className="w-full h-full object-cover" />
                   </button>
                 ))}
               </div>
@@ -130,7 +132,6 @@ export function ProductDetail() {
               {product.name}
             </h1>
 
-            {/* Price */}
             <div className="mb-8 pb-4 border-b-4 border-black">
               <span className="text-3xl font-black text-black">
                 ${Number(displayPrice).toFixed(2)}
@@ -146,7 +147,6 @@ export function ProductDetail() {
               {product.description}
             </p>
 
-            {/* Subcategory badge */}
             {product.subcategory && (
               <div className="mb-4">
                 <span className="inline-block bg-gray-100 text-gray-600 text-xs font-bold uppercase tracking-widest px-3 py-1 border border-gray-300">
@@ -156,7 +156,9 @@ export function ProductDetail() {
             )}
 
             <div className="mt-auto space-y-4 pt-8">
-              <button onClick={handleAddItem} disabled={isRecentlyAdded}
+              <button
+                onClick={handleAddItem}
+                disabled={isRecentlyAdded}
                 className={cn(
                   "w-full py-5 px-6 font-black uppercase tracking-tighter flex items-center justify-center gap-2 transition-all text-sm border-2",
                   isRecentlyAdded
@@ -181,10 +183,12 @@ export function ProductDetail() {
           <div className="border-t-2 border-black p-8">
             <h3 className="font-black uppercase tracking-widest text-sm mb-4">Product Video</h3>
             <div className="relative w-full rounded overflow-hidden" style={{ paddingTop: '56.25%' }}>
-              <iframe src={embedUrl}
+              <iframe
+                src={embedUrl}
                 className="absolute top-0 left-0 w-full h-full"
                 allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                allowFullScreen frameBorder="0" />
+                allowFullScreen
+                frameBorder="0" />
             </div>
           </div>
         )}
