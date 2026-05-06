@@ -20,3 +20,27 @@ export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
   try {
+    // Read raw binary from request
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const buffer = Buffer.concat(chunks);
+    const base64 = buffer.toString('base64');
+    const contentType = req.headers['content-type'] || 'image/jpeg';
+    const dataUri = `data:${contentType};base64,${base64}`;
+
+    const result = await cloudinary.uploader.upload(dataUri, {
+      folder: 'tags-products',
+      transformation: [{ width: 800, height: 800, crop: 'limit', quality: 'auto' }],
+    });
+
+    return res.status(200).json({
+      success: true,
+      url: result.secure_url,
+      publicId: result.public_id,
+    });
+
+  } catch (error) {
+    console.error('Cloudinary error:', error);
+    return res.status(500).json({ error: 'Upload failed', details: error.message });
+  }
+}
