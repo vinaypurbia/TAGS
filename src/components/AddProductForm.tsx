@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 
 const ADMIN_PASSWORD = import.meta.env.VITE_ADMIN_PASSWORD ?? '';
 
@@ -12,10 +12,13 @@ const AddProductForm = () => {
     originalPrice: '',
     discountedPrice: '',
     category: '',
+    subcategory: '',
     description: '',
     videoUrl: ''
   });
 
+  const [categories, setCategories] = useState<any[]>([]);
+  const [subcategories, setSubcategories] = useState<any[]>([]);
   const [imageFiles, setImageFiles] = useState<(File | null)[]>([null, null, null]);
   const [imagePreviews, setImagePreviews] = useState<(string | null)[]>([null, null, null]);
   const [uploading, setUploading] = useState(false);
@@ -28,6 +31,29 @@ const AddProductForm = () => {
     useRef<HTMLInputElement>(null),
   ];
 
+  // Fetch categories on mount
+  useEffect(() => {
+    fetch('/api/categories')
+      .then(res => res.json())
+      .then(data => setCategories(data))
+      .catch(() => {});
+  }, []);
+
+  // Update subcategories when category changes
+  useEffect(() => {
+    if (!formData.category) {
+      setSubcategories([]);
+      return;
+    }
+    const selectedCat = categories.find(c => c.name === formData.category);
+    if (selectedCat) {
+      const subs = categories.filter(c => c.parentId === String(selectedCat._id));
+      setSubcategories(subs);
+    }
+  }, [formData.category, categories]);
+
+  const parentCategories = categories.filter(c => !c.parentId);
+
   const handlePasswordSubmit = () => {
     if (passwordInput === ADMIN_PASSWORD) {
       setIsAuthenticated(true);
@@ -39,8 +65,13 @@ const AddProductForm = () => {
   };
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
-    setFormData({ ...formData, [e.target.name]: e.target.value });
-    if (e.target.name === 'videoUrl') {
+    const { name, value } = e.target;
+    setFormData(prev => ({
+      ...prev,
+      [name]: value,
+      ...(name === 'category' ? { subcategory: '' } : {})
+    }));
+    if (name === 'videoUrl') {
       setVideoUrlError('');
       setEmbedUrl(null);
     }
@@ -126,9 +157,7 @@ const AddProductForm = () => {
     }
 
     setUploading(true);
-
     try {
-      // Upload all selected images
       const imageUrls: string[] = [];
       for (let i = 0; i < imageFiles.length; i++) {
         if (imageFiles[i]) {
@@ -142,16 +171,15 @@ const AddProductForm = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ...formData,
-          imageUrl: imageUrls[0] || '',   // primary image
-          imageUrls,                       // all images array
+          imageUrl: imageUrls[0] || '',
+          imageUrls,
         }),
       });
 
       if (!res.ok) throw new Error('Failed to save product');
       alert('Product added successfully!');
 
-      // Reset form
-      setFormData({ name: '', originalPrice: '', discountedPrice: '', category: '', description: '', videoUrl: '' });
+      setFormData({ name: '', originalPrice: '', discountedPrice: '', category: '', subcategory: '', description: '', videoUrl: '' });
       setImageFiles([null, null, null]);
       setImagePreviews([null, null, null]);
       setEmbedUrl(null);
@@ -212,7 +240,7 @@ const AddProductForm = () => {
         <div className="md:col-span-2">
           <label className="block text-sm font-semibold text-gray-700">Product Name *</label>
           <input type="text" name="name" value={formData.name} onChange={handleChange}
-            className="mt-1 block w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 outline-none" required />
+            className="mt-1 block w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 outline-none" />
         </div>
 
         {/* Category */}
@@ -221,10 +249,26 @@ const AddProductForm = () => {
           <select name="category" value={formData.category} onChange={handleChange}
             className="mt-1 block w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 outline-none">
             <option value="">Select Category</option>
-            <option value="Electronics">Electronics</option>
-            <option value="Automotive">Automotive</option>
-            <option value="Travel Gear">Travel Gear</option>
-            <option value="Toys">Toys</option>
+            {parentCategories.map(cat => (
+              <option key={cat._id} value={cat.name}>{cat.name}</option>
+            ))}
+          </select>
+        </div>
+
+        {/* Subcategory - only show if subcategories exist */}
+        <div>
+          <label className="block text-sm font-semibold text-gray-700">
+            Subcategory <span className="text-gray-400 font-normal">(Optional)</span>
+          </label>
+          <select name="subcategory" value={formData.subcategory} onChange={handleChange}
+            disabled={subcategories.length === 0}
+            className="mt-1 block w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 outline-none disabled:bg-gray-100 disabled:text-gray-400">
+            <option value="">
+              {subcategories.length === 0 ? 'No subcategories' : 'Select Subcategory'}
+            </option>
+            {subcategories.map(sub => (
+              <option key={sub._id} value={sub.name}>{sub.name}</option>
+            ))}
           </select>
         </div>
 
@@ -232,12 +276,14 @@ const AddProductForm = () => {
         <div>
           <label className="block text-sm font-semibold text-gray-700">Original Price *</label>
           <input type="number" name="originalPrice" value={formData.originalPrice} onChange={handleChange}
-            className="mt-1 block w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 outline-none" required />
+            className="mt-1 block w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 outline-none" />
         </div>
 
         {/* Discounted Price */}
         <div>
-          <label className="block text-sm font-semibold text-gray-700">Discounted Price <span className="text-gray-400 font-normal">(Optional)</span></label>
+          <label className="block text-sm font-semibold text-gray-700">
+            Discounted Price <span className="text-gray-400 font-normal">(Optional)</span>
+          </label>
           <input type="number" name="discountedPrice" value={formData.discountedPrice} onChange={handleChange}
             className="mt-1 block w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 outline-none" />
         </div>
@@ -252,7 +298,7 @@ const AddProductForm = () => {
         {/* 3 Image Slots */}
         <div className="md:col-span-2">
           <label className="block text-sm font-semibold text-gray-700 mb-2">
-            Product Images <span className="text-gray-400 font-normal">(Up to 3 — PNG, JPG, WEBP)</span>
+            Product Images <span className="text-gray-400 font-normal">(Optional — up to 3, PNG/JPG/WEBP)</span>
           </label>
           <div className="grid grid-cols-3 gap-4">
             {[0, 1, 2].map((index) => (
@@ -291,7 +337,7 @@ const AddProductForm = () => {
           <p className="text-xs text-gray-400 mt-2">⭐ Image 1 is the main display image</p>
         </div>
 
-        {/* Video URL - Optional */}
+        {/* Video URL */}
         <div className="md:col-span-2">
           <label className="block text-sm font-semibold text-gray-700 mb-1">
             Product Video URL <span className="text-gray-400 font-normal">(Optional)</span>
