@@ -55,24 +55,22 @@ export function CartProvider({ children }: { children: ReactNode }) {
   };
 
   const addItem = (product: Product, quantity: number = 1) => {
-    // If customer details not saved yet, show registration first
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (!saved) {
-      setPendingProduct(product);
-      setShowRegistration(true);
-      return;
-    }
+    // Normalize: ensure product always has `id` set (API returns `_id`)
+    const normalizedProduct: Product = {
+      ...product,
+      id: product.id || (product as any)._id,
+    };
 
     setItems((currentItems) => {
-      const existingItem = currentItems.find(item => item.product.id === product.id);
+      const existingItem = currentItems.find(item => item.product.id === normalizedProduct.id);
       if (existingItem) {
         return currentItems.map(item =>
-          item.product.id === product.id
+          item.product.id === normalizedProduct.id
             ? { ...item, quantity: item.quantity + quantity }
             : item
         );
       }
-      return [...currentItems, { product, quantity }];
+      return [...currentItems, { product: normalizedProduct, quantity }];
     });
   };
 
