@@ -4,8 +4,6 @@ import { useCart } from '../context/CartContext';
 import { ChevronRight, Check } from 'lucide-react';
 import { cn } from '../lib/utils';
 
-const CATEGORIES = ['Electronics', 'Automotive', 'Travel Gear', 'Toys'];
-
 export function Catalog() {
   const [searchParams, setSearchParams] = useSearchParams();
   const categoryFilter = searchParams.get('category');
@@ -14,6 +12,22 @@ export function Catalog() {
   const [products, setProducts] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [categories, setCategories] = useState<string[]>([]);
+
+  useEffect(() => {
+    fetch('/api/categories')
+      .then(res => res.json())
+      .then(data => {
+        if (Array.isArray(data)) {
+          const mainCats = data
+            .filter((c: any) => !c.parentId && c.name)
+            .sort((a: any, b: any) => new Date(a.createdAt||0).getTime() - new Date(b.createdAt||0).getTime())
+            .map((c: any) => c.name);
+          setCategories(mainCats);
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     const fetchProducts = async () => {
@@ -82,7 +96,7 @@ export function Catalog() {
                   All Products
                 </button>
               </li>
-              {CATEGORIES.map(cat => (
+              {categories.map(cat => (
                 <li key={cat}>
                   <button
                     onClick={() => handleCategoryClick(cat)}
