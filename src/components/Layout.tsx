@@ -1,4 +1,4 @@
-import { ReactNode, useState } from 'react';
+import { ReactNode, useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { ShoppingBag, Phone, Mail, MapPin, Search } from 'lucide-react';
 import { useCart } from '../context/CartContext';
@@ -7,6 +7,22 @@ export function Layout({ children }: { children: ReactNode }) {
   const { totalItems } = useCart();
   const navigate = useNavigate();
   const [searchQuery, setSearchQuery] = useState('');
+  const [categories, setCategories] = useState<string[]>([]);
+
+  useEffect(() => {
+    fetch('/api/categories')
+      .then(res => res.json())
+      .then(data => {
+        if (Array.isArray(data)) {
+          const mainCats = data
+            .filter((c: any) => !c.parentId && c.name)
+            .sort((a: any, b: any) => new Date(a.createdAt||0).getTime() - new Date(b.createdAt||0).getTime())
+            .map((c: any) => c.name);
+          setCategories(mainCats);
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
@@ -67,12 +83,18 @@ export function Layout({ children }: { children: ReactNode }) {
         </div>
       </header>
 
-      {/* Category Strip */}
+      {/* Category Strip - Dynamic */}
       <div className="bg-white border-b border-gray-200 px-6 py-2 flex gap-4 overflow-x-auto no-scrollbar">
-        {['All', 'Electronics', 'Automotive', 'Travel Gear', 'Toys'].map((cat) => (
+        <Link
+          to="/products"
+          className="text-xs font-bold uppercase tracking-widest whitespace-nowrap px-3 py-1 rounded-full hover:bg-[#FFF3E0] hover:text-[#FA5600] transition-colors text-gray-600"
+        >
+          All
+        </Link>
+        {categories.map((cat) => (
           <Link
             key={cat}
-            to={cat === 'All' ? '/products' : `/products?category=${cat}`}
+            to={`/products?category=${encodeURIComponent(cat)}`}
             className="text-xs font-bold uppercase tracking-widest whitespace-nowrap px-3 py-1 rounded-full hover:bg-[#FFF3E0] hover:text-[#FA5600] transition-colors text-gray-600"
           >
             {cat}
