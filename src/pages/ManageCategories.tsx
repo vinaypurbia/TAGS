@@ -20,6 +20,10 @@ export function ManageCategories() {
   const [selectedParent, setSelectedParent] = useState('');
   const [message, setMessage] = useState({ text: '', type: '' });
 
+  // Edit state
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingName, setEditingName] = useState('');
+
   const handlePasswordSubmit = () => {
     if (passwordInput === ADMIN_PASSWORD) {
       setIsAuthenticated(true);
@@ -34,7 +38,7 @@ export function ManageCategories() {
       const res = await fetch('/api/categories');
       const data = await res.json();
       setCategories(Array.isArray(data) ? data : []);
-    } catch (err) {
+    } catch {
       showMessage('Failed to load categories.', 'error');
     } finally {
       setLoading(false);
@@ -110,10 +114,41 @@ export function ManageCategories() {
     }
   };
 
+  const startEditing = (cat: Category) => {
+    setEditingId(cat._id);
+    setEditingName(cat.name);
+  };
+
+  const cancelEditing = () => {
+    setEditingId(null);
+    setEditingName('');
+  };
+
+  const saveEdit = async (id: string) => {
+    if (!editingName.trim()) return;
+    try {
+      const res = await fetch('/api/categories', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, name: editingName.trim() }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        showMessage('✅ Category updated!', 'success');
+        setEditingId(null);
+        setEditingName('');
+        fetchCategories();
+      } else {
+        showMessage(data.error || 'Failed to update.', 'error');
+      }
+    } catch {
+      showMessage('Something went wrong.', 'error');
+    }
+  };
+
   const mainCategories = categories.filter(c => !c.parentId);
   const getSubCategories = (parentId: string) => categories.filter(c => c.parentId === parentId);
 
-  // PASSWORD SCREEN
   if (!isAuthenticated) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
@@ -149,7 +184,6 @@ export function ManageCategories() {
           className="text-sm text-gray-400 hover:text-red-500 transition">🔓 Lock</button>
       </div>
 
-      {/* Message */}
       {message.text && (
         <div className={`mb-6 p-4 rounded-lg text-center font-semibold ${message.type === 'success' ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-red-50 text-red-700 border border-red-200'}`}>
           {message.text}
@@ -219,16 +253,45 @@ export function ManageCategories() {
           <div className="space-y-4">
             {mainCategories.map(cat => (
               <div key={cat._id} className="border border-gray-200 rounded-xl overflow-hidden">
+
                 {/* Main Category Row */}
-                <div className="flex justify-between items-center bg-orange-50 px-4 py-3">
-                  <span className="font-black text-gray-900 uppercase tracking-wide text-sm">
-                    📁 {cat.name}
-                  </span>
-                  <button
-                    onClick={() => deleteCategory(cat._id, cat.name)}
-                    className="text-red-400 hover:text-red-600 text-xs font-bold uppercase tracking-widest transition">
-                    Delete
-                  </button>
+                <div className="flex justify-between items-center bg-orange-50 px-4 py-3 gap-2">
+                  {editingId === cat._id ? (
+                    <div className="flex gap-2 flex-1">
+                      <input
+                        type="text"
+                        value={editingName}
+                        onChange={(e) => setEditingName(e.target.value)}
+                        onKeyDown={(e) => e.key === 'Enter' && saveEdit(cat._id)}
+                        className="flex-1 border border-orange-300 rounded-lg px-3 py-1 text-sm focus:ring-2 focus:ring-orange-400 outline-none"
+                        autoFocus
+                      />
+                      <button onClick={() => saveEdit(cat._id)}
+                        className="bg-green-500 text-white text-xs font-bold px-3 py-1 rounded-lg hover:bg-green-600 transition">
+                        Save
+                      </button>
+                      <button onClick={cancelEditing}
+                        className="bg-gray-200 text-gray-600 text-xs font-bold px-3 py-1 rounded-lg hover:bg-gray-300 transition">
+                        Cancel
+                      </button>
+                    </div>
+                  ) : (
+                    <>
+                      <span className="font-black text-gray-900 uppercase tracking-wide text-sm">
+                        📁 {cat.name}
+                      </span>
+                      <div className="flex gap-2">
+                        <button onClick={() => startEditing(cat)}
+                          className="text-blue-400 hover:text-blue-600 text-xs font-bold uppercase tracking-widest transition">
+                          Edit
+                        </button>
+                        <button onClick={() => deleteCategory(cat._id, cat.name)}
+                          className="text-red-400 hover:text-red-600 text-xs font-bold uppercase tracking-widest transition">
+                          Delete
+                        </button>
+                      </div>
+                    </>
+                  )}
                 </div>
 
                 {/* Subcategories */}
@@ -237,13 +300,41 @@ export function ManageCategories() {
                     <p className="text-xs text-gray-400 px-6 py-2 italic">No subcategories yet</p>
                   ) : (
                     getSubCategories(cat._id).map(sub => (
-                      <div key={sub._id} className="flex justify-between items-center px-6 py-2 hover:bg-gray-50">
-                        <span className="text-sm text-gray-700">↳ {sub.name}</span>
-                        <button
-                          onClick={() => deleteCategory(sub._id, sub.name)}
-                          className="text-red-400 hover:text-red-600 text-xs font-bold uppercase tracking-widest transition">
-                          Delete
-                        </button>
+                      <div key={sub._id} className="flex justify-between items-center px-6 py-2 hover:bg-gray-50 gap-2">
+                        {editingId === sub._id ? (
+                          <div className="flex gap-2 flex-1">
+                            <input
+                              type="text"
+                              value={editingName}
+                              onChange={(e) => setEditingName(e.target.value)}
+                              onKeyDown={(e) => e.key === 'Enter' && saveEdit(sub._id)}
+                              className="flex-1 border border-orange-300 rounded-lg px-3 py-1 text-sm focus:ring-2 focus:ring-orange-400 outline-none"
+                              autoFocus
+                            />
+                            <button onClick={() => saveEdit(sub._id)}
+                              className="bg-green-500 text-white text-xs font-bold px-3 py-1 rounded-lg hover:bg-green-600 transition">
+                              Save
+                            </button>
+                            <button onClick={cancelEditing}
+                              className="bg-gray-200 text-gray-600 text-xs font-bold px-3 py-1 rounded-lg hover:bg-gray-300 transition">
+                              Cancel
+                            </button>
+                          </div>
+                        ) : (
+                          <>
+                            <span className="text-sm text-gray-700">↳ {sub.name}</span>
+                            <div className="flex gap-2">
+                              <button onClick={() => startEditing(sub)}
+                                className="text-blue-400 hover:text-blue-600 text-xs font-bold uppercase tracking-widest transition">
+                                Edit
+                              </button>
+                              <button onClick={() => deleteCategory(sub._id, sub.name)}
+                                className="text-red-400 hover:text-red-600 text-xs font-bold uppercase tracking-widest transition">
+                                Delete
+                              </button>
+                            </div>
+                          </>
+                        )}
                       </div>
                     ))
                   )}
