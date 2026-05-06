@@ -1,11 +1,14 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 
 const ADMIN_PASSWORD = import.meta.env.VITE_ADMIN_PASSWORD ?? '';
 
 const AddProductForm = () => {
+  const navigate = useNavigate();
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [passwordInput, setPasswordInput] = useState('');
   const [passwordError, setPasswordError] = useState('');
+  const [newProductId, setNewProductId] = useState<string | null>(null);
 
   const [formData, setFormData] = useState({
     name: '',
@@ -31,7 +34,6 @@ const AddProductForm = () => {
     useRef<HTMLInputElement>(null),
   ];
 
-  // Fetch categories on mount
   useEffect(() => {
     fetch('/api/categories')
       .then(res => res.json())
@@ -39,7 +41,6 @@ const AddProductForm = () => {
       .catch(() => {});
   }, []);
 
-  // Update subcategories when category changes
   useEffect(() => {
     if (!formData.category) {
       setSubcategories([]);
@@ -177,19 +178,25 @@ const AddProductForm = () => {
       });
 
       if (!res.ok) throw new Error('Failed to save product');
-      alert('Product added successfully!');
 
-      setFormData({ name: '', originalPrice: '', discountedPrice: '', category: '', subcategory: '', description: '', videoUrl: '' });
-      setImageFiles([null, null, null]);
-      setImagePreviews([null, null, null]);
-      setEmbedUrl(null);
-      imageInputRefs.forEach(ref => { if (ref.current) ref.current.value = ''; });
+      const data = await res.json();
+      const createdId = data._id || data.id;
+      setNewProductId(createdId);
 
     } catch (err) {
       alert('Failed to save product. Please try again.');
     } finally {
       setUploading(false);
     }
+  };
+
+  const handleAddAnother = () => {
+    setNewProductId(null);
+    setFormData({ name: '', originalPrice: '', discountedPrice: '', category: '', subcategory: '', description: '', videoUrl: '' });
+    setImageFiles([null, null, null]);
+    setImagePreviews([null, null, null]);
+    setEmbedUrl(null);
+    imageInputRefs.forEach(ref => { if (ref.current) ref.current.value = ''; });
   };
 
   const detectedPlatform = detectPlatform(formData.videoUrl);
@@ -219,6 +226,36 @@ const AddProductForm = () => {
           >
             Enter
           </button>
+        </div>
+      </div>
+    );
+  }
+
+  // SUCCESS SCREEN
+  if (newProductId) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <div className="bg-white p-10 rounded-2xl shadow-2xl border border-gray-100 w-full max-w-sm text-center">
+          <div className="text-5xl mb-4">✅</div>
+          <h2 className="text-2xl font-bold text-gray-900 mb-2">Product Added!</h2>
+          <p className="text-sm text-gray-500 mb-8">What would you like to do next?</p>
+          <div className="flex flex-col gap-3">
+            <button
+              onClick={() => navigate(`/products/${newProductId}/edit`)}
+              className="w-full bg-blue-600 text-white font-bold py-3 rounded-lg hover:bg-blue-700 transition">
+              ✏️ Edit this Product
+            </button>
+            <button
+              onClick={() => navigate(`/products/${newProductId}`)}
+              className="w-full bg-gray-800 text-white font-bold py-3 rounded-lg hover:bg-gray-900 transition">
+              👁️ View Product Page
+            </button>
+            <button
+              onClick={handleAddAnother}
+              className="w-full bg-green-600 text-white font-bold py-3 rounded-lg hover:bg-green-700 transition">
+              ➕ Add Another Product
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -255,7 +292,7 @@ const AddProductForm = () => {
           </select>
         </div>
 
-        {/* Subcategory - only show if subcategories exist */}
+        {/* Subcategory */}
         <div>
           <label className="block text-sm font-semibold text-gray-700">
             Subcategory <span className="text-gray-400 font-normal">(Optional)</span>
