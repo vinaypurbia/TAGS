@@ -124,7 +124,7 @@ export function Home() {
               <div className="relative z-10 flex flex-col h-full items-start">
                 <CheckCircle className="w-6 h-6 mb-4 text-black" />
                 <h3 className="font-black text-lg mb-2 uppercase">Confirm</h3>
-                <p className="text-xs font-bold text-white/80 uppercase tracking-wide">We reply with payment instructions & delivery.</p>
+                <p className="text-xs font-bold text-black/80 uppercase tracking-wide">We reply with payment instructions & delivery.</p>
               </div>
             </div>
           </div>
