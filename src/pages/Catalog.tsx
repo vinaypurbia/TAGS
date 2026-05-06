@@ -172,9 +172,9 @@ export function Catalog() {
 
                       <div className="mt-auto">
                         <div className="flex items-baseline gap-1 mb-2">
-                          <span className="text-lg font-black text-[#E53935]">${formatPrice(displayPrice)}</span>
+                          <span className="text-lg font-black text-[#E53935]">₹${formatPrice(displayPrice)}</span>
                           {hasDiscount && (
-                            <span className="text-xs text-gray-400 line-through">${formatPrice(originalPrice)}</span>
+                            <span className="text-xs text-gray-400 line-through">₹${formatPrice(originalPrice)}</span>
                           )}
                         </div>
 
