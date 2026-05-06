@@ -1,9 +1,14 @@
-import { createContext, useContext, useState, ReactNode } from 'react';
+import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { Product } from '../data/products';
 
 export interface CartItem {
   product: Product;
   quantity: number;
+}
+
+export interface CustomerDetails {
+  name: string;
+  phone: string;
 }
 
 interface CartContextType {
@@ -13,19 +18,56 @@ interface CartContextType {
   updateQuantity: (productId: string, quantity: number) => void;
   clearCart: () => void;
   totalItems: number;
+  customer: CustomerDetails;
+  setCustomer: (details: CustomerDetails) => void;
+  showRegistration: boolean;
+  setShowRegistration: (show: boolean) => void;
+  pendingProduct: Product | null;
+  setPendingProduct: (product: Product | null) => void;
 }
 
 const CartContext = createContext<CartContextType | undefined>(undefined);
 
+const STORAGE_KEY = 'playandgear_customer';
+
 export function CartProvider({ children }: { children: ReactNode }) {
   const [items, setItems] = useState<CartItem[]>([]);
+  const [showRegistration, setShowRegistration] = useState(false);
+  const [pendingProduct, setPendingProduct] = useState<Product | null>(null);
+  const [customer, setCustomerState] = useState<CustomerDetails>({ name: '', phone: '' });
+
+  // Load saved customer from localStorage on mount
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed.name && parsed.phone) setCustomerState(parsed);
+      }
+    } catch {}
+  }, []);
+
+  const setCustomer = (details: CustomerDetails) => {
+    setCustomerState(details);
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(details));
+    } catch {}
+  };
 
   const addItem = (product: Product, quantity: number = 1) => {
+    // If customer details not saved yet, show registration first
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (!saved) {
+      setPendingProduct(product);
+      setShowRegistration(true);
+      return;
+    }
+
     setItems((currentItems) => {
       const existingItem = currentItems.find(item => item.product.id === product.id);
       if (existingItem) {
-        return currentItems.map(item => 
-          item.product.id === product.id 
+        return currentItems.map(item =>
+          item.product.id === product.id
             ? { ...item, quantity: item.quantity + quantity }
             : item
         );
@@ -39,21 +81,22 @@ export function CartProvider({ children }: { children: ReactNode }) {
   };
 
   const updateQuantity = (productId: string, quantity: number) => {
-    if (quantity <= 0) {
-      removeItem(productId);
-      return;
-    }
-    setItems((current) => 
+    if (quantity <= 0) { removeItem(productId); return; }
+    setItems((current) =>
       current.map(item => item.product.id === productId ? { ...item, quantity } : item)
     );
   };
 
   const clearCart = () => setItems([]);
-
   const totalItems = items.reduce((sum, item) => sum + item.quantity, 0);
 
   return (
-    <CartContext.Provider value={{ items, addItem, removeItem, updateQuantity, clearCart, totalItems }}>
+    <CartContext.Provider value={{
+      items, addItem, removeItem, updateQuantity, clearCart, totalItems,
+      customer, setCustomer,
+      showRegistration, setShowRegistration,
+      pendingProduct, setPendingProduct,
+    }}>
       {children}
     </CartContext.Provider>
   );
@@ -61,8 +104,6 @@ export function CartProvider({ children }: { children: ReactNode }) {
 
 export function useCart() {
   const context = useContext(CartContext);
-  if (context === undefined) {
-    throw new Error('useCart must be used within a CartProvider');
-  }
+  if (context === undefined) throw new Error('useCart must be used within a CartProvider');
   return context;
 }
