@@ -19,10 +19,16 @@ export function ProductDetail() {
       .then(data => {
         const found = data.find((p: any) => p._id === id);
         setProduct(found || null);
-        if (found?.imageUrls?.length > 0) {
-          setSelectedImage(found.imageUrls[0]);
-        } else if (found?.imageUrl) {
-          setSelectedImage(found.imageUrl);
+        if (found) {
+          // Support imageUrls array, imageUrl string, or image string
+          const imgs = found.imageUrls?.length > 0
+            ? found.imageUrls
+            : found.imageUrl
+              ? [found.imageUrl]
+              : found.image
+                ? [found.image]
+                : [];
+          if (imgs.length > 0) setSelectedImage(imgs[0]);
         }
         setLoading(false);
       })
@@ -58,8 +64,16 @@ export function ProductDetail() {
   };
 
   const quantityInCart = items.find(i => i.product.id === product._id)?.quantity || 0;
-  const displayPrice = product.discountedPrice || product.originalPrice;
-  const allImages = product.imageUrls?.length > 0 ? product.imageUrls : (product.imageUrl ? [product.imageUrl] : []);
+  const displayPrice = product.discountedPrice || product.originalPrice || product.price;
+
+  // Normalize images — support imageUrls[], imageUrl, or image
+  const allImages: string[] = product.imageUrls?.length > 0
+    ? product.imageUrls
+    : product.imageUrl
+      ? [product.imageUrl]
+      : product.image
+        ? [product.image]
+        : [];
 
   const getEmbedUrl = (url: string): string | null => {
     if (!url) return null;
