@@ -11,7 +11,7 @@ export function Layout({ children }: { children: ReactNode }) {
 
       {/* Top bar */}
       <div className="bg-[#FA5600] text-white text-[10px] font-bold uppercase tracking-widest px-8 py-1.5 text-center">
-        🔥 Free Shipping on Orders Over $29 · Up to 90% Off Today!
+        🔥 TAGS · Free Shipping on Orders Over ₹999 · Up to 90% Off Today!
       </div>
 
       {/* Main Header */}
@@ -41,6 +41,7 @@ export function Layout({ children }: { children: ReactNode }) {
           <nav className="hidden md:flex space-x-5 text-sm font-semibold uppercase tracking-wider text-[#1A1A1A]">
             <Link to="/" className="hover:text-[#FA5600] transition-colors">Home</Link>
             <Link to="/products" className="hover:text-[#FA5600] transition-colors">Catalog</Link>
+            <Link to="/contact" className="hover:text-[#FA5600] transition-colors">Contact</Link>
           </nav>
 
           <Link to="/order" className="relative flex items-center bg-[#FA5600] text-white px-4 py-2 rounded-full hover:bg-[#E04A00] transition-colors">
@@ -89,9 +90,10 @@ export function Layout({ children }: { children: ReactNode }) {
           <div className="space-y-4">
             <div className="text-[#FA5600] border-b border-white/10 pb-2">Support & Info</div>
             <ul className="space-y-2 opacity-80 flex flex-col normal-case font-normal text-xs">
-              <li className="flex items-center gap-2"><Phone className="w-3.5 h-3.5 text-[#FA5600]" /> +1 (555) 123-4567</li>
-              <li className="flex items-center gap-2"><Mail className="w-3.5 h-3.5 text-[#FA5600]" /> support@playandgear.com</li>
-              <li className="flex items-center gap-2"><MapPin className="w-3.5 h-3.5 text-[#FA5600]" /> 124 Adventure Lane, Sport City</li>
+              <li className="flex items-center gap-2"><Phone className="w-3.5 h-3.5 text-[#FA5600]" /> +91 63500 21226</li>
+              <li className="flex items-center gap-2"><Mail className="w-3.5 h-3.5 text-[#FA5600]" /> tags.udr@gmail.com</li>
+              <li className="flex items-start gap-2"><MapPin className="w-3.5 h-3.5 text-[#FA5600] mt-0.5 shrink-0" /> <span>5, B Inside Hathipole, Street #2,<br/>Gulabeshwar Marg, Udaipur - 313001,<br/>Rajasthan, India</span></li>
+              <li><Link to="/contact" className="text-[#FA5600] hover:underline font-bold">Contact Us →</Link></li>
             </ul>
           </div>
 
@@ -108,7 +110,7 @@ export function Layout({ children }: { children: ReactNode }) {
         </div>
 
         <div className="mt-8 pt-4 border-t border-white/10 text-center text-[10px] text-white/40 normal-case">
-          © 2024 Play&Gear. All rights reserved.
+          © 2025 Play&Gear. All rights reserved.
         </div>
       </footer>
 
