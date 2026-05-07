@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 
-const ADMIN_PASSWORD = import.meta.env.VITE_ADMIN_PASSWORD || 'playgear2024';
+const ADMIN_PASSWORD = import.meta.env.VITE_ADMIN_PASSWORD || '';
+const SESSION_KEY = 'adminAuth';
 
 interface Category {
   _id: string;
@@ -9,6 +11,7 @@ interface Category {
 }
 
 export function ManageCategories() {
+  const navigate = useNavigate();
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [passwordInput, setPasswordInput] = useState('');
   const [passwordError, setPasswordError] = useState('');
@@ -20,12 +23,19 @@ export function ManageCategories() {
   const [selectedParent, setSelectedParent] = useState('');
   const [message, setMessage] = useState({ text: '', type: '' });
 
-  // Edit state
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState('');
 
+  // Auto-authenticate if already logged in via Admin Panel
+  useEffect(() => {
+    if (sessionStorage.getItem(SESSION_KEY) === 'true') {
+      setIsAuthenticated(true);
+    }
+  }, []);
+
   const handlePasswordSubmit = () => {
     if (passwordInput === ADMIN_PASSWORD) {
+      sessionStorage.setItem(SESSION_KEY, 'true');
       setIsAuthenticated(true);
     } else {
       setPasswordError('Incorrect password.');
@@ -114,15 +124,8 @@ export function ManageCategories() {
     }
   };
 
-  const startEditing = (cat: Category) => {
-    setEditingId(cat._id);
-    setEditingName(cat.name);
-  };
-
-  const cancelEditing = () => {
-    setEditingId(null);
-    setEditingName('');
-  };
+  const startEditing = (cat: Category) => { setEditingId(cat._id); setEditingName(cat.name); };
+  const cancelEditing = () => { setEditingId(null); setEditingName(''); };
 
   const saveEdit = async (id: string) => {
     if (!editingName.trim()) return;
@@ -180,8 +183,14 @@ export function ManageCategories() {
     <div className="max-w-3xl mx-auto p-8 mt-6 mb-10">
       <div className="flex justify-between items-center mb-8">
         <h1 className="text-3xl font-black text-gray-900">Manage Categories</h1>
-        <button onClick={() => setIsAuthenticated(false)}
-          className="text-sm text-gray-400 hover:text-red-500 transition">🔓 Lock</button>
+        <div className="flex gap-3">
+          <button onClick={() => navigate('/admin')}
+            className="text-sm text-[#FA5600] hover:text-[#E04A00] font-bold transition">
+            ← Admin Panel
+          </button>
+          <button onClick={() => { sessionStorage.removeItem(SESSION_KEY); setIsAuthenticated(false); }}
+            className="text-sm text-gray-400 hover:text-red-500 transition">🔓 Lock</button>
+        </div>
       </div>
 
       {message.text && (
@@ -194,14 +203,10 @@ export function ManageCategories() {
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6">
         <h2 className="text-lg font-black text-gray-800 mb-4">➕ Add Main Category</h2>
         <div className="flex gap-3">
-          <input
-            type="text"
-            value={newMainCategory}
-            onChange={(e) => setNewMainCategory(e.target.value)}
+          <input type="text" value={newMainCategory} onChange={(e) => setNewMainCategory(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && addMainCategory()}
             placeholder="e.g. Electronics, Toys, Fashion..."
-            className="flex-1 border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-orange-400 outline-none"
-          />
+            className="flex-1 border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-orange-400 outline-none" />
           <button onClick={addMainCategory}
             className="bg-[#FA5600] text-white font-bold px-6 rounded-lg hover:bg-[#E04A00] transition whitespace-nowrap">
             Add
@@ -213,26 +218,19 @@ export function ManageCategories() {
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6">
         <h2 className="text-lg font-black text-gray-800 mb-4">➕ Add Subcategory</h2>
         <div className="flex flex-col gap-3">
-          <select
-            value={selectedParent}
-            onChange={(e) => setSelectedParent(e.target.value)}
-            className="w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-orange-400 outline-none"
-          >
+          <select value={selectedParent} onChange={(e) => setSelectedParent(e.target.value)}
+            className="w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-orange-400 outline-none">
             <option value="">Select Main Category</option>
             {mainCategories.map(cat => (
               <option key={cat._id} value={cat._id}>{cat.name}</option>
             ))}
           </select>
           <div className="flex gap-3">
-            <input
-              type="text"
-              value={newSubCategory}
-              onChange={(e) => setNewSubCategory(e.target.value)}
+            <input type="text" value={newSubCategory} onChange={(e) => setNewSubCategory(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && addSubCategory()}
               placeholder="e.g. RC Toys, Boys Toys, Kids Toys..."
               className="flex-1 border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-orange-400 outline-none"
-              disabled={!selectedParent}
-            />
+              disabled={!selectedParent} />
             <button onClick={addSubCategory} disabled={!selectedParent}
               className={`font-bold px-6 rounded-lg transition whitespace-nowrap text-white ${selectedParent ? 'bg-[#FA5600] hover:bg-[#E04A00]' : 'bg-gray-300 cursor-not-allowed'}`}>
               Add
@@ -244,7 +242,6 @@ export function ManageCategories() {
       {/* Category List */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
         <h2 className="text-lg font-black text-gray-800 mb-4">📋 All Categories</h2>
-
         {loading ? (
           <p className="text-gray-400 text-sm animate-pulse">Loading...</p>
         ) : mainCategories.length === 0 ? (
@@ -253,48 +250,29 @@ export function ManageCategories() {
           <div className="space-y-4">
             {mainCategories.map(cat => (
               <div key={cat._id} className="border border-gray-200 rounded-xl overflow-hidden">
-
-                {/* Main Category Row */}
                 <div className="flex justify-between items-center bg-orange-50 px-4 py-3 gap-2">
                   {editingId === cat._id ? (
                     <div className="flex gap-2 flex-1">
-                      <input
-                        type="text"
-                        value={editingName}
-                        onChange={(e) => setEditingName(e.target.value)}
+                      <input type="text" value={editingName} onChange={(e) => setEditingName(e.target.value)}
                         onKeyDown={(e) => e.key === 'Enter' && saveEdit(cat._id)}
-                        className="flex-1 border border-orange-300 rounded-lg px-3 py-1 text-sm focus:ring-2 focus:ring-orange-400 outline-none"
-                        autoFocus
-                      />
+                        className="flex-1 border border-orange-300 rounded-lg px-3 py-1 text-sm focus:ring-2 focus:ring-orange-400 outline-none" autoFocus />
                       <button onClick={() => saveEdit(cat._id)}
-                        className="bg-green-500 text-white text-xs font-bold px-3 py-1 rounded-lg hover:bg-green-600 transition">
-                        Save
-                      </button>
+                        className="bg-green-500 text-white text-xs font-bold px-3 py-1 rounded-lg hover:bg-green-600 transition">Save</button>
                       <button onClick={cancelEditing}
-                        className="bg-gray-200 text-gray-600 text-xs font-bold px-3 py-1 rounded-lg hover:bg-gray-300 transition">
-                        Cancel
-                      </button>
+                        className="bg-gray-200 text-gray-600 text-xs font-bold px-3 py-1 rounded-lg hover:bg-gray-300 transition">Cancel</button>
                     </div>
                   ) : (
                     <>
-                      <span className="font-black text-gray-900 uppercase tracking-wide text-sm">
-                        📁 {cat.name}
-                      </span>
+                      <span className="font-black text-gray-900 uppercase tracking-wide text-sm">📁 {cat.name}</span>
                       <div className="flex gap-2">
                         <button onClick={() => startEditing(cat)}
-                          className="text-blue-400 hover:text-blue-600 text-xs font-bold uppercase tracking-widest transition">
-                          Edit
-                        </button>
+                          className="text-blue-400 hover:text-blue-600 text-xs font-bold uppercase tracking-widest transition">Edit</button>
                         <button onClick={() => deleteCategory(cat._id, cat.name)}
-                          className="text-red-400 hover:text-red-600 text-xs font-bold uppercase tracking-widest transition">
-                          Delete
-                        </button>
+                          className="text-red-400 hover:text-red-600 text-xs font-bold uppercase tracking-widest transition">Delete</button>
                       </div>
                     </>
                   )}
                 </div>
-
-                {/* Subcategories */}
                 <div className="divide-y divide-gray-100">
                   {getSubCategories(cat._id).length === 0 ? (
                     <p className="text-xs text-gray-400 px-6 py-2 italic">No subcategories yet</p>
@@ -303,35 +281,22 @@ export function ManageCategories() {
                       <div key={sub._id} className="flex justify-between items-center px-6 py-2 hover:bg-gray-50 gap-2">
                         {editingId === sub._id ? (
                           <div className="flex gap-2 flex-1">
-                            <input
-                              type="text"
-                              value={editingName}
-                              onChange={(e) => setEditingName(e.target.value)}
+                            <input type="text" value={editingName} onChange={(e) => setEditingName(e.target.value)}
                               onKeyDown={(e) => e.key === 'Enter' && saveEdit(sub._id)}
-                              className="flex-1 border border-orange-300 rounded-lg px-3 py-1 text-sm focus:ring-2 focus:ring-orange-400 outline-none"
-                              autoFocus
-                            />
+                              className="flex-1 border border-orange-300 rounded-lg px-3 py-1 text-sm focus:ring-2 focus:ring-orange-400 outline-none" autoFocus />
                             <button onClick={() => saveEdit(sub._id)}
-                              className="bg-green-500 text-white text-xs font-bold px-3 py-1 rounded-lg hover:bg-green-600 transition">
-                              Save
-                            </button>
+                              className="bg-green-500 text-white text-xs font-bold px-3 py-1 rounded-lg hover:bg-green-600 transition">Save</button>
                             <button onClick={cancelEditing}
-                              className="bg-gray-200 text-gray-600 text-xs font-bold px-3 py-1 rounded-lg hover:bg-gray-300 transition">
-                              Cancel
-                            </button>
+                              className="bg-gray-200 text-gray-600 text-xs font-bold px-3 py-1 rounded-lg hover:bg-gray-300 transition">Cancel</button>
                           </div>
                         ) : (
                           <>
                             <span className="text-sm text-gray-700">↳ {sub.name}</span>
                             <div className="flex gap-2">
                               <button onClick={() => startEditing(sub)}
-                                className="text-blue-400 hover:text-blue-600 text-xs font-bold uppercase tracking-widest transition">
-                                Edit
-                              </button>
+                                className="text-blue-400 hover:text-blue-600 text-xs font-bold uppercase tracking-widest transition">Edit</button>
                               <button onClick={() => deleteCategory(sub._id, sub.name)}
-                                className="text-red-400 hover:text-red-600 text-xs font-bold uppercase tracking-widest transition">
-                                Delete
-                              </button>
+                                className="text-red-400 hover:text-red-600 text-xs font-bold uppercase tracking-widest transition">Delete</button>
                             </div>
                           </>
                         )}
