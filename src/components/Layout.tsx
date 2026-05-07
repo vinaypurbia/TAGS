@@ -9,6 +9,8 @@ export function Layout({ children }: { children: ReactNode }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [categories, setCategories] = useState<string[]>([]);
   const [promoText, setPromoText] = useState('🔥 TAGS · Free Shipping on Orders Over ₹999 · Up to 90% Off Today!');
+  const [promoLines, setPromoLines] = useState<string[]>([]);
+  const [promoIndex, setPromoIndex] = useState(0);
 
   useEffect(() => {
     fetch('/api/categories')
@@ -28,10 +30,22 @@ export function Layout({ children }: { children: ReactNode }) {
     fetch('/api/banner')
       .then(res => res.json())
       .then(data => {
-        if (data?.promoText) setPromoText(data.promoText);
+        if (data?.promoLines) {
+          const active = data.promoLines.filter((l: any) => l.text?.trim()).map((l: any) => l.text);
+          if (active.length > 0) { setPromoLines(active); setPromoText(active[0]); }
+        } else if (data?.promoText) {
+          setPromoText(data.promoText);
+        }
       })
       .catch(() => {});
   }, []);
+
+  // Auto-scroll promo lines
+  useEffect(() => {
+    if (promoLines.length <= 1) return;
+    const timer = setInterval(() => setPromoIndex(p => (p + 1) % promoLines.length), 4000);
+    return () => clearInterval(timer);
+  }, [promoLines.length]);
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
@@ -45,9 +59,15 @@ export function Layout({ children }: { children: ReactNode }) {
   return (
     <div className="min-h-screen flex flex-col max-w-[1200px] mx-auto bg-[#F5F5F5] shadow-2xl relative">
 
-      {/* Dynamic Promo Banner */}
-      <div className="bg-[#FA5600] text-white text-[10px] font-bold uppercase tracking-widest px-8 py-1.5 text-center">
-        {promoText}
+      {/* Dynamic Scrolling Promo Banner */}
+      <div className="bg-[#FA5600] text-white text-[10px] font-bold uppercase tracking-widest px-8 py-1.5 text-center overflow-hidden relative h-6 flex items-center justify-center">
+        {promoLines.length > 1 ? (
+          <span key={promoIndex} className="animate-fade-in absolute">
+            {promoLines[promoIndex]}
+          </span>
+        ) : (
+          <span>{promoText}</span>
+        )}
       </div>
 
       {/* Main Header */}
