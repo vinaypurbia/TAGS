@@ -4,7 +4,12 @@ import { useEffect, useState } from 'react';
 
 export function Home() {
   const [categories, setCategories] = useState<{ _id: string; name: string; image?: string }[]>([]);
-  const [settings, setSettings] = useState<{ promoText?: string; bannerImage?: string; bannerText?: string; bannerSlides?: {image:string;text:string}[] } | null>(null);
+  const [settings, setSettings] = useState<{
+    promoText?: string;
+    bannerImage?: string;
+    bannerText?: string;
+    bannerSlides?: { image: string; text: string; description: string }[];
+  } | null>(null);
   const [currentBanner, setCurrentBanner] = useState(0);
 
   useEffect(() => {
@@ -14,7 +19,9 @@ export function Home() {
         if (Array.isArray(data)) {
           const filtered = data
             .filter((c: any) => !c.parentId && c.name && c.name.trim() !== '')
-            .sort((a: any, b: any) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime());
+            .sort((a: any, b: any) =>
+              new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime()
+            );
           setCategories(filtered);
         }
       })
@@ -26,8 +33,10 @@ export function Home() {
       .catch(() => {});
   }, []);
 
-  // Auto-rotate banners
+  // Only use slides that have an image
   const activeBanners = (settings?.bannerSlides || []).filter(s => s.image);
+
+  // Auto-rotate every 5 seconds
   useEffect(() => {
     if (activeBanners.length <= 1) return;
     const timer = setInterval(() => setCurrentBanner(p => (p + 1) % activeBanners.length), 5000);
@@ -35,6 +44,12 @@ export function Home() {
   }, [activeBanners.length]);
 
   const currentSlide = activeBanners[currentBanner];
+
+  // Fallback values when no slides configured
+  const bannerBg = currentSlide?.image || settings?.bannerImage;
+  const bannerHeading = currentSlide?.text || settings?.bannerText;
+  const bannerDescription = currentSlide?.description;
+
   const defaultImages: Record<string, string> = {
     'Electronics': 'https://images.unsplash.com/photo-1596461404969-9ae70f2830c1?auto=format&fit=crop&q=80&w=800',
     'Automotive': 'https://images.unsplash.com/photo-1504280390224-340788ee5c60?auto=format&fit=crop&q=80&w=800',
@@ -51,26 +66,48 @@ export function Home() {
 
   return (
     <div>
-      {/* ===== DYNAMIC HERO BANNER ===== */}
-      <section
-        className="relative overflow-hidden border-b-4 border-[#FA5600] min-h-[400px] lg:min-h-[500px] flex items-center"
-        style={{
-          background: (currentSlide?.image || settings?.bannerImage)
-            ? `url(${currentSlide?.image || settings?.bannerImage}) center/cover no-repeat`
-            : 'linear-gradient(135deg, #1A1A1A 0%, #2d2d2d 100%)'
-        }}
-      >
+      {/* ===== DYNAMIC HERO BANNER CAROUSEL ===== */}
+      <section className="relative overflow-hidden border-b-4 border-[#FA5600] min-h-[400px] lg:min-h-[500px] flex items-center">
+
+        {/* Slide backgrounds — stacked, fade between them */}
+        {activeBanners.length > 0 ? (
+          activeBanners.map((slide, i) => (
+            <div
+              key={i}
+              className="absolute inset-0 transition-opacity duration-1000"
+              style={{
+                opacity: i === currentBanner ? 1 : 0,
+                background: `url(${slide.image}) center/cover no-repeat`,
+              }}
+            />
+          ))
+        ) : (
+          <div
+            className="absolute inset-0"
+            style={{
+              background: bannerBg
+                ? `url(${bannerBg}) center/cover no-repeat`
+                : 'linear-gradient(135deg, #1A1A1A 0%, #2d2d2d 100%)',
+            }}
+          />
+        )}
+
+        {/* Dark overlay */}
         <div className="absolute inset-0 bg-black/50" />
+
+        {/* Content */}
         <div className="relative z-10 w-full max-w-5xl mx-auto px-8 py-20 lg:py-28 text-center flex flex-col items-center">
 
-          {/* ✅ Fixed: This button now links to /products page */}
-          <Link to="/products" className="inline-flex items-center gap-2 px-4 py-2 bg-[#FA5600] text-white text-[10px] font-bold uppercase tracking-widest mb-6 rounded-full hover:bg-[#E04A00] transition-colors">
+          <Link
+            to="/products"
+            className="inline-flex items-center gap-2 px-4 py-2 bg-[#FA5600] text-white text-[10px] font-bold uppercase tracking-widest mb-6 rounded-full hover:bg-[#E04A00] transition-colors">
             <MessageCircle className="w-4 h-4" /> Order Directly via WhatsApp
           </Link>
 
-          {(currentSlide?.text || settings?.bannerText) ? (
-            <div className="text-4xl md:text-6xl font-black text-white tracking-tighter leading-tight uppercase mb-6 max-w-3xl">
-              {currentSlide?.text || settings?.bannerText}
+          {/* ✅ Dynamic heading — from admin "Overlay Heading" field */}
+          {bannerHeading ? (
+            <div className="text-4xl md:text-6xl font-black text-white tracking-tighter leading-tight uppercase mb-6 max-w-3xl transition-all duration-700">
+              {bannerHeading}
             </div>
           ) : (
             <h1 className="text-5xl md:text-7xl font-black text-white tracking-tighter leading-none uppercase mb-6">
@@ -80,8 +117,10 @@ export function Home() {
             </h1>
           )}
 
-          <p className="text-sm md:text-base font-bold text-white/70 max-w-2xl mx-auto mb-10 uppercase tracking-wide">
-            Discover great toys, Adventure gear, gadgets, sports items — Browse our curated collection and send your order directly via WhatsApp!
+          {/* ✅ Dynamic description — from admin "Description Text" field */}
+          <p className="text-sm md:text-base font-bold text-white/70 max-w-2xl mx-auto mb-10 uppercase tracking-wide transition-all duration-700">
+            {bannerDescription ||
+              'Discover great toys, Adventure gear, gadgets, sports items — Browse our curated collection and send your order directly via WhatsApp!'}
           </p>
 
           <div className="flex flex-col sm:flex-row items-center justify-center gap-4 w-full sm:w-auto">
@@ -95,19 +134,24 @@ export function Home() {
             </a>
           </div>
 
-          {/* Banner dots */}
+          {/* Dot navigation */}
           {activeBanners.length > 1 && (
-            <div className="flex gap-2 mt-6">
+            <div className="flex gap-2 mt-8">
               {activeBanners.map((_, i) => (
-                <button key={i} onClick={() => setCurrentBanner(i)}
-                  className={`w-2 h-2 rounded-full transition-all ${i === currentBanner ? 'bg-[#FA5600] w-6' : 'bg-white/40'}`} />
+                <button
+                  key={i}
+                  onClick={() => setCurrentBanner(i)}
+                  className={`h-2 rounded-full transition-all duration-300 ${
+                    i === currentBanner ? 'bg-[#FA5600] w-6' : 'bg-white/40 w-2 hover:bg-white/70'
+                  }`}
+                />
               ))}
             </div>
           )}
         </div>
       </section>
 
-      {/* ===== HOW IT WORKS — original design, fixed Step 3 text ===== */}
+      {/* ===== HOW IT WORKS ===== */}
       <section className="py-20 bg-white">
         <div className="max-w-5xl mx-auto px-8">
           <div className="text-center mb-16">
@@ -116,7 +160,6 @@ export function Home() {
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-            {/* Step 1 */}
             <div className="relative overflow-hidden p-6 bg-slate-50 border-2 border-black card-hover">
               <span className="step-number">1</span>
               <div className="relative z-10 flex flex-col h-full items-start">
@@ -126,7 +169,6 @@ export function Home() {
               </div>
             </div>
 
-            {/* Step 2 */}
             <div className="relative overflow-hidden p-6 bg-slate-50 border-2 border-black card-hover">
               <span className="step-number">2</span>
               <div className="relative z-10 flex flex-col h-full items-start">
@@ -136,7 +178,6 @@ export function Home() {
               </div>
             </div>
 
-            {/* Step 3 — ✅ Fixed: text now visible (black not white), same style as other boxes */}
             <div className="relative overflow-hidden p-6 bg-[#FA5600] border-2 border-black card-hover">
               <span className="step-number text-black opacity-10">3</span>
               <div className="relative z-10 flex flex-col h-full items-start">
@@ -146,7 +187,6 @@ export function Home() {
               </div>
             </div>
 
-            {/* Step 4 */}
             <div className="relative overflow-hidden p-6 bg-slate-50 border-2 border-black card-hover">
               <span className="step-number">4</span>
               <div className="relative z-10 flex flex-col h-full items-start">
