@@ -1,7 +1,7 @@
-import { useState, useEffect, useRef, Suspense, lazy } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { AddProductFormEmbed } from './AddProductFormEmbed';
 import { ManageCategoriesEmbed } from './ManageCategoriesEmbed';
-import { useNavigate } from 'react-router-dom'; // kept for View Site link if needed
+import { useNavigate } from 'react-router-dom';
 import {
   Lock, LogOut, Megaphone, Image, Tag, Package, FolderTree,
   ChevronRight, Save, Check, Plus, Trash2, Eye, Upload
@@ -12,7 +12,8 @@ const SESSION_KEY = 'adminAuth';
 
 type Section = 'home' | 'promo' | 'banner' | 'category-images' | 'products' | 'categories';
 
-interface BannerSlide { image: string; text: string; }
+// ✅ Added description field to BannerSlide
+interface BannerSlide { image: string; text: string; description: string; }
 interface PromoLine { text: string; }
 
 export function AdminPanel() {
@@ -30,15 +31,24 @@ export function AdminPanel() {
   const [promoSaved, setPromoSaved] = useState(false);
   const [promoLoading, setPromoLoading] = useState(false);
 
-  // Banner slides (up to 5)
+  // Banner slides (up to 5) — now with description
   const [bannerSlides, setBannerSlides] = useState<BannerSlide[]>([
-    { image: '', text: '' }, { image: '', text: '' }, { image: '', text: '' },
-    { image: '', text: '' }, { image: '', text: '' },
+    { image: '', text: '', description: '' },
+    { image: '', text: '', description: '' },
+    { image: '', text: '', description: '' },
+    { image: '', text: '', description: '' },
+    { image: '', text: '', description: '' },
   ]);
   const [bannerSaved, setBannerSaved] = useState(false);
   const [bannerLoading, setBannerLoading] = useState(false);
   const [bannerUploading, setBannerUploading] = useState<number | null>(null);
-  const bannerRefs = [useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null)];
+  const bannerRefs = [
+    useRef<HTMLInputElement>(null),
+    useRef<HTMLInputElement>(null),
+    useRef<HTMLInputElement>(null),
+    useRef<HTMLInputElement>(null),
+    useRef<HTMLInputElement>(null),
+  ];
 
   // Category images
   const [categories, setCategories] = useState<any[]>([]);
@@ -68,11 +78,19 @@ export function AdminPanel() {
           setPromoLines(prev => { const n = [...prev]; n[0] = { text: data.promoText }; return n; });
         }
         if (data.bannerSlides && Array.isArray(data.bannerSlides)) {
-          const slides = [...data.bannerSlides];
-          while (slides.length < 5) slides.push({ image: '', text: '' });
+          const slides = data.bannerSlides.map((s: any) => ({
+            image: s.image || '',
+            text: s.text || '',
+            description: s.description || '',  // ✅ load description
+          }));
+          while (slides.length < 5) slides.push({ image: '', text: '', description: '' });
           setBannerSlides(slides.slice(0, 5));
         } else if (data.bannerImage) {
-          setBannerSlides(prev => { const n = [...prev]; n[0] = { image: data.bannerImage, text: data.bannerText || '' }; return n; });
+          setBannerSlides(prev => {
+            const n = [...prev];
+            n[0] = { image: data.bannerImage, text: data.bannerText || '', description: '' };
+            return n;
+          });
         }
       })
       .catch(() => {});
@@ -105,7 +123,6 @@ export function AdminPanel() {
     setIsAuthenticated(false);
   };
 
-  // Upload image to Cloudinary via /api/upload
   const uploadImage = async (file: File): Promise<string> => {
     const res = await fetch('/api/upload', {
       method: 'POST',
@@ -117,7 +134,6 @@ export function AdminPanel() {
     return data.url;
   };
 
-  // Banner image upload
   const handleBannerImageUpload = async (index: number, e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -136,7 +152,6 @@ export function AdminPanel() {
     }
   };
 
-  // Category image upload
   const handleCatImageUpload = async (catId: string, e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -159,7 +174,7 @@ export function AdminPanel() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          promoLines: promoLines,
+          promoLines,
           promoText: activeLines[0]?.text || '',
           bannerSlides,
           bannerImage: bannerSlides[0]?.image || '',
@@ -185,7 +200,7 @@ export function AdminPanel() {
         body: JSON.stringify({
           promoLines,
           promoText: activeLines[0]?.text || '',
-          bannerSlides,
+          bannerSlides,                          // ✅ full array with description saved
           bannerImage: bannerSlides[0]?.image || '',
           bannerText: bannerSlides[0]?.text || '',
         }),
@@ -218,7 +233,7 @@ export function AdminPanel() {
 
   const menuItems = [
     { id: 'promo', label: 'Offer Bar', icon: Megaphone, desc: 'Set up to 5 scrolling announcement lines' },
-    { id: 'banner', label: 'Hero Banners', icon: Image, desc: 'Upload up to 5 banners with overlay text' },
+    { id: 'banner', label: 'Hero Banners', icon: Image, desc: 'Upload up to 5 banners with heading & description' },
     { id: 'category-images', label: 'Category Images', icon: Tag, desc: 'Upload cover images for each category' },
     { id: 'products', label: 'Add & Edit Products', icon: Package, desc: 'Manage your product catalog' },
     { id: 'categories', label: 'Manage Categories', icon: FolderTree, desc: 'Add or edit categories' },
@@ -329,8 +344,6 @@ export function AdminPanel() {
                   />
                 </div>
               ))}
-
-              {/* Live preview of active lines */}
               <div>
                 <p className="text-xs font-black uppercase tracking-widest text-gray-500 mb-2">Preview</p>
                 <div className="bg-[#FA5600] text-white text-[10px] font-bold uppercase tracking-widest px-4 py-1.5 text-center rounded-lg overflow-hidden">
@@ -339,7 +352,6 @@ export function AdminPanel() {
                   ))}
                 </div>
               </div>
-
               <SaveButton onClick={handleSavePromo} loading={promoLoading} saved={promoSaved} />
             </div>
           </div>
@@ -379,22 +391,43 @@ export function AdminPanel() {
                         className="hidden"
                       />
                     </div>
-                    {/* Overlay text */}
-                    <div className="flex-1">
-                      <label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">Overlay Text</label>
-                      <input
-                        type="text"
-                        value={slide.text}
-                        onChange={e => setBannerSlides(prev => {
-                          const n = [...prev]; n[i] = { ...n[i], text: e.target.value }; return n;
-                        })}
-                        placeholder="e.g. Discover Great Toys & Gear"
-                        className="w-full border-2 border-gray-200 rounded-xl p-3 font-bold focus:border-[#FA5600] outline-none transition text-sm"
-                      />
+
+                    {/* ✅ Two text fields: Heading + Description */}
+                    <div className="flex-1 space-y-2">
+                      <div>
+                        <label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">
+                          Overlay Heading
+                        </label>
+                        <input
+                          type="text"
+                          value={slide.text}
+                          onChange={e => setBannerSlides(prev => {
+                            const n = [...prev]; n[i] = { ...n[i], text: e.target.value }; return n;
+                          })}
+                          placeholder="e.g. Discover Great Toys & Gear"
+                          className="w-full border-2 border-gray-200 rounded-xl p-3 font-bold focus:border-[#FA5600] outline-none transition text-sm"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">
+                          Description Text
+                        </label>
+                        <input
+                          type="text"
+                          value={slide.description}
+                          onChange={e => setBannerSlides(prev => {
+                            const n = [...prev]; n[i] = { ...n[i], description: e.target.value }; return n;
+                          })}
+                          placeholder="e.g. Browse our curated collection and order via WhatsApp!"
+                          className="w-full border-2 border-gray-200 rounded-xl p-3 font-bold focus:border-[#FA5600] outline-none transition text-sm"
+                        />
+                      </div>
                       {slide.image && (
                         <button
-                          onClick={() => setBannerSlides(prev => { const n = [...prev]; n[i] = { image: '', text: '' }; return n; })}
-                          className="mt-2 text-xs text-red-400 hover:text-red-600 font-bold flex items-center gap-1 transition">
+                          onClick={() => setBannerSlides(prev => {
+                            const n = [...prev]; n[i] = { image: '', text: '', description: '' }; return n;
+                          })}
+                          className="mt-1 text-xs text-red-400 hover:text-red-600 font-bold flex items-center gap-1 transition">
                           <Trash2 className="w-3 h-3" /> Remove
                         </button>
                       )}
@@ -403,12 +436,22 @@ export function AdminPanel() {
 
                   {/* Preview */}
                   {slide.image && (
-                    <div className="mt-3 relative h-16 rounded-lg overflow-hidden border border-gray-200">
+                    <div className="mt-3 relative h-20 rounded-lg overflow-hidden border border-gray-200">
                       <img src={slide.image} alt="preview" className="w-full h-full object-cover" />
-                      <div className="absolute inset-0 bg-black/50 flex items-center justify-center">
-                        <p className="text-white font-black text-xs uppercase tracking-tight text-center px-2">
-                          {slide.text || '(no overlay text)'}
-                        </p>
+                      <div className="absolute inset-0 bg-black/50 flex flex-col items-center justify-center px-4">
+                        {slide.text && (
+                          <p className="text-white font-black text-xs uppercase tracking-tight text-center">
+                            {slide.text}
+                          </p>
+                        )}
+                        {slide.description && (
+                          <p className="text-white/80 font-bold text-[10px] text-center mt-1">
+                            {slide.description}
+                          </p>
+                        )}
+                        {!slide.text && !slide.description && (
+                          <p className="text-white/50 text-[10px]">(no overlay text)</p>
+                        )}
                       </div>
                     </div>
                   )}
@@ -450,7 +493,6 @@ export function AdminPanel() {
                 <div key={cat._id} className="bg-white rounded-2xl border-2 border-gray-200 p-5">
                   <p className="text-xs font-black uppercase tracking-widest text-gray-700 mb-3">{cat.name}</p>
                   <div className="flex items-center gap-4">
-                    {/* Upload box */}
                     <div
                       onClick={() => catRefs.current[cat._id]?.click()}
                       className="w-20 h-16 rounded-xl border-2 border-dashed border-gray-300 hover:border-[#FA5600] cursor-pointer flex items-center justify-center overflow-hidden shrink-0 transition bg-gray-50">
@@ -472,18 +514,19 @@ export function AdminPanel() {
                         className="hidden"
                       />
                     </div>
-
                     <div className="flex-1 text-xs text-gray-400">
                       {catImages[cat._id] ? 'Image uploaded ✓ — click to replace' : 'Click the box to upload an image'}
                     </div>
-
                     <button
                       onClick={() => handleSaveCategoryImage(cat._id)}
                       disabled={catSaving === cat._id}
                       className={`shrink-0 flex items-center gap-2 px-4 py-2 rounded-xl font-black text-xs uppercase tracking-widest transition ${
                         catSaved === cat._id ? 'bg-green-500 text-white' : 'bg-[#FA5600] text-white hover:bg-[#E04A00]'
                       }`}>
-                      {catSaved === cat._id ? <><Check className="w-3.5 h-3.5" /> Saved</> : catSaving === cat._id ? '...' : <><Save className="w-3.5 h-3.5" /> Save</>}
+                      {catSaved === cat._id
+                        ? <><Check className="w-3.5 h-3.5" /> Saved</>
+                        : catSaving === cat._id ? '...'
+                        : <><Save className="w-3.5 h-3.5" /> Save</>}
                     </button>
                   </div>
                 </div>
