@@ -1,5 +1,7 @@
-import { useState, useEffect, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useState, useEffect, useRef, Suspense, lazy } from 'react';
+import { AddProductFormEmbed } from './AddProductFormEmbed';
+import { ManageCategoriesEmbed } from './ManageCategoriesEmbed';
+import { useNavigate } from 'react-router-dom'; // kept for View Site link if needed
 import {
   Lock, LogOut, Megaphone, Image, Tag, Package, FolderTree,
   ChevronRight, Save, Check, Plus, Trash2, Eye, Upload
@@ -8,7 +10,7 @@ import {
 const ADMIN_PASSWORD = import.meta.env.VITE_ADMIN_PASSWORD ?? '';
 const SESSION_KEY = 'adminAuth';
 
-type Section = 'home' | 'promo' | 'banner' | 'category-images';
+type Section = 'home' | 'promo' | 'banner' | 'category-images' | 'products' | 'categories';
 
 interface BannerSlide { image: string; text: string; }
 interface PromoLine { text: string; }
@@ -289,11 +291,7 @@ export function AdminPanel() {
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               {menuItems.map(item => (
                 <button key={item.id}
-                  onClick={() => {
-                    if (item.id === 'products') navigate('/add-product');
-                    else if (item.id === 'categories') navigate('/manage-categories');
-                    else setActiveSection(item.id as Section);
-                  }}
+                  onClick={() => setActiveSection(item.id as Section)}
                   className="bg-white border-2 border-gray-200 hover:border-[#FA5600] rounded-2xl p-6 text-left flex items-center gap-4 transition-all hover:shadow-md group">
                   <div className="w-12 h-12 bg-[#FFF3E0] group-hover:bg-[#FA5600] rounded-xl flex items-center justify-center transition-colors shrink-0">
                     <item.icon className="w-6 h-6 text-[#FA5600] group-hover:text-white transition-colors" />
@@ -418,6 +416,22 @@ export function AdminPanel() {
               ))}
               <SaveButton onClick={handleSaveBanners} loading={bannerLoading} saved={bannerSaved} />
             </div>
+          </div>
+        )}
+
+        {/* ADD & EDIT PRODUCTS */}
+        {activeSection === 'products' && (
+          <div>
+            <BackButton onClick={() => setActiveSection('home')} />
+            <AddProductFormEmbed />
+          </div>
+        )}
+
+        {/* MANAGE CATEGORIES */}
+        {activeSection === 'categories' && (
+          <div>
+            <BackButton onClick={() => setActiveSection('home')} />
+            <ManageCategoriesEmbed />
           </div>
         )}
 
