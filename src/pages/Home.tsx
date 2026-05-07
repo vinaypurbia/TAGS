@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 
 export function Home() {
   const [categories, setCategories] = useState<{ _id: string; name: string; image?: string }[]>([]);
-  const [banner, setBanner] = useState<{ image?: string; text?: string } | null>(null);
+  const [settings, setSettings] = useState<{ promoText?: string; bannerImage?: string; bannerText?: string } | null>(null);
 
   useEffect(() => {
     fetch('/api/categories')
@@ -13,11 +13,7 @@ export function Home() {
         if (Array.isArray(data)) {
           const filtered = data
             .filter((c: any) => !c.parentId && c.name && c.name.trim() !== '')
-            .sort((a: any, b: any) => {
-              const dateA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-              const dateB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
-              return dateA - dateB;
-            });
+            .sort((a: any, b: any) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime());
           setCategories(filtered);
         }
       })
@@ -25,7 +21,7 @@ export function Home() {
 
     fetch('/api/banner')
       .then(res => res.json())
-      .then(data => { if (data && !data.error) setBanner(data); })
+      .then(data => { if (data && !data.error) setSettings(data); })
       .catch(() => {});
   }, []);
 
@@ -49,20 +45,22 @@ export function Home() {
       <section
         className="relative overflow-hidden border-b-4 border-[#FA5600] min-h-[400px] lg:min-h-[500px] flex items-center"
         style={{
-          background: banner?.image
-            ? `url(${banner.image}) center/cover no-repeat`
+          background: settings?.bannerImage
+            ? `url(${settings.bannerImage}) center/cover no-repeat`
             : 'linear-gradient(135deg, #1A1A1A 0%, #2d2d2d 100%)'
         }}
       >
         <div className="absolute inset-0 bg-black/50" />
         <div className="relative z-10 w-full max-w-5xl mx-auto px-8 py-20 lg:py-28 text-center flex flex-col items-center">
-          <div className="inline-flex items-center gap-2 px-4 py-2 bg-[#FA5600] text-white text-[10px] font-bold uppercase tracking-widest mb-6 rounded-full">
-            <MessageCircle className="w-4 h-4" /> Order Directly via WhatsApp
-          </div>
 
-          {banner?.text ? (
+          {/* ✅ Fixed: This button now links to /products page */}
+          <Link to="/products" className="inline-flex items-center gap-2 px-4 py-2 bg-[#FA5600] text-white text-[10px] font-bold uppercase tracking-widest mb-6 rounded-full hover:bg-[#E04A00] transition-colors">
+            <MessageCircle className="w-4 h-4" /> Order Directly via WhatsApp
+          </Link>
+
+          {settings?.bannerText ? (
             <div className="text-4xl md:text-6xl font-black text-white tracking-tighter leading-tight uppercase mb-6 max-w-3xl">
-              {banner.text}
+              {settings.bannerText}
             </div>
           ) : (
             <h1 className="text-5xl md:text-7xl font-black text-white tracking-tighter leading-none uppercase mb-6">
@@ -89,7 +87,7 @@ export function Home() {
         </div>
       </section>
 
-      {/* ===== HOW IT WORKS ===== */}
+      {/* ===== HOW IT WORKS — original design, fixed Step 3 text ===== */}
       <section className="py-20 bg-white">
         <div className="max-w-5xl mx-auto px-8">
           <div className="text-center mb-16">
@@ -97,13 +95,13 @@ export function Home() {
             <p className="text-sm font-bold uppercase tracking-widest text-slate-400">Quick, personalized service via chat</p>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
             {/* Step 1 */}
             <div className="relative overflow-hidden p-6 bg-slate-50 border-2 border-black card-hover">
               <span className="step-number">1</span>
               <div className="relative z-10 flex flex-col h-full items-start">
                 <Package className="w-6 h-6 mb-4 text-black" />
-                <h3 className="font-black text-lg mb-2 uppercase">Select Items</h3>
+                <h3 className="font-black text-lg mb-2 uppercase text-black">Select Items</h3>
                 <p className="text-xs font-bold text-slate-500 uppercase tracking-wide">Add favorite toys and gear to your order list.</p>
               </div>
             </div>
@@ -113,18 +111,28 @@ export function Home() {
               <span className="step-number">2</span>
               <div className="relative z-10 flex flex-col h-full items-start">
                 <FileText className="w-6 h-6 mb-4 text-black" />
-                <h3 className="font-black text-lg mb-2 uppercase">Fill Details</h3>
+                <h3 className="font-black text-lg mb-2 uppercase text-black">Fill Details</h3>
                 <p className="text-xs font-bold text-slate-500 uppercase tracking-wide">Enter your name, phone and delivery address.</p>
               </div>
             </div>
 
-            {/* Step 3 */}
-            <div className="relative overflow-hidden p-6 bg-[#FA5600] border-2 border-black card-hover text-white">
-              <span className="step-number text-white opacity-10">3</span>
+            {/* Step 3 — ✅ Fixed: text now visible (black not white), same style as other boxes */}
+            <div className="relative overflow-hidden p-6 bg-[#FA5600] border-2 border-black card-hover">
+              <span className="step-number text-black opacity-10">3</span>
               <div className="relative z-10 flex flex-col h-full items-start">
-                <CheckCircle className="w-6 h-6 mb-4 text-white" />
-                 <h3 className="font-black text-lg mb-2 uppercase">Confirm</h3>
-               <p className="text-xs font-bold text-black/80 uppercase tracking-wide">We reply with payment instructions & delivery.</p>
+                <MessageCircle className="w-6 h-6 mb-4 text-black" />
+                <h3 className="font-black text-lg mb-2 uppercase text-black">Send on WhatsApp</h3>
+                <p className="text-xs font-bold text-black/70 uppercase tracking-wide">One click sends your order directly on WhatsApp!</p>
+              </div>
+            </div>
+
+            {/* Step 4 */}
+            <div className="relative overflow-hidden p-6 bg-slate-50 border-2 border-black card-hover">
+              <span className="step-number">4</span>
+              <div className="relative z-10 flex flex-col h-full items-start">
+                <CheckCircle className="w-6 h-6 mb-4 text-black" />
+                <h3 className="font-black text-lg mb-2 uppercase text-black">Confirm</h3>
+                <p className="text-xs font-bold text-slate-500 uppercase tracking-wide">We reply with payment instructions & delivery.</p>
               </div>
             </div>
           </div>
@@ -145,7 +153,10 @@ export function Home() {
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {(categories.length > 0 ? categories : ['Electronics', 'Automotive', 'Travel Gear', 'Toys'].map(name => ({ _id: name, name }))).map((cat: any, index) => (
+            {(categories.length > 0
+              ? categories
+              : ['Electronics', 'Automotive', 'Travel Gear', 'Toys'].map(name => ({ _id: name, name }))
+            ).map((cat: any, index) => (
               <Link
                 to={`/products?category=${encodeURIComponent(cat.name)}`}
                 key={cat._id}
