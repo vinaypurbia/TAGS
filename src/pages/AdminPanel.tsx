@@ -2,12 +2,16 @@ import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Lock, LogOut, Megaphone, Image, Tag, Package, FolderTree,
-  ChevronRight, Save, Check, AlertCircle, Upload, Eye
+  ChevronRight, Save, Check, Plus, Trash2, Eye, Upload
 } from 'lucide-react';
 
 const ADMIN_PASSWORD = import.meta.env.VITE_ADMIN_PASSWORD ?? '';
+const SESSION_KEY = 'adminAuth';
 
-type Section = 'home' | 'promo' | 'banner' | 'category-images' | 'products' | 'categories';
+type Section = 'home' | 'promo' | 'banner' | 'category-images';
+
+interface BannerSlide { image: string; text: string; }
+interface PromoLine { text: string; }
 
 export function AdminPanel() {
   const navigate = useNavigate();
@@ -16,28 +20,58 @@ export function AdminPanel() {
   const [passwordError, setPasswordError] = useState('');
   const [activeSection, setActiveSection] = useState<Section>('home');
 
-  // Promo + Banner state
-  const [settings, setSettings] = useState({ promoText: '', bannerImage: '', bannerText: '' });
-  const [settingsSaved, setSettingsSaved] = useState(false);
-  const [settingsLoading, setSettingsLoading] = useState(false);
+  // Promo lines (up to 5)
+  const [promoLines, setPromoLines] = useState<PromoLine[]>([
+    { text: '🔥 TAGS · Free Shipping on Orders Over ₹999 · Up to 90% Off Today!' },
+    { text: '' }, { text: '' }, { text: '' }, { text: '' },
+  ]);
+  const [promoSaved, setPromoSaved] = useState(false);
+  const [promoLoading, setPromoLoading] = useState(false);
 
-  // Category images state
+  // Banner slides (up to 5)
+  const [bannerSlides, setBannerSlides] = useState<BannerSlide[]>([
+    { image: '', text: '' }, { image: '', text: '' }, { image: '', text: '' },
+    { image: '', text: '' }, { image: '', text: '' },
+  ]);
+  const [bannerSaved, setBannerSaved] = useState(false);
+  const [bannerLoading, setBannerLoading] = useState(false);
+  const [bannerUploading, setBannerUploading] = useState<number | null>(null);
+  const bannerRefs = [useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null)];
+
+  // Category images
   const [categories, setCategories] = useState<any[]>([]);
   const [catSaving, setCatSaving] = useState<string | null>(null);
   const [catSaved, setCatSaved] = useState<string | null>(null);
-  const [catImageInputs, setCatImageInputs] = useState<Record<string, string>>({});
+  const [catUploading, setCatUploading] = useState<string | null>(null);
+  const [catImages, setCatImages] = useState<Record<string, string>>({});
+  const catRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
-  // Load settings and categories once authenticated
+  // Check sessionStorage on mount
+  useEffect(() => {
+    if (sessionStorage.getItem(SESSION_KEY) === 'true') setIsAuthenticated(true);
+  }, []);
+
+  // Load data once authenticated
   useEffect(() => {
     if (!isAuthenticated) return;
+
     fetch('/api/banner')
       .then(r => r.json())
       .then(data => {
-        setSettings({
-          promoText: data.promoText || '',
-          bannerImage: data.bannerImage || '',
-          bannerText: data.bannerText || '',
-        });
+        if (data.promoLines && Array.isArray(data.promoLines)) {
+          const lines = [...data.promoLines];
+          while (lines.length < 5) lines.push({ text: '' });
+          setPromoLines(lines.slice(0, 5));
+        } else if (data.promoText) {
+          setPromoLines(prev => { const n = [...prev]; n[0] = { text: data.promoText }; return n; });
+        }
+        if (data.bannerSlides && Array.isArray(data.bannerSlides)) {
+          const slides = [...data.bannerSlides];
+          while (slides.length < 5) slides.push({ image: '', text: '' });
+          setBannerSlides(slides.slice(0, 5));
+        } else if (data.bannerImage) {
+          setBannerSlides(prev => { const n = [...prev]; n[0] = { image: data.bannerImage, text: data.bannerText || '' }; return n; });
+        }
       })
       .catch(() => {});
 
@@ -46,15 +80,16 @@ export function AdminPanel() {
       .then(data => {
         const main = Array.isArray(data) ? data.filter((c: any) => !c.parentId) : [];
         setCategories(main);
-        const inputs: Record<string, string> = {};
-        main.forEach((c: any) => { inputs[c._id] = c.image || ''; });
-        setCatImageInputs(inputs);
+        const imgs: Record<string, string> = {};
+        main.forEach((c: any) => { imgs[c._id] = c.image || ''; });
+        setCatImages(imgs);
       })
       .catch(() => {});
   }, [isAuthenticated]);
 
   const handlePasswordSubmit = () => {
     if (passwordInput === ADMIN_PASSWORD) {
+      sessionStorage.setItem(SESSION_KEY, 'true');
       setIsAuthenticated(true);
       setPasswordError('');
     } else {
@@ -63,20 +98,102 @@ export function AdminPanel() {
     }
   };
 
-  const handleSaveSettings = async () => {
-    setSettingsLoading(true);
+  const handleLock = () => {
+    sessionStorage.removeItem(SESSION_KEY);
+    setIsAuthenticated(false);
+  };
+
+  // Upload image to Cloudinary via /api/upload
+  const uploadImage = async (file: File): Promise<string> => {
+    const res = await fetch('/api/upload', {
+      method: 'POST',
+      body: file,
+      headers: { 'Content-Type': file.type },
+    });
+    const data = await res.json();
+    if (!data.url) throw new Error('Upload failed');
+    return data.url;
+  };
+
+  // Banner image upload
+  const handleBannerImageUpload = async (index: number, e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setBannerUploading(index);
     try {
+      const url = await uploadImage(file);
+      setBannerSlides(prev => {
+        const n = [...prev];
+        n[index] = { ...n[index], image: url };
+        return n;
+      });
+    } catch {
+      alert('Image upload failed. Please try again.');
+    } finally {
+      setBannerUploading(null);
+    }
+  };
+
+  // Category image upload
+  const handleCatImageUpload = async (catId: string, e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setCatUploading(catId);
+    try {
+      const url = await uploadImage(file);
+      setCatImages(prev => ({ ...prev, [catId]: url }));
+    } catch {
+      alert('Image upload failed. Please try again.');
+    } finally {
+      setCatUploading(null);
+    }
+  };
+
+  const handleSavePromo = async () => {
+    setPromoLoading(true);
+    try {
+      const activeLines = promoLines.filter(l => l.text.trim());
       await fetch('/api/banner', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(settings),
+        body: JSON.stringify({
+          promoLines: promoLines,
+          promoText: activeLines[0]?.text || '',
+          bannerSlides,
+          bannerImage: bannerSlides[0]?.image || '',
+          bannerText: bannerSlides[0]?.text || '',
+        }),
       });
-      setSettingsSaved(true);
-      setTimeout(() => setSettingsSaved(false), 2500);
+      setPromoSaved(true);
+      setTimeout(() => setPromoSaved(false), 2500);
     } catch {
-      alert('Failed to save. Please try again.');
+      alert('Failed to save.');
     } finally {
-      setSettingsLoading(false);
+      setPromoLoading(false);
+    }
+  };
+
+  const handleSaveBanners = async () => {
+    setBannerLoading(true);
+    try {
+      const activeLines = promoLines.filter(l => l.text.trim());
+      await fetch('/api/banner', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          promoLines,
+          promoText: activeLines[0]?.text || '',
+          bannerSlides,
+          bannerImage: bannerSlides[0]?.image || '',
+          bannerText: bannerSlides[0]?.text || '',
+        }),
+      });
+      setBannerSaved(true);
+      setTimeout(() => setBannerSaved(false), 2500);
+    } catch {
+      alert('Failed to save.');
+    } finally {
+      setBannerLoading(false);
     }
   };
 
@@ -86,21 +203,21 @@ export function AdminPanel() {
       await fetch('/api/categories', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: catId, image: catImageInputs[catId] }),
+        body: JSON.stringify({ id: catId, image: catImages[catId] }),
       });
       setCatSaved(catId);
       setTimeout(() => setCatSaved(null), 2500);
     } catch {
-      alert('Failed to save category image.');
+      alert('Failed to save.');
     } finally {
       setCatSaving(null);
     }
   };
 
   const menuItems = [
-    { id: 'promo', label: 'Offer Bar', icon: Megaphone, desc: 'Update top announcement text' },
-    { id: 'banner', label: 'Hero Banner', icon: Image, desc: 'Update banner image & text' },
-    { id: 'category-images', label: 'Category Images', icon: Tag, desc: 'Update category cover images' },
+    { id: 'promo', label: 'Offer Bar', icon: Megaphone, desc: 'Set up to 5 scrolling announcement lines' },
+    { id: 'banner', label: 'Hero Banners', icon: Image, desc: 'Upload up to 5 banners with overlay text' },
+    { id: 'category-images', label: 'Category Images', icon: Tag, desc: 'Upload cover images for each category' },
     { id: 'products', label: 'Add & Edit Products', icon: Package, desc: 'Manage your product catalog' },
     { id: 'categories', label: 'Manage Categories', icon: FolderTree, desc: 'Add or edit categories' },
   ];
@@ -127,8 +244,7 @@ export function AdminPanel() {
             autoFocus
           />
           {passwordError && <p className="text-red-500 text-sm text-center mb-3">{passwordError}</p>}
-          <button
-            onClick={handlePasswordSubmit}
+          <button onClick={handlePasswordSubmit}
             className="w-full bg-[#FA5600] text-white font-black py-3 rounded-xl hover:bg-[#E04A00] transition uppercase tracking-widest">
             Enter
           </button>
@@ -150,21 +266,20 @@ export function AdminPanel() {
             <p className="text-[10px] text-white/50 uppercase tracking-widest">Control Panel</p>
           </div>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-4">
           <a href="/" target="_blank" className="text-xs text-white/60 hover:text-white flex items-center gap-1 transition">
             <Eye className="w-3.5 h-3.5" /> View Site
           </a>
-          <button
-            onClick={() => setIsAuthenticated(false)}
+          <button onClick={handleLock}
             className="flex items-center gap-2 text-xs text-white/60 hover:text-red-400 transition font-bold">
             <LogOut className="w-4 h-4" /> Lock
           </button>
         </div>
       </div>
 
-      <div className="max-w-5xl mx-auto px-4 py-8">
+      <div className="max-w-3xl mx-auto px-4 py-8">
 
-        {/* HOME — menu grid */}
+        {/* HOME MENU */}
         {activeSection === 'home' && (
           <div>
             <div className="mb-8">
@@ -173,8 +288,7 @@ export function AdminPanel() {
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               {menuItems.map(item => (
-                <button
-                  key={item.id}
+                <button key={item.id}
                   onClick={() => {
                     if (item.id === 'products') navigate('/add-product');
                     else if (item.id === 'categories') navigate('/manage-categories');
@@ -195,88 +309,114 @@ export function AdminPanel() {
           </div>
         )}
 
-        {/* PROMO BAR */}
+        {/* OFFER BAR */}
         {activeSection === 'promo' && (
           <div>
             <BackButton onClick={() => setActiveSection('home')} />
-            <SectionHeader icon={Megaphone} title="Offer Bar" desc="Update the announcement text shown at the very top of your site" />
-            <div className="bg-white rounded-2xl border-2 border-gray-200 p-6">
-              <label className="block text-xs font-black uppercase tracking-widest text-gray-700 mb-2">
-                Announcement Text
-              </label>
-              <input
-                type="text"
-                value={settings.promoText}
-                onChange={e => setSettings(s => ({ ...s, promoText: e.target.value }))}
-                placeholder="🔥 TAGS · Free Shipping on Orders Over ₹999 · Up to 90% Off Today!"
-                className="w-full border-2 border-gray-200 rounded-xl p-3 font-bold focus:border-[#FA5600] outline-none transition mb-2"
-              />
-              <p className="text-xs text-gray-400 mb-6">Tip: Use emojis to make it stand out. Keep it short and punchy.</p>
+            <SectionHeader icon={Megaphone} title="Offer Bar" desc="Add up to 5 lines — they scroll one by one with a pause between each" />
+            <div className="bg-white rounded-2xl border-2 border-gray-200 p-6 space-y-4">
+              {promoLines.map((line, i) => (
+                <div key={i}>
+                  <label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">
+                    Line {i + 1} {i === 0 && <span className="text-[#FA5600]">*</span>}
+                  </label>
+                  <input
+                    type="text"
+                    value={line.text}
+                    onChange={e => setPromoLines(prev => {
+                      const n = [...prev]; n[i] = { text: e.target.value }; return n;
+                    })}
+                    placeholder={i === 0 ? '🔥 TAGS · Free Shipping on Orders Over ₹999...' : `Optional line ${i + 1}...`}
+                    className="w-full border-2 border-gray-200 rounded-xl p-3 font-bold focus:border-[#FA5600] outline-none transition"
+                  />
+                </div>
+              ))}
 
-              {/* Live preview */}
-              <div className="mb-6">
+              {/* Live preview of active lines */}
+              <div>
                 <p className="text-xs font-black uppercase tracking-widest text-gray-500 mb-2">Preview</p>
-                <div className="bg-[#FA5600] text-white text-[10px] font-bold uppercase tracking-widest px-8 py-1.5 text-center rounded-lg">
-                  {settings.promoText || '(empty)'}
+                <div className="bg-[#FA5600] text-white text-[10px] font-bold uppercase tracking-widest px-4 py-1.5 text-center rounded-lg overflow-hidden">
+                  {promoLines.filter(l => l.text.trim()).map((l, i) => (
+                    <span key={i}>{l.text}{i < promoLines.filter(x => x.text.trim()).length - 1 ? '  ·  ' : ''}</span>
+                  ))}
                 </div>
               </div>
 
-              <SaveButton onClick={handleSaveSettings} loading={settingsLoading} saved={settingsSaved} />
+              <SaveButton onClick={handleSavePromo} loading={promoLoading} saved={promoSaved} />
             </div>
           </div>
         )}
 
-        {/* HERO BANNER */}
+        {/* HERO BANNERS */}
         {activeSection === 'banner' && (
           <div>
             <BackButton onClick={() => setActiveSection('home')} />
-            <SectionHeader icon={Image} title="Hero Banner" desc="Update the main banner image and overlay headline text" />
-            <div className="bg-white rounded-2xl border-2 border-gray-200 p-6 space-y-6">
-
-              <div>
-                <label className="block text-xs font-black uppercase tracking-widest text-gray-700 mb-2">
-                  Banner Image URL
-                </label>
-                <input
-                  type="url"
-                  value={settings.bannerImage}
-                  onChange={e => setSettings(s => ({ ...s, bannerImage: e.target.value }))}
-                  placeholder="https://res.cloudinary.com/..."
-                  className="w-full border-2 border-gray-200 rounded-xl p-3 font-bold focus:border-[#FA5600] outline-none transition"
-                />
-                <p className="text-xs text-gray-400 mt-1">Paste a Cloudinary or any direct image URL. Recommended: 1600×600px.</p>
-              </div>
-
-              <div>
-                <label className="block text-xs font-black uppercase tracking-widest text-gray-700 mb-2">
-                  Headline Text
-                </label>
-                <input
-                  type="text"
-                  value={settings.bannerText}
-                  onChange={e => setSettings(s => ({ ...s, bannerText: e.target.value }))}
-                  placeholder="Discover Great Toys, Gear & Sports"
-                  className="w-full border-2 border-gray-200 rounded-xl p-3 font-bold focus:border-[#FA5600] outline-none transition"
-                />
-                <p className="text-xs text-gray-400 mt-1">Leave empty to show the default headline.</p>
-              </div>
-
-              {/* Live preview */}
-              {settings.bannerImage && (
-                <div>
-                  <p className="text-xs font-black uppercase tracking-widest text-gray-500 mb-2">Image Preview</p>
-                  <div className="relative h-32 rounded-xl overflow-hidden border-2 border-gray-200">
-                    <img src={settings.bannerImage} alt="Banner preview" className="w-full h-full object-cover" />
-                    <div className="absolute inset-0 bg-black/50 flex items-center justify-center">
-                      <p className="text-white font-black uppercase text-lg tracking-tight text-center px-4">
-                        {settings.bannerText || 'Discover Great Toys, Gear & Sports'}
-                      </p>
+            <SectionHeader icon={Image} title="Hero Banners" desc="Upload up to 5 banners — they auto-rotate every 5 seconds on the homepage" />
+            <div className="space-y-4">
+              {bannerSlides.map((slide, i) => (
+                <div key={i} className="bg-white rounded-2xl border-2 border-gray-200 p-5">
+                  <p className="text-xs font-black uppercase tracking-widest text-gray-500 mb-3">
+                    Banner {i + 1} {i === 0 && <span className="text-[#FA5600]">*</span>}
+                  </p>
+                  <div className="flex gap-4">
+                    {/* Image upload box */}
+                    <div
+                      onClick={() => bannerRefs[i].current?.click()}
+                      className="w-28 h-20 rounded-xl border-2 border-dashed border-gray-300 hover:border-[#FA5600] cursor-pointer flex items-center justify-center overflow-hidden shrink-0 transition bg-gray-50 relative">
+                      {bannerUploading === i ? (
+                        <p className="text-[10px] text-gray-400 font-bold">Uploading...</p>
+                      ) : slide.image ? (
+                        <img src={slide.image} alt={`Banner ${i + 1}`} className="w-full h-full object-cover" />
+                      ) : (
+                        <div className="text-center">
+                          <Upload className="w-5 h-5 text-gray-300 mx-auto mb-1" />
+                          <p className="text-[9px] text-gray-400 font-bold uppercase">Upload</p>
+                        </div>
+                      )}
+                      <input
+                        ref={bannerRefs[i]}
+                        type="file"
+                        accept="image/png,image/jpeg,image/webp"
+                        onChange={e => handleBannerImageUpload(i, e)}
+                        className="hidden"
+                      />
+                    </div>
+                    {/* Overlay text */}
+                    <div className="flex-1">
+                      <label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">Overlay Text</label>
+                      <input
+                        type="text"
+                        value={slide.text}
+                        onChange={e => setBannerSlides(prev => {
+                          const n = [...prev]; n[i] = { ...n[i], text: e.target.value }; return n;
+                        })}
+                        placeholder="e.g. Discover Great Toys & Gear"
+                        className="w-full border-2 border-gray-200 rounded-xl p-3 font-bold focus:border-[#FA5600] outline-none transition text-sm"
+                      />
+                      {slide.image && (
+                        <button
+                          onClick={() => setBannerSlides(prev => { const n = [...prev]; n[i] = { image: '', text: '' }; return n; })}
+                          className="mt-2 text-xs text-red-400 hover:text-red-600 font-bold flex items-center gap-1 transition">
+                          <Trash2 className="w-3 h-3" /> Remove
+                        </button>
+                      )}
                     </div>
                   </div>
-                </div>
-              )}
 
-              <SaveButton onClick={handleSaveSettings} loading={settingsLoading} saved={settingsSaved} />
+                  {/* Preview */}
+                  {slide.image && (
+                    <div className="mt-3 relative h-16 rounded-lg overflow-hidden border border-gray-200">
+                      <img src={slide.image} alt="preview" className="w-full h-full object-cover" />
+                      <div className="absolute inset-0 bg-black/50 flex items-center justify-center">
+                        <p className="text-white font-black text-xs uppercase tracking-tight text-center px-2">
+                          {slide.text || '(no overlay text)'}
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ))}
+              <SaveButton onClick={handleSaveBanners} loading={bannerLoading} saved={bannerSaved} />
             </div>
           </div>
         )}
@@ -285,7 +425,7 @@ export function AdminPanel() {
         {activeSection === 'category-images' && (
           <div>
             <BackButton onClick={() => setActiveSection('home')} />
-            <SectionHeader icon={Tag} title="Category Images" desc="Update the cover image for each category shown on the homepage" />
+            <SectionHeader icon={Tag} title="Category Images" desc="Upload a cover image for each category shown on the homepage" />
             <div className="space-y-4">
               {categories.length === 0 && (
                 <div className="bg-white rounded-2xl border-2 border-gray-200 p-8 text-center text-gray-400 text-sm">
@@ -294,40 +434,42 @@ export function AdminPanel() {
               )}
               {categories.map(cat => (
                 <div key={cat._id} className="bg-white rounded-2xl border-2 border-gray-200 p-5">
+                  <p className="text-xs font-black uppercase tracking-widest text-gray-700 mb-3">{cat.name}</p>
                   <div className="flex items-center gap-4">
-                    {/* Current image thumbnail */}
-                    <div className="w-16 h-16 rounded-xl overflow-hidden border-2 border-gray-200 shrink-0 bg-gray-100 flex items-center justify-center">
-                      {catImageInputs[cat._id] ? (
-                        <img src={catImageInputs[cat._id]} alt={cat.name} className="w-full h-full object-cover" />
+                    {/* Upload box */}
+                    <div
+                      onClick={() => catRefs.current[cat._id]?.click()}
+                      className="w-20 h-16 rounded-xl border-2 border-dashed border-gray-300 hover:border-[#FA5600] cursor-pointer flex items-center justify-center overflow-hidden shrink-0 transition bg-gray-50">
+                      {catUploading === cat._id ? (
+                        <p className="text-[9px] text-gray-400 font-bold">...</p>
+                      ) : catImages[cat._id] ? (
+                        <img src={catImages[cat._id]} alt={cat.name} className="w-full h-full object-cover" />
                       ) : (
-                        <Tag className="w-6 h-6 text-gray-300" />
+                        <div className="text-center">
+                          <Upload className="w-4 h-4 text-gray-300 mx-auto mb-0.5" />
+                          <p className="text-[9px] text-gray-400 font-bold uppercase">Upload</p>
+                        </div>
                       )}
-                    </div>
-                    <div className="flex-1">
-                      <p className="font-black uppercase tracking-tight text-sm text-gray-900 mb-2">{cat.name}</p>
                       <input
-                        type="url"
-                        value={catImageInputs[cat._id] || ''}
-                        onChange={e => setCatImageInputs(prev => ({ ...prev, [cat._id]: e.target.value }))}
-                        placeholder="Paste image URL..."
-                        className="w-full border-2 border-gray-200 rounded-lg p-2 text-sm font-bold focus:border-[#FA5600] outline-none transition"
+                        ref={el => { catRefs.current[cat._id] = el; }}
+                        type="file"
+                        accept="image/png,image/jpeg,image/webp"
+                        onChange={e => handleCatImageUpload(cat._id, e)}
+                        className="hidden"
                       />
                     </div>
+
+                    <div className="flex-1 text-xs text-gray-400">
+                      {catImages[cat._id] ? 'Image uploaded ✓ — click to replace' : 'Click the box to upload an image'}
+                    </div>
+
                     <button
                       onClick={() => handleSaveCategoryImage(cat._id)}
                       disabled={catSaving === cat._id}
                       className={`shrink-0 flex items-center gap-2 px-4 py-2 rounded-xl font-black text-xs uppercase tracking-widest transition ${
-                        catSaved === cat._id
-                          ? 'bg-green-500 text-white'
-                          : 'bg-[#FA5600] text-white hover:bg-[#E04A00]'
+                        catSaved === cat._id ? 'bg-green-500 text-white' : 'bg-[#FA5600] text-white hover:bg-[#E04A00]'
                       }`}>
-                      {catSaved === cat._id ? (
-                        <><Check className="w-3.5 h-3.5" /> Saved</>
-                      ) : catSaving === cat._id ? (
-                        '...'
-                      ) : (
-                        <><Save className="w-3.5 h-3.5" /> Save</>
-                      )}
+                      {catSaved === cat._id ? <><Check className="w-3.5 h-3.5" /> Saved</> : catSaving === cat._id ? '...' : <><Save className="w-3.5 h-3.5" /> Save</>}
                     </button>
                   </div>
                 </div>
@@ -340,8 +482,6 @@ export function AdminPanel() {
     </div>
   );
 }
-
-// ── Reusable sub-components ──
 
 function BackButton({ onClick }: { onClick: () => void }) {
   return (
@@ -367,19 +507,11 @@ function SectionHeader({ icon: Icon, title, desc }: { icon: any; title: string; 
 
 function SaveButton({ onClick, loading, saved }: { onClick: () => void; loading: boolean; saved: boolean }) {
   return (
-    <button
-      onClick={onClick}
-      disabled={loading}
+    <button onClick={onClick} disabled={loading}
       className={`w-full py-3 rounded-xl font-black uppercase tracking-widest text-sm flex items-center justify-center gap-2 transition ${
         saved ? 'bg-green-500 text-white' : 'bg-[#FA5600] text-white hover:bg-[#E04A00]'
       } disabled:opacity-60`}>
-      {saved ? (
-        <><Check className="w-4 h-4" /> Saved!</>
-      ) : loading ? (
-        'Saving...'
-      ) : (
-        <><Save className="w-4 h-4" /> Save Changes</>
-      )}
+      {saved ? <><Check className="w-4 h-4" /> Saved!</> : loading ? 'Saving...' : <><Save className="w-4 h-4" /> Save Changes</>}
     </button>
   );
 }
