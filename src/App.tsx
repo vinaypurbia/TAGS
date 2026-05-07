@@ -14,6 +14,7 @@ import { ManageCategories } from './pages/ManageCategories';
 import { Contact } from './pages/Contact';
 import AddProductForm from './components/AddProductForm';
 import EditProductForm from './pages/EditProductForm';
+import AdminPanel from './pages/AdminPanel';
 
 export default function App() {
   return (
@@ -29,6 +30,7 @@ export default function App() {
             <Route path="/add-product" element={<AddProductForm />} />
             <Route path="/manage-categories" element={<ManageCategories />} />
             <Route path="/contact" element={<Contact />} />
+            <Route path="/admin" element={<AdminPanel />} />
             <Route path="*" element={<Home />} />
           </Routes>
         </Layout>
