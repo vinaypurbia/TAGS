@@ -4,7 +4,8 @@ import { useEffect, useState } from 'react';
 
 export function Home() {
   const [categories, setCategories] = useState<{ _id: string; name: string; image?: string }[]>([]);
-  const [settings, setSettings] = useState<{ promoText?: string; bannerImage?: string; bannerText?: string } | null>(null);
+  const [settings, setSettings] = useState<{ promoText?: string; bannerImage?: string; bannerText?: string; bannerSlides?: {image:string;text:string}[] } | null>(null);
+  const [currentBanner, setCurrentBanner] = useState(0);
 
   useEffect(() => {
     fetch('/api/categories')
@@ -25,6 +26,15 @@ export function Home() {
       .catch(() => {});
   }, []);
 
+  // Auto-rotate banners
+  const activeBanners = (settings?.bannerSlides || []).filter(s => s.image);
+  useEffect(() => {
+    if (activeBanners.length <= 1) return;
+    const timer = setInterval(() => setCurrentBanner(p => (p + 1) % activeBanners.length), 5000);
+    return () => clearInterval(timer);
+  }, [activeBanners.length]);
+
+  const currentSlide = activeBanners[currentBanner];
   const defaultImages: Record<string, string> = {
     'Electronics': 'https://images.unsplash.com/photo-1596461404969-9ae70f2830c1?auto=format&fit=crop&q=80&w=800',
     'Automotive': 'https://images.unsplash.com/photo-1504280390224-340788ee5c60?auto=format&fit=crop&q=80&w=800',
@@ -45,8 +55,8 @@ export function Home() {
       <section
         className="relative overflow-hidden border-b-4 border-[#FA5600] min-h-[400px] lg:min-h-[500px] flex items-center"
         style={{
-          background: settings?.bannerImage
-            ? `url(${settings.bannerImage}) center/cover no-repeat`
+          background: (currentSlide?.image || settings?.bannerImage)
+            ? `url(${currentSlide?.image || settings?.bannerImage}) center/cover no-repeat`
             : 'linear-gradient(135deg, #1A1A1A 0%, #2d2d2d 100%)'
         }}
       >
@@ -58,9 +68,9 @@ export function Home() {
             <MessageCircle className="w-4 h-4" /> Order Directly via WhatsApp
           </Link>
 
-          {settings?.bannerText ? (
+          {(currentSlide?.text || settings?.bannerText) ? (
             <div className="text-4xl md:text-6xl font-black text-white tracking-tighter leading-tight uppercase mb-6 max-w-3xl">
-              {settings.bannerText}
+              {currentSlide?.text || settings?.bannerText}
             </div>
           ) : (
             <h1 className="text-5xl md:text-7xl font-black text-white tracking-tighter leading-none uppercase mb-6">
@@ -84,6 +94,16 @@ export function Home() {
               <MessageCircle className="w-5 h-5" /> Chat with Us
             </a>
           </div>
+
+          {/* Banner dots */}
+          {activeBanners.length > 1 && (
+            <div className="flex gap-2 mt-6">
+              {activeBanners.map((_, i) => (
+                <button key={i} onClick={() => setCurrentBanner(i)}
+                  className={`w-2 h-2 rounded-full transition-all ${i === currentBanner ? 'bg-[#FA5600] w-6' : 'bg-white/40'}`} />
+              ))}
+            </div>
+          )}
         </div>
       </section>
 
