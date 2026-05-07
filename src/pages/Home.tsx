@@ -10,6 +10,7 @@ export function Home() {
     bannerText?: string;
     bannerSlides?: { image: string; text: string; description: string }[];
   } | null>(null);
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [currentBanner, setCurrentBanner] = useState(0);
 
   useEffect(() => {
@@ -30,13 +31,12 @@ export function Home() {
     fetch('/api/banner')
       .then(res => res.json())
       .then(data => { if (data && !data.error) setSettings(data); })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setSettingsLoaded(true));
   }, []);
 
-  // Only use slides that have an image
   const activeBanners = (settings?.bannerSlides || []).filter(s => s.image);
 
-  // Auto-rotate every 5 seconds
   useEffect(() => {
     if (activeBanners.length <= 1) return;
     const timer = setInterval(() => setCurrentBanner(p => (p + 1) % activeBanners.length), 5000);
@@ -44,8 +44,6 @@ export function Home() {
   }, [activeBanners.length]);
 
   const currentSlide = activeBanners[currentBanner];
-
-  // Fallback values when no slides configured
   const bannerBg = currentSlide?.image || settings?.bannerImage;
   const bannerHeading = currentSlide?.text || settings?.bannerText;
   const bannerDescription = currentSlide?.description;
@@ -69,34 +67,42 @@ export function Home() {
       {/* ===== DYNAMIC HERO BANNER CAROUSEL ===== */}
       <section className="relative overflow-hidden border-b-4 border-[#FA5600] min-h-[400px] lg:min-h-[500px] flex items-center">
 
-        {/* Slide backgrounds — stacked, fade between them */}
-        {activeBanners.length > 0 ? (
-          activeBanners.map((slide, i) => (
-            <div
-              key={i}
-              className="absolute inset-0 transition-opacity duration-1000"
-              style={{
-                opacity: i === currentBanner ? 1 : 0,
-                background: `url(${slide.image}) center/cover no-repeat`,
-              }}
-            />
-          ))
-        ) : (
-          <div
-            className="absolute inset-0"
-            style={{
-              background: bannerBg
-                ? `url(${bannerBg}) center/cover no-repeat`
-                : 'linear-gradient(135deg, #1A1A1A 0%, #2d2d2d 100%)',
-            }}
-          />
+        {/* ✅ Loading spinner — shown while API is in flight */}
+        {!settingsLoaded && (
+          <div className="absolute inset-0 bg-[#1A1A1A] flex items-center justify-center">
+            <div className="w-10 h-10 border-4 border-white/20 border-t-[#FA5600] rounded-full animate-spin" />
+          </div>
         )}
 
-        {/* Dark overlay */}
-        <div className="absolute inset-0 bg-black/50" />
+        {/* Slide backgrounds — only rendered once loaded */}
+        {settingsLoaded && (
+          activeBanners.length > 0 ? (
+            activeBanners.map((slide, i) => (
+              <div
+                key={i}
+                className="absolute inset-0 transition-opacity duration-1000"
+                style={{
+                  opacity: i === currentBanner ? 1 : 0,
+                  background: `url(${slide.image}) center/cover no-repeat`,
+                }}
+              />
+            ))
+          ) : (
+            <div
+              className="absolute inset-0"
+              style={{
+                background: bannerBg
+                  ? `url(${bannerBg}) center/cover no-repeat`
+                  : 'linear-gradient(135deg, #1A1A1A 0%, #2d2d2d 100%)',
+              }}
+            />
+          )
+        )}
+
+        {settingsLoaded && <div className="absolute inset-0 bg-black/50" />}
 
         {/* Content */}
-        <div className="relative z-10 w-full max-w-5xl mx-auto px-8 py-20 lg:py-28 text-center flex flex-col items-center">
+        <div className={`relative z-10 w-full max-w-5xl mx-auto px-8 py-20 lg:py-28 text-center flex flex-col items-center transition-opacity duration-500 ${settingsLoaded ? 'opacity-100' : 'opacity-0'}`}>
 
           <Link
             to="/products"
@@ -104,7 +110,6 @@ export function Home() {
             <MessageCircle className="w-4 h-4" /> Order Directly via WhatsApp
           </Link>
 
-          {/* ✅ Dynamic heading — from admin "Overlay Heading" field */}
           {bannerHeading ? (
             <div className="text-4xl md:text-6xl font-black text-white tracking-tighter leading-tight uppercase mb-6 max-w-3xl transition-all duration-700">
               {bannerHeading}
@@ -117,7 +122,6 @@ export function Home() {
             </h1>
           )}
 
-          {/* ✅ Dynamic description — from admin "Description Text" field */}
           <p className="text-sm md:text-base font-bold text-white/70 max-w-2xl mx-auto mb-10 uppercase tracking-wide transition-all duration-700">
             {bannerDescription ||
               'Discover great toys, Adventure gear, gadgets, sports items — Browse our curated collection and send your order directly via WhatsApp!'}
@@ -134,7 +138,6 @@ export function Home() {
             </a>
           </div>
 
-          {/* Dot navigation */}
           {activeBanners.length > 1 && (
             <div className="flex gap-2 mt-8">
               {activeBanners.map((_, i) => (
