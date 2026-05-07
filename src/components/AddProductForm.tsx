@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 const ADMIN_PASSWORD = import.meta.env.VITE_ADMIN_PASSWORD ?? '';
+const SESSION_KEY = 'adminAuth';
 
 const AddProductForm = () => {
   const navigate = useNavigate();
@@ -38,6 +39,13 @@ const AddProductForm = () => {
     useRef<HTMLInputElement>(null),
   ];
 
+  // Auto-authenticate if already logged in via Admin Panel
+  useEffect(() => {
+    if (sessionStorage.getItem(SESSION_KEY) === 'true') {
+      setIsAuthenticated(true);
+    }
+  }, []);
+
   useEffect(() => {
     fetch('/api/categories')
       .then(res => res.json())
@@ -72,6 +80,7 @@ const AddProductForm = () => {
 
   const handlePasswordSubmit = () => {
     if (passwordInput === ADMIN_PASSWORD) {
+      sessionStorage.setItem(SESSION_KEY, 'true');
       setIsAuthenticated(true);
       setPasswordError('');
     } else {
@@ -231,8 +240,7 @@ const AddProductForm = () => {
             className="w-full border border-gray-300 rounded-lg p-3 text-center text-lg focus:ring-2 focus:ring-green-500 outline-none mb-3"
           />
           {passwordError && <p className="text-red-500 text-sm text-center mb-3">{passwordError}</p>}
-          <button
-            onClick={handlePasswordSubmit}
+          <button onClick={handlePasswordSubmit}
             className="w-full bg-green-600 text-white font-bold py-3 rounded-lg hover:bg-green-700 transition duration-300">
             Enter
           </button>
@@ -250,20 +258,21 @@ const AddProductForm = () => {
           <h2 className="text-2xl font-bold text-gray-900 mb-2">Product Added!</h2>
           <p className="text-sm text-gray-500 mb-8">What would you like to do next?</p>
           <div className="flex flex-col gap-3">
-            <button
-              onClick={() => navigate(`/products/${newProductId}/edit`)}
+            <button onClick={() => navigate(`/products/${newProductId}/edit`)}
               className="w-full bg-blue-600 text-white font-bold py-3 rounded-lg hover:bg-blue-700 transition">
               ✏️ Edit this Product
             </button>
-            <button
-              onClick={() => navigate(`/products/${newProductId}`)}
+            <button onClick={() => navigate(`/products/${newProductId}`)}
               className="w-full bg-gray-800 text-white font-bold py-3 rounded-lg hover:bg-gray-900 transition">
               👁️ View Product Page
             </button>
-            <button
-              onClick={handleAddAnother}
+            <button onClick={handleAddAnother}
               className="w-full bg-green-600 text-white font-bold py-3 rounded-lg hover:bg-green-700 transition">
               ➕ Add Another Product
+            </button>
+            <button onClick={() => navigate('/admin')}
+              className="w-full bg-[#FA5600] text-white font-bold py-3 rounded-lg hover:bg-[#E04A00] transition">
+              ← Back to Admin Panel
             </button>
           </div>
         </div>
@@ -276,12 +285,19 @@ const AddProductForm = () => {
     <div className="max-w-3xl mx-auto p-8 bg-white shadow-xl rounded-xl mt-10 mb-10 border border-gray-100">
       <div className="flex justify-between items-center border-b pb-4 mb-8">
         <h2 className="text-3xl font-bold text-gray-900">Add & Edit Products</h2>
-        <button onClick={() => setIsAuthenticated(false)} className="text-sm text-gray-400 hover:text-red-500 transition">
-          🔓 Lock
-        </button>
+        <div className="flex gap-3">
+          <button onClick={() => navigate('/admin')}
+            className="text-sm text-[#FA5600] hover:text-[#E04A00] font-bold transition">
+            ← Admin Panel
+          </button>
+          <button onClick={() => { sessionStorage.removeItem(SESSION_KEY); setIsAuthenticated(false); }}
+            className="text-sm text-gray-400 hover:text-red-500 transition">
+            🔓 Lock
+          </button>
+        </div>
       </div>
 
-      {/* ── EDIT EXISTING PRODUCT SECTION ── */}
+      {/* EDIT EXISTING PRODUCT SECTION */}
       <div className="mb-10">
         <h3 className="text-lg font-bold text-gray-800 mb-1">Edit an Existing Product</h3>
         <p className="text-sm text-gray-400 mb-3">Search by name or category and click to edit.</p>
@@ -299,11 +315,9 @@ const AddProductForm = () => {
             ) : (
               filteredProducts.map(p => {
                 const pid = p._id?.toString() || p.id;
-                const img = p.imageUrls?.[0] || p.imageUrl || null;
+                const img = p.imageUrls?.[0] || p.imageUrl || p.image || null;
                 return (
-                  <button
-                    key={pid}
-                    onClick={() => navigate(`/products/${pid}/edit`)}
+                  <button key={pid} onClick={() => navigate(`/products/${pid}/edit`)}
                     className="w-full flex items-center gap-3 px-4 py-3 hover:bg-blue-50 transition text-left">
                     {img ? (
                       <img src={img} alt={p.name} className="w-10 h-10 rounded-lg object-cover border border-gray-200 shrink-0" />
@@ -323,29 +337,24 @@ const AddProductForm = () => {
         )}
       </div>
 
-      {/* ── DIVIDER ── */}
+      {/* DIVIDER */}
       <div className="relative mb-10">
         <div className="absolute inset-0 flex items-center">
           <div className="w-full border-t border-gray-200" />
         </div>
         <div className="relative flex justify-center">
-          <span className="bg-white px-4 text-sm font-bold text-gray-400 uppercase tracking-widest">
-            Or Add a New Product
-          </span>
+          <span className="bg-white px-4 text-sm font-bold text-gray-400 uppercase tracking-widest">Or Add a New Product</span>
         </div>
       </div>
 
-      {/* ── ADD NEW PRODUCT FORM ── */}
+      {/* ADD NEW PRODUCT FORM */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-
-        {/* Name */}
         <div className="md:col-span-2">
           <label className="block text-sm font-semibold text-gray-700">Product Name *</label>
           <input type="text" name="name" value={formData.name} onChange={handleChange}
             className="mt-1 block w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 outline-none" />
         </div>
 
-        {/* Category */}
         <div>
           <label className="block text-sm font-semibold text-gray-700">Category *</label>
           <select name="category" value={formData.category} onChange={handleChange}
@@ -357,7 +366,6 @@ const AddProductForm = () => {
           </select>
         </div>
 
-        {/* Subcategory */}
         <div>
           <label className="block text-sm font-semibold text-gray-700">
             Subcategory <span className="text-gray-400 font-normal">(Optional)</span>
@@ -372,14 +380,12 @@ const AddProductForm = () => {
           </select>
         </div>
 
-        {/* Original Price */}
         <div>
           <label className="block text-sm font-semibold text-gray-700">Original Price *</label>
           <input type="number" name="originalPrice" value={formData.originalPrice} onChange={handleChange}
             className="mt-1 block w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 outline-none" />
         </div>
 
-        {/* Discounted Price */}
         <div>
           <label className="block text-sm font-semibold text-gray-700">
             Discounted Price <span className="text-gray-400 font-normal">(Optional)</span>
@@ -388,14 +394,12 @@ const AddProductForm = () => {
             className="mt-1 block w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 outline-none" />
         </div>
 
-        {/* Description */}
         <div className="md:col-span-2">
           <label className="block text-sm font-semibold text-gray-700">Description</label>
           <textarea name="description" value={formData.description} onChange={handleChange} rows={4}
             className="mt-1 block w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 outline-none" />
         </div>
 
-        {/* 3 Image Slots */}
         <div className="md:col-span-2">
           <label className="block text-sm font-semibold text-gray-700 mb-2">
             Product Images <span className="text-gray-400 font-normal">(Optional — up to 3, PNG/JPG/WEBP)</span>
@@ -403,18 +407,13 @@ const AddProductForm = () => {
           <div className="grid grid-cols-3 gap-4">
             {[0, 1, 2].map((index) => (
               <div key={index}>
-                <div
-                  onClick={() => imageInputRefs[index].current?.click()}
+                <div onClick={() => imageInputRefs[index].current?.click()}
                   className="cursor-pointer border-2 border-dashed border-gray-300 rounded-lg p-3 text-center hover:border-blue-400 hover:bg-blue-50 transition aspect-square flex items-center justify-center relative overflow-hidden">
                   {imagePreviews[index] ? (
                     <>
-                      <img src={imagePreviews[index]!} alt={`Preview ${index + 1}`}
-                        className="w-full h-full object-cover rounded-lg" />
-                      <button
-                        onClick={(e) => { e.stopPropagation(); handleRemoveImage(index); }}
-                        className="absolute top-1 right-1 bg-red-500 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs font-bold shadow hover:bg-red-600">
-                        ✕
-                      </button>
+                      <img src={imagePreviews[index]!} alt={`Preview ${index + 1}`} className="w-full h-full object-cover rounded-lg" />
+                      <button onClick={(e) => { e.stopPropagation(); handleRemoveImage(index); }}
+                        className="absolute top-1 right-1 bg-red-500 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs font-bold shadow hover:bg-red-600">✕</button>
                     </>
                   ) : (
                     <div>
@@ -424,31 +423,23 @@ const AddProductForm = () => {
                     </div>
                   )}
                 </div>
-                <input
-                  ref={imageInputRefs[index]}
-                  type="file"
-                  accept="image/png, image/jpeg, image/webp"
-                  onChange={(e) => handleImageChange(index, e)}
-                  className="hidden"
-                />
+                <input ref={imageInputRefs[index]} type="file" accept="image/png, image/jpeg, image/webp"
+                  onChange={(e) => handleImageChange(index, e)} className="hidden" />
               </div>
             ))}
           </div>
           <p className="text-xs text-gray-400 mt-2">⭐ Image 1 is the main display image</p>
         </div>
 
-        {/* Video URL */}
         <div className="md:col-span-2">
           <label className="block text-sm font-semibold text-gray-700 mb-1">
             Product Video URL <span className="text-gray-400 font-normal">(Optional)</span>
           </label>
           <div className="flex gap-2">
             <div className="relative flex-1">
-              <input
-                type="url" name="videoUrl" value={formData.videoUrl} onChange={handleChange}
+              <input type="url" name="videoUrl" value={formData.videoUrl} onChange={handleChange}
                 placeholder="Paste a YouTube, Facebook, Instagram or TikTok link..."
-                className={`block w-full border rounded-lg p-3 pr-32 focus:ring-2 focus:ring-blue-500 outline-none ${videoUrlError ? 'border-red-400' : 'border-gray-300'}`}
-              />
+                className={`block w-full border rounded-lg p-3 pr-32 focus:ring-2 focus:ring-blue-500 outline-none ${videoUrlError ? 'border-red-400' : 'border-gray-300'}`} />
               {detectedPlatform && (
                 <span className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-1 bg-gray-100 text-gray-600 text-xs font-medium px-2 py-1 rounded-full pointer-events-none">
                   {detectedPlatform.icon} {detectedPlatform.label}
@@ -482,14 +473,12 @@ const AddProductForm = () => {
           )}
         </div>
 
-        {/* Submit */}
         <div className="md:col-span-2">
           <button onClick={handleSubmit} disabled={uploading}
             className="w-full bg-green-600 text-white font-bold py-4 rounded-lg hover:bg-green-700 transition duration-300 shadow-lg disabled:opacity-60 disabled:cursor-not-allowed">
             {uploading ? '⏳ Uploading images & saving...' : 'Add Product to Database'}
           </button>
         </div>
-
       </div>
     </div>
   );
