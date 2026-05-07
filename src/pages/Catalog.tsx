@@ -7,6 +7,7 @@ import { cn } from '../lib/utils';
 export function Catalog() {
   const [searchParams, setSearchParams] = useSearchParams();
   const categoryFilter = searchParams.get('category');
+  const searchQuery = searchParams.get('search') || '';
   const { items, addItem } = useCart();
   const [addedIds, setAddedIds] = useState<Set<string>>(new Set());
   const [products, setProducts] = useState<any[]>([]);
@@ -21,7 +22,7 @@ export function Catalog() {
         if (Array.isArray(data)) {
           const mainCats = data
             .filter((c: any) => !c.parentId && c.name)
-            .sort((a: any, b: any) => new Date(a.createdAt||0).getTime() - new Date(b.createdAt||0).getTime())
+            .sort((a: any, b: any) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime())
             .map((c: any) => c.name);
           setCategories(mainCats);
         }
@@ -35,7 +36,7 @@ export function Catalog() {
         const res = await fetch('/api/products');
         const data = await res.json();
         setProducts(Array.isArray(data) ? data : []);
-      } catch (err) {
+      } catch {
         setError('Failed to load products. Please refresh.');
       } finally {
         setLoading(false);
@@ -44,10 +45,26 @@ export function Catalog() {
     fetchProducts();
   }, []);
 
+  // Filter by category AND search query
   const filteredProducts = useMemo(() => {
-    if (!categoryFilter) return products;
-    return products.filter(p => p.category === categoryFilter);
-  }, [categoryFilter, products]);
+    let result = products;
+
+    if (categoryFilter) {
+      result = result.filter(p => p.category === categoryFilter);
+    }
+
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase().trim();
+      result = result.filter(p =>
+        p.name?.toLowerCase().includes(q) ||
+        p.description?.toLowerCase().includes(q) ||
+        p.category?.toLowerCase().includes(q) ||
+        p.subCategory?.toLowerCase().includes(q)
+      );
+    }
+
+    return result;
+  }, [categoryFilter, searchQuery, products]);
 
   const handleCategoryClick = (cat: string | null) => {
     if (cat) setSearchParams({ category: cat });
@@ -76,6 +93,12 @@ export function Catalog() {
     const num = parseFloat(val);
     return isNaN(num) ? '0.00' : num.toFixed(2);
   };
+
+  const pageTitle = searchQuery
+    ? `Search: "${searchQuery}"`
+    : categoryFilter
+    ? categoryFilter
+    : 'All Products';
 
   return (
     <div className="p-4 md:p-8">
@@ -117,10 +140,24 @@ export function Catalog() {
         <div className="flex-1">
           <div className="flex justify-between items-end mb-6">
             <h1 className="text-3xl md:text-4xl font-black text-gray-900 tracking-tighter leading-none">
-              {categoryFilter ? categoryFilter : 'All Products'}
+              {pageTitle}
             </h1>
             <span className="text-gray-400 font-bold text-xs tracking-widest">{filteredProducts.length} items</span>
           </div>
+
+          {/* Search result notice */}
+          {searchQuery && (
+            <div className="mb-4 flex items-center gap-3">
+              <p className="text-sm text-gray-500">
+                Showing <span className="font-bold text-gray-900">{filteredProducts.length}</span> results for <span className="font-bold text-[#FA5600]">"{searchQuery}"</span>
+              </p>
+              <button
+                onClick={() => setSearchParams({})}
+                className="text-xs text-gray-400 hover:text-red-500 border border-gray-200 px-2 py-1 rounded-full transition-colors">
+                ✕ Clear search
+              </button>
+            </div>
+          )}
 
           {loading ? (
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
@@ -138,8 +175,13 @@ export function Catalog() {
             </div>
           ) : filteredProducts.length === 0 ? (
             <div className="text-center p-12 bg-white rounded-xl border border-gray-200">
-              <div className="text-5xl mb-4">📦</div>
-              <p className="text-gray-500 font-bold uppercase tracking-widest text-sm">No products found</p>
+              <div className="text-5xl mb-4">🔍</div>
+              <p className="text-gray-500 font-bold uppercase tracking-widest text-sm mb-2">No products found</p>
+              {searchQuery && (
+                <button onClick={() => setSearchParams({})} className="text-[#FA5600] font-bold text-sm hover:underline">
+                  Clear search and view all products
+                </button>
+              )}
             </div>
           ) : (
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
@@ -157,22 +199,16 @@ export function Catalog() {
                     <Link to={`/products/${id}`} className="block relative">
                       <div className="aspect-square bg-gray-50 flex items-center justify-center overflow-hidden">
                         {product.image ? (
-                          <img
-                            src={product.image}
-                            alt={product.name}
-                            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                          />
+                          <img src={product.image} alt={product.name} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
                         ) : (
                           <div className="text-5xl text-gray-200">📦</div>
                         )}
                       </div>
-                      {/* Discount badge */}
                       {hasDiscount && discountPct > 0 && (
                         <div className="absolute top-2 left-2 bg-[#E53935] text-white text-[9px] font-black px-2 py-0.5 rounded">
                           -{discountPct}%
                         </div>
                       )}
-                      {/* Category badge */}
                       <div className="absolute top-2 right-2 bg-black/60 text-white text-[8px] font-bold px-2 py-0.5 rounded-full">
                         {product.category}
                       </div>
@@ -186,26 +222,20 @@ export function Catalog() {
 
                       <div className="mt-auto">
                         <div className="flex items-baseline gap-1 mb-2">
-                          {/* FIX: was ₹$ (bug), now correctly ₹ only */}
                           <span className="text-lg font-black text-[#E53935]">₹{formatPrice(displayPrice)}</span>
                           {hasDiscount && (
                             <span className="text-xs text-gray-400 line-through">₹{formatPrice(originalPrice)}</span>
                           )}
                         </div>
-
                         <button
                           onClick={(e) => handleAddItem(e, { ...product, id })}
                           disabled={isRecentlyAdded}
                           className={cn(
                             "w-full py-2 rounded-full text-xs font-bold uppercase tracking-widest transition-all",
-                            isRecentlyAdded
-                              ? "bg-green-500 text-white"
-                              : "bg-[#FA5600] text-white hover:bg-[#E04A00]"
+                            isRecentlyAdded ? "bg-green-500 text-white" : "bg-[#FA5600] text-white hover:bg-[#E04A00]"
                           )}>
                           {isRecentlyAdded ? (
-                            <span className="flex items-center justify-center gap-1">
-                              <Check className="w-3 h-3" /> Added
-                            </span>
+                            <span className="flex items-center justify-center gap-1"><Check className="w-3 h-3" /> Added</span>
                           ) : (
                             <span>+ Add {quantityInCart > 0 && `(${quantityInCart})`}</span>
                           )}
