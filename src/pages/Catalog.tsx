@@ -31,28 +31,17 @@ export function Catalog() {
   }, []);
 
   useEffect(() => {
-    const fetchProducts = async () => {
-      try {
-        const res = await fetch('/api/products');
-        const data = await res.json();
-        setProducts(Array.isArray(data) ? data : []);
-      } catch {
-        setError('Failed to load products. Please refresh.');
-      } finally {
-        setLoading(false);
-      }
-    };
-    fetchProducts();
+    // Fetch products with stock info
+    fetch('/api/products?withStock=true')
+      .then(res => res.json())
+      .then(data => setProducts(Array.isArray(data) ? data : []))
+      .catch(() => setError('Failed to load products. Please refresh.'))
+      .finally(() => setLoading(false));
   }, []);
 
-  // Filter by category AND search query
   const filteredProducts = useMemo(() => {
     let result = products;
-
-    if (categoryFilter) {
-      result = result.filter(p => p.category === categoryFilter);
-    }
-
+    if (categoryFilter) result = result.filter(p => p.category === categoryFilter);
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase().trim();
       result = result.filter(p =>
@@ -62,7 +51,6 @@ export function Catalog() {
         p.subCategory?.toLowerCase().includes(q)
       );
     }
-
     return result;
   }, [categoryFilter, searchQuery, products]);
 
@@ -74,6 +62,8 @@ export function Catalog() {
   const handleAddItem = (e: React.MouseEvent, product: any) => {
     e.preventDefault();
     e.stopPropagation();
+    // Don't add if out of stock
+    if (product.stock?.trackInventory && !product.stock?.isInStock) return;
     addItem(product);
     setAddedIds(prev => new Set(prev).add(product._id));
     setTimeout(() => {
@@ -110,23 +100,17 @@ export function Catalog() {
             <h3 className="text-xs font-black uppercase tracking-widest mb-3 border-b border-gray-200 pb-2 text-gray-500">Categories</h3>
             <ul className="flex flex-row lg:flex-col gap-2 overflow-x-auto no-scrollbar pb-2 lg:pb-0">
               <li>
-                <button
-                  onClick={() => handleCategoryClick(null)}
-                  className={cn(
-                    "w-full text-left px-3 py-2 rounded-lg font-bold text-xs tracking-widest whitespace-nowrap transition-colors",
-                    !categoryFilter ? "bg-[#FA5600] text-white" : "bg-gray-100 text-gray-700 hover:bg-orange-50 hover:text-[#FA5600]"
-                  )}>
+                <button onClick={() => handleCategoryClick(null)}
+                  className={cn("w-full text-left px-3 py-2 rounded-lg font-bold text-xs tracking-widest whitespace-nowrap transition-colors",
+                    !categoryFilter ? "bg-[#FA5600] text-white" : "bg-gray-100 text-gray-700 hover:bg-orange-50 hover:text-[#FA5600]")}>
                   All Products
                 </button>
               </li>
               {categories.map(cat => (
                 <li key={cat}>
-                  <button
-                    onClick={() => handleCategoryClick(cat)}
-                    className={cn(
-                      "w-full text-left px-3 py-2 rounded-lg font-bold text-xs tracking-widest whitespace-nowrap transition-colors flex justify-between items-center",
-                      categoryFilter === cat ? "bg-[#FA5600] text-white" : "bg-gray-100 text-gray-700 hover:bg-orange-50 hover:text-[#FA5600]"
-                    )}>
+                  <button onClick={() => handleCategoryClick(cat)}
+                    className={cn("w-full text-left px-3 py-2 rounded-lg font-bold text-xs tracking-widest whitespace-nowrap transition-colors flex justify-between items-center",
+                      categoryFilter === cat ? "bg-[#FA5600] text-white" : "bg-gray-100 text-gray-700 hover:bg-orange-50 hover:text-[#FA5600]")}>
                     {cat}
                     {categoryFilter === cat && <ChevronRight className="w-3 h-3" />}
                   </button>
@@ -139,22 +123,19 @@ export function Catalog() {
         {/* Product Grid */}
         <div className="flex-1">
           <div className="flex justify-between items-end mb-6">
-            <h1 className="text-3xl md:text-4xl font-black text-gray-900 tracking-tighter leading-none">
-              {pageTitle}
-            </h1>
+            <h1 className="text-3xl md:text-4xl font-black text-gray-900 tracking-tighter leading-none">{pageTitle}</h1>
             <span className="text-gray-400 font-bold text-xs tracking-widest">{filteredProducts.length} items</span>
           </div>
 
-          {/* Search result notice */}
+          {/* Search notice */}
           {searchQuery && (
             <div className="mb-4 flex items-center gap-3">
               <p className="text-sm text-gray-500">
                 Showing <span className="font-bold text-gray-900">{filteredProducts.length}</span> results for <span className="font-bold text-[#FA5600]">"{searchQuery}"</span>
               </p>
-              <button
-                onClick={() => setSearchParams({})}
+              <button onClick={() => setSearchParams({})}
                 className="text-xs text-gray-400 hover:text-red-500 border border-gray-200 px-2 py-1 rounded-full transition-colors">
-                ✕ Clear search
+                ✕ Clear
               </button>
             </div>
           )}
@@ -194,21 +175,47 @@ export function Catalog() {
                 const originalPrice = parseFloat(product.originalPrice || product.price || 0);
                 const discountPct = hasDiscount ? Math.round((1 - displayPrice / originalPrice) * 100) : 0;
 
+                // Stock status
+                const isTracked = product.stock?.trackInventory;
+                const isOutOfStock = isTracked && !product.stock?.isInStock;
+                const isLowStock = product.stock?.isLowStock;
+                const availableStock = product.stock?.availableStock;
+
                 return (
-                  <div key={id} className="bg-white rounded-xl shadow-sm hover:shadow-md transition-shadow duration-200 overflow-hidden group flex flex-col">
+                  <div key={id} className={`bg-white rounded-xl shadow-sm hover:shadow-md transition-shadow duration-200 overflow-hidden group flex flex-col ${isOutOfStock ? 'opacity-80' : ''}`}>
                     <Link to={`/products/${id}`} className="block relative">
-                      <div className="aspect-square bg-gray-50 flex items-center justify-center overflow-hidden">
+                      <div className="aspect-square bg-gray-50 flex items-center justify-center overflow-hidden relative">
                         {product.image ? (
-                          <img src={product.image} alt={product.name} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
+                          <img src={product.image} alt={product.name}
+                            className={`w-full h-full object-cover group-hover:scale-105 transition-transform duration-300 ${isOutOfStock ? 'grayscale' : ''}`} />
                         ) : (
                           <div className="text-5xl text-gray-200">📦</div>
                         )}
+
+                        {/* Out of stock overlay */}
+                        {isOutOfStock && (
+                          <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
+                            <span className="bg-white text-gray-900 text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded-full shadow">
+                              Out of Stock
+                            </span>
+                          </div>
+                        )}
                       </div>
-                      {hasDiscount && discountPct > 0 && (
-                        <div className="absolute top-2 left-2 bg-[#E53935] text-white text-[9px] font-black px-2 py-0.5 rounded">
-                          -{discountPct}%
-                        </div>
-                      )}
+
+                      {/* Badges */}
+                      <div className="absolute top-2 left-2 flex flex-col gap-1">
+                        {hasDiscount && discountPct > 0 && !isOutOfStock && (
+                          <div className="bg-[#E53935] text-white text-[9px] font-black px-2 py-0.5 rounded">
+                            -{discountPct}%
+                          </div>
+                        )}
+                        {isLowStock && !isOutOfStock && (
+                          <div className="bg-yellow-400 text-yellow-900 text-[9px] font-black px-2 py-0.5 rounded">
+                            Only {availableStock} left!
+                          </div>
+                        )}
+                      </div>
+
                       <div className="absolute top-2 right-2 bg-black/60 text-white text-[8px] font-bold px-2 py-0.5 rounded-full">
                         {product.category}
                       </div>
@@ -227,14 +234,19 @@ export function Catalog() {
                             <span className="text-xs text-gray-400 line-through">₹{formatPrice(originalPrice)}</span>
                           )}
                         </div>
+
                         <button
                           onClick={(e) => handleAddItem(e, { ...product, id })}
-                          disabled={isRecentlyAdded}
+                          disabled={isRecentlyAdded || isOutOfStock}
                           className={cn(
                             "w-full py-2 rounded-full text-xs font-bold uppercase tracking-widest transition-all",
-                            isRecentlyAdded ? "bg-green-500 text-white" : "bg-[#FA5600] text-white hover:bg-[#E04A00]"
+                            isOutOfStock
+                              ? "bg-gray-200 text-gray-400 cursor-not-allowed"
+                              : isRecentlyAdded
+                              ? "bg-green-500 text-white"
+                              : "bg-[#FA5600] text-white hover:bg-[#E04A00]"
                           )}>
-                          {isRecentlyAdded ? (
+                          {isOutOfStock ? 'Out of Stock' : isRecentlyAdded ? (
                             <span className="flex items-center justify-center gap-1"><Check className="w-3 h-3" /> Added</span>
                           ) : (
                             <span>+ Add {quantityInCart > 0 && `(${quantityInCart})`}</span>
