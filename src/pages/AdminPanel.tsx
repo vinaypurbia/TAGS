@@ -1,18 +1,18 @@
 import { useState, useEffect, useRef } from 'react';
 import { AddProductFormEmbed } from './AddProductFormEmbed';
 import { ManageCategoriesEmbed } from './ManageCategoriesEmbed';
+import { InventoryEmbed } from './InventoryEmbed';
 import { useNavigate } from 'react-router-dom';
 import {
   Lock, LogOut, Megaphone, Image, Tag, Package, FolderTree,
-  ChevronRight, Save, Check, Plus, Trash2, Eye, Upload
+  ChevronRight, Save, Check, Plus, Trash2, Eye, Upload, BarChart2
 } from 'lucide-react';
 
 const ADMIN_PASSWORD = import.meta.env.VITE_ADMIN_PASSWORD ?? '';
 const SESSION_KEY = 'adminAuth';
 
-type Section = 'home' | 'promo' | 'banner' | 'category-images' | 'products' | 'categories';
+type Section = 'home' | 'promo' | 'banner' | 'category-images' | 'products' | 'categories' | 'inventory';
 
-// ✅ Added description field to BannerSlide
 interface BannerSlide { image: string; text: string; description: string; }
 interface PromoLine { text: string; }
 
@@ -23,7 +23,6 @@ export function AdminPanel() {
   const [passwordError, setPasswordError] = useState('');
   const [activeSection, setActiveSection] = useState<Section>('home');
 
-  // Promo lines (up to 5)
   const [promoLines, setPromoLines] = useState<PromoLine[]>([
     { text: '🔥 TAGS · Free Shipping on Orders Over ₹999 · Up to 90% Off Today!' },
     { text: '' }, { text: '' }, { text: '' }, { text: '' },
@@ -31,7 +30,6 @@ export function AdminPanel() {
   const [promoSaved, setPromoSaved] = useState(false);
   const [promoLoading, setPromoLoading] = useState(false);
 
-  // Banner slides (up to 5) — now with description
   const [bannerSlides, setBannerSlides] = useState<BannerSlide[]>([
     { image: '', text: '', description: '' },
     { image: '', text: '', description: '' },
@@ -50,7 +48,6 @@ export function AdminPanel() {
     useRef<HTMLInputElement>(null),
   ];
 
-  // Category images
   const [categories, setCategories] = useState<any[]>([]);
   const [catSaving, setCatSaving] = useState<string | null>(null);
   const [catSaved, setCatSaved] = useState<string | null>(null);
@@ -58,12 +55,10 @@ export function AdminPanel() {
   const [catImages, setCatImages] = useState<Record<string, string>>({});
   const catRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
-  // Check sessionStorage on mount
   useEffect(() => {
     if (sessionStorage.getItem(SESSION_KEY) === 'true') setIsAuthenticated(true);
   }, []);
 
-  // Load data once authenticated
   useEffect(() => {
     if (!isAuthenticated) return;
 
@@ -81,7 +76,7 @@ export function AdminPanel() {
           const slides = data.bannerSlides.map((s: any) => ({
             image: s.image || '',
             text: s.text || '',
-            description: s.description || '',  // ✅ load description
+            description: s.description || '',
           }));
           while (slides.length < 5) slides.push({ image: '', text: '', description: '' });
           setBannerSlides(slides.slice(0, 5));
@@ -200,7 +195,7 @@ export function AdminPanel() {
         body: JSON.stringify({
           promoLines,
           promoText: activeLines[0]?.text || '',
-          bannerSlides,                          // ✅ full array with description saved
+          bannerSlides,
           bannerImage: bannerSlides[0]?.image || '',
           bannerText: bannerSlides[0]?.text || '',
         }),
@@ -236,7 +231,8 @@ export function AdminPanel() {
     { id: 'banner', label: 'Hero Banners', icon: Image, desc: 'Upload up to 5 banners with heading & description' },
     { id: 'category-images', label: 'Category Images', icon: Tag, desc: 'Upload cover images for each category' },
     { id: 'products', label: 'Add & Edit Products', icon: Package, desc: 'Manage your product catalog' },
-    { id: 'categories', label: 'Manage Categories', icon: FolderTree, desc: 'Add or edit categories' },
+    { id: 'categories', label: 'Manage Categories', icon: FolderTree, desc: 'Add or edit categories & subcategories' },
+    { id: 'inventory', label: 'Inventory', icon: BarChart2, desc: 'Track stock levels, set alerts & adjust quantities' },
   ];
 
   // PASSWORD SCREEN
@@ -369,7 +365,6 @@ export function AdminPanel() {
                     Banner {i + 1} {i === 0 && <span className="text-[#FA5600]">*</span>}
                   </p>
                   <div className="flex gap-4">
-                    {/* Image upload box */}
                     <div
                       onClick={() => bannerRefs[i].current?.click()}
                       className="w-28 h-20 rounded-xl border-2 border-dashed border-gray-300 hover:border-[#FA5600] cursor-pointer flex items-center justify-center overflow-hidden shrink-0 transition bg-gray-50 relative">
@@ -392,12 +387,9 @@ export function AdminPanel() {
                       />
                     </div>
 
-                    {/* ✅ Two text fields: Heading + Description */}
                     <div className="flex-1 space-y-2">
                       <div>
-                        <label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">
-                          Overlay Heading
-                        </label>
+                        <label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">Overlay Heading</label>
                         <input
                           type="text"
                           value={slide.text}
@@ -409,9 +401,7 @@ export function AdminPanel() {
                         />
                       </div>
                       <div>
-                        <label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">
-                          Description Text
-                        </label>
+                        <label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">Description Text</label>
                         <input
                           type="text"
                           value={slide.description}
@@ -434,24 +424,13 @@ export function AdminPanel() {
                     </div>
                   </div>
 
-                  {/* Preview */}
                   {slide.image && (
                     <div className="mt-3 relative h-20 rounded-lg overflow-hidden border border-gray-200">
                       <img src={slide.image} alt="preview" className="w-full h-full object-cover" />
                       <div className="absolute inset-0 bg-black/50 flex flex-col items-center justify-center px-4">
-                        {slide.text && (
-                          <p className="text-white font-black text-xs uppercase tracking-tight text-center">
-                            {slide.text}
-                          </p>
-                        )}
-                        {slide.description && (
-                          <p className="text-white/80 font-bold text-[10px] text-center mt-1">
-                            {slide.description}
-                          </p>
-                        )}
-                        {!slide.text && !slide.description && (
-                          <p className="text-white/50 text-[10px]">(no overlay text)</p>
-                        )}
+                        {slide.text && <p className="text-white font-black text-xs uppercase tracking-tight text-center">{slide.text}</p>}
+                        {slide.description && <p className="text-white/80 font-bold text-[10px] text-center mt-1">{slide.description}</p>}
+                        {!slide.text && !slide.description && <p className="text-white/50 text-[10px]">(no overlay text)</p>}
                       </div>
                     </div>
                   )}
@@ -532,6 +511,15 @@ export function AdminPanel() {
                 </div>
               ))}
             </div>
+          </div>
+        )}
+
+        {/* ✅ INVENTORY */}
+        {activeSection === 'inventory' && (
+          <div>
+            <BackButton onClick={() => setActiveSection('home')} />
+            <SectionHeader icon={BarChart2} title="Inventory" desc="Track stock levels, set low stock alerts and adjust quantities" />
+            <InventoryEmbed />
           </div>
         )}
 
