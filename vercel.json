@@ -2,12 +2,12 @@
   "rewrites": [
     { "source": "/api/inventory", "destination": "/api/inventory.js" },
     { "source": "/api/purchase-orders", "destination": "/api/purchase-orders.js" },
-    { "source": "/api/cashflow", "destination": "/api/cashflow.js" },
+    { "source": "/api/business", "destination": "/api/business.js" },
+    { "source": "/api/sales", "destination": "/api/sales.js" },
     { "source": "/api/products", "destination": "/api/products.js" },
     { "source": "/api/categories", "destination": "/api/categories.js" },
     { "source": "/api/banner", "destination": "/api/banner.js" },
     { "source": "/api/upload", "destination": "/api/upload.js" },
-    { "source": "/api/package", "destination": "/api/package.js" },
     { "source": "/(.*)", "destination": "/index.html" }
   ]
 }
