@@ -1,6 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 
 export function AddProductFormEmbed() {
+  const navigate = useNavigate();
   const [newProductId, setNewProductId] = useState<string | null>(null);
 
   // Edit existing product search
@@ -31,7 +33,6 @@ export function AddProductFormEmbed() {
     useRef<HTMLInputElement>(null),
   ];
 
-
   useEffect(() => {
     fetch('/api/categories')
       .then(res => res.json())
@@ -48,14 +49,13 @@ export function AddProductFormEmbed() {
     }
   }, [formData.category, categories]);
 
-  // Fetch all products once authenticated (for edit search)
+  // Fetch all products for edit search
   useEffect(() => {
-    if (!isAuthenticated) return;
     fetch('/api/products')
       .then(res => res.json())
       .then(data => setAllProducts(Array.isArray(data) ? data : []))
       .catch(() => {});
-  }, [isAuthenticated]);
+  }, []);
 
   const parentCategories = categories.filter(c => !c.parentId);
 
@@ -168,6 +168,7 @@ export function AddProductFormEmbed() {
         body: JSON.stringify({
           ...formData,
           imageUrl: imageUrls[0] || '',
+          image: imageUrls[0] || '',
           imageUrls,
         }),
       });
@@ -196,11 +197,10 @@ export function AddProductFormEmbed() {
 
   const detectedPlatform = detectPlatform(formData.videoUrl);
 
-  // PASSWORD SCREEN
   // SUCCESS SCREEN
   if (newProductId) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+      <div className="flex items-center justify-center bg-gray-50 py-10">
         <div className="bg-white p-10 rounded-2xl shadow-2xl border border-gray-100 w-full max-w-sm text-center">
           <div className="text-5xl mb-4">✅</div>
           <h2 className="text-2xl font-bold text-gray-900 mb-2">Product Added!</h2>
@@ -233,16 +233,10 @@ export function AddProductFormEmbed() {
     <div className="max-w-3xl mx-auto p-8 bg-white shadow-xl rounded-xl mt-10 mb-10 border border-gray-100">
       <div className="flex justify-between items-center border-b pb-4 mb-8">
         <h2 className="text-3xl font-bold text-gray-900">Add & Edit Products</h2>
-        <div className="flex gap-3">
-          <button onClick={() => navigate('/admin')}
-            className="text-sm text-[#FA5600] hover:text-[#E04A00] font-bold transition">
-            ← Admin Panel
-          </button>
-          <button onClick={() => { sessionStorage.removeItem(SESSION_KEY); setIsAuthenticated(false); }}
-            className="text-sm text-gray-400 hover:text-red-500 transition">
-            🔓 Lock
-          </button>
-        </div>
+        <button onClick={() => navigate('/admin')}
+          className="text-sm text-[#FA5600] hover:text-[#E04A00] font-bold transition">
+          ← Admin Panel
+        </button>
       </div>
 
       {/* EDIT EXISTING PRODUCT SECTION */}
@@ -430,6 +424,6 @@ export function AddProductFormEmbed() {
       </div>
     </div>
   );
-};
+}
 
 export default AddProductFormEmbed;
