@@ -19,6 +19,64 @@ function parseMetaPrice(priceStr) {
   return parseFloat(priceStr.replace(/[^0-9.]/g, '')) || 0;
 }
 
+// ── Push a product TO Meta catalog ────────────────────────────
+async function pushProductToMeta(product, metaId = null) {
+  if (!META_ACCESS_TOKEN) return null;
+
+  const price = parseFloat(product.discountedPrice || product.originalPrice || product.price || 0);
+  const originalPrice = parseFloat(product.originalPrice || product.price || 0);
+
+  const body = {
+    name: product.name,
+    description: product.description || product.name,
+    availability: 'in stock',
+    condition: 'new',
+    image_url: product.imageUrl || product.image || '',
+    url: `https://www.ta-gs.online/products/${product._id || ''}`,
+    brand: 'TAGS',
+  };
+
+  // Set price — Meta expects "12000 INR" format (paise for INR)
+  if (originalPrice > price) {
+    body.price = `${Math.round(originalPrice * 100)} INR`;
+    body.sale_price = `${Math.round(price * 100)} INR`;
+  } else {
+    body.price = `${Math.round(price * 100)} INR`;
+  }
+
+  // Update existing Meta product
+  if (metaId) {
+    const res = await fetch(`https://graph.facebook.com/v25.0/${metaId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...body, access_token: META_ACCESS_TOKEN }),
+    });
+    return res.json();
+  }
+
+  // Create new product in Meta catalog
+  const res = await fetch(`https://graph.facebook.com/v25.0/${CATALOG_ID}/products`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      ...body,
+      retailer_id: product._id?.toString() || Date.now().toString(),
+      access_token: META_ACCESS_TOKEN,
+    }),
+  });
+  return res.json();
+}
+
+// ── Delete a product FROM Meta catalog ────────────────────────
+async function deleteProductFromMeta(metaId) {
+  if (!META_ACCESS_TOKEN || !metaId) return null;
+  const res = await fetch(`https://graph.facebook.com/v25.0/${metaId}?access_token=${META_ACCESS_TOKEN}`, {
+    method: 'DELETE',
+  });
+  return res.json();
+}
+
+// ── Sync Meta → MongoDB (pull) ─────────────────────────────────
 async function syncMetaToMongo(collection) {
   if (!META_ACCESS_TOKEN) throw new Error('META_ACCESS_TOKEN is not set');
 
@@ -79,7 +137,7 @@ export default async function handler(req, res) {
     if (req.method === 'GET') {
       const { id, withStock, syncMeta } = req.query;
 
-      // ── Meta Sync ──────────────────────────────────────────────
+      // ── Pull Meta → MongoDB ────────────────────────────────────
       if (syncMeta === 'true') {
         const result = await syncMetaToMongo(collection);
         return res.status(200).json({
@@ -140,13 +198,15 @@ export default async function handler(req, res) {
       return res.status(200).json(products);
     }
 
+    // ── POST: Add product → MongoDB + Meta ────────────────────────
     if (req.method === 'POST') {
       const product = { ...req.body, createdAt: new Date() };
       const result = await collection.insertOne(product);
+      const insertedId = result.insertedId.toString();
 
       if (req.body.trackInventory) {
         await inventory.insertOne({
-          productId: result.insertedId.toString(),
+          productId: insertedId,
           sku: req.body.sku || '',
           currentStock: 0,
           reservedStock: 0,
@@ -160,27 +220,66 @@ export default async function handler(req, res) {
         });
       }
 
+      // Push to Meta catalog (don't fail if Meta push fails)
+      try {
+        const metaResult = await pushProductToMeta({ ...product, _id: insertedId });
+        if (metaResult?.id) {
+          await collection.updateOne(
+            { _id: result.insertedId },
+            { $set: { metaId: metaResult.id } }
+          );
+        }
+      } catch (metaErr) {
+        console.error('Meta push failed (product saved to DB):', metaErr.message);
+      }
+
       return res.status(201).json({ success: true, _id: result.insertedId });
     }
 
+    // ── PUT: Update product → MongoDB + Meta ───────────────────────
     if (req.method === 'PUT') {
       const { id, ...updateData } = req.body;
       if (!id) return res.status(400).json({ error: 'ID is required' });
       delete updateData._id;
       updateData.updatedAt = new Date();
+
       const result = await collection.updateOne(
         { _id: new ObjectId(id) },
         { $set: updateData }
       );
       if (result.matchedCount === 0) return res.status(404).json({ error: 'Product not found' });
+
+      // Push update to Meta catalog
+      try {
+        const existing = await collection.findOne({ _id: new ObjectId(id) });
+        if (existing) {
+          await pushProductToMeta({ ...existing, ...updateData, _id: id }, existing.metaId || null);
+        }
+      } catch (metaErr) {
+        console.error('Meta update failed (DB updated):', metaErr.message);
+      }
+
       return res.status(200).json({ success: true });
     }
 
+    // ── DELETE: Remove product → MongoDB + Meta ────────────────────
     if (req.method === 'DELETE') {
       const { id } = req.body;
       if (!id) return res.status(400).json({ error: 'ID is required' });
+
+      const existing = await collection.findOne({ _id: new ObjectId(id) });
       const result = await collection.deleteOne({ _id: new ObjectId(id) });
       if (result.deletedCount === 0) return res.status(404).json({ error: 'Product not found' });
+
+      // Delete from Meta catalog too
+      try {
+        if (existing?.metaId) {
+          await deleteProductFromMeta(existing.metaId);
+        }
+      } catch (metaErr) {
+        console.error('Meta delete failed (DB deleted):', metaErr.message);
+      }
+
       return res.status(200).json({ success: true });
     }
 
