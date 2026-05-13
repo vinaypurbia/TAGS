@@ -5,9 +5,9 @@ import { InventoryEmbed } from './InventoryEmbed';
 import { BusinessEmbed } from './BusinessEmbed';
 import {
   Lock, LogOut, Megaphone, Image, Tag, Package, FolderTree,
-  Save, Check, Trash2, Eye, EyeOff, Upload, BarChart2,
-  LayoutDashboard, ShoppingBag, Menu, X, Settings,
-  TrendingUp, TrendingDown, Users, AlertTriangle, DollarSign, ShoppingCart
+  Save, Check, Trash2, Eye, Upload, BarChart2,
+  LayoutDashboard, ShoppingBag, Menu, X,
+  TrendingUp, TrendingDown, Users, AlertTriangle, DollarSign
 } from 'lucide-react';
 
 const ADMIN_PASSWORD = import.meta.env.VITE_ADMIN_PASSWORD ?? '';
@@ -22,15 +22,15 @@ interface BannerSlide { image: string; text: string; description: string; }
 interface PromoLine { text: string; }
 
 const ALL_MODULES: { id: Section; label: string; icon: any; desc: string }[] = [
-  { id: 'dashboard',       label: 'Dashboard',        icon: LayoutDashboard, desc: 'Overview & quick stats' },
-  { id: 'business',        label: 'Business',          icon: BarChart2,       desc: 'Sales, PO, Cash Flow, Reports' },
-  { id: 'inventory',       label: 'Inventory',         icon: ShoppingBag,     desc: 'Stock management' },
-  { id: 'products',        label: 'Products',          icon: Package,         desc: 'Add & edit products' },
-  { id: 'categories',      label: 'Categories',        icon: FolderTree,      desc: 'Manage categories' },
-  { id: 'category-images', label: 'Category Images',   icon: Tag,             desc: 'Upload category covers' },
-  { id: 'banner',          label: 'Hero Banners',      icon: Image,           desc: 'Homepage banners' },
-  { id: 'promo',           label: 'Offer Bar',         icon: Megaphone,       desc: 'Scrolling announcements' },
-  { id: 'settings',        label: 'Settings',          icon: Settings,        desc: 'Module visibility' },
+  { id: 'dashboard',       label: 'Dashboard',       icon: LayoutDashboard, desc: 'Overview & quick stats' },
+  { id: 'business',        label: 'Business',         icon: BarChart2,       desc: 'Sales, PO, Cash Flow, Reports' },
+  { id: 'inventory',       label: 'Inventory',        icon: ShoppingBag,     desc: 'Stock management' },
+  { id: 'products',        label: 'Products',         icon: Package,         desc: 'Add & edit products' },
+  { id: 'categories',      label: 'Categories',       icon: FolderTree,      desc: 'Manage categories' },
+  { id: 'category-images', label: 'Category Images',  icon: Tag,             desc: 'Upload category covers' },
+  { id: 'banner',          label: 'Hero Banners',     icon: Image,           desc: 'Homepage banners' },
+  { id: 'promo',           label: 'Offer Bar',        icon: Megaphone,       desc: 'Scrolling announcements' },
+  { id: 'settings',        label: 'Settings',         icon: SettingsIcon,    desc: 'Module visibility' },
 ];
 
 export function AdminPanel() {
@@ -40,7 +40,6 @@ export function AdminPanel() {
   const [activeSection, setActiveSection] = useState<Section>('dashboard');
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
-  // Module visibility - persisted in localStorage
   const [visibility, setVisibility] = useState<Record<string, boolean>>(() => {
     try {
       const saved = localStorage.getItem(VISIBILITY_KEY);
@@ -51,7 +50,6 @@ export function AdminPanel() {
     return defaults;
   });
 
-  // Promo
   const [promoLines, setPromoLines] = useState<PromoLine[]>([
     { text: '🔥 TAGS · Free Shipping on Orders Over ₹999 · Up to 90% Off Today!' },
     { text: '' }, { text: '' }, { text: '' }, { text: '' },
@@ -59,7 +57,6 @@ export function AdminPanel() {
   const [promoSaved, setPromoSaved] = useState(false);
   const [promoLoading, setPromoLoading] = useState(false);
 
-  // Banners
   const [bannerSlides, setBannerSlides] = useState<BannerSlide[]>([
     { image: '', text: '', description: '' }, { image: '', text: '', description: '' },
     { image: '', text: '', description: '' }, { image: '', text: '', description: '' },
@@ -74,7 +71,6 @@ export function AdminPanel() {
     useRef<HTMLInputElement>(null),
   ];
 
-  // Categories
   const [categories, setCategories] = useState<any[]>([]);
   const [catSaving, setCatSaving] = useState<string | null>(null);
   const [catSaved, setCatSaved] = useState<string | null>(null);
@@ -82,10 +78,11 @@ export function AdminPanel() {
   const [catImages, setCatImages] = useState<Record<string, string>>({});
   const catRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
-  // Dashboard stats
+  // Dashboard
   const [dashStats, setDashStats] = useState<any>(null);
   const [dashLoading, setDashLoading] = useState(true);
   const [shortage, setShortage] = useState<any[]>([]);
+  const [pendingOrders, setPendingOrders] = useState<any[]>([]);
 
   useEffect(() => {
     if (sessionStorage.getItem(SESSION_KEY) === 'true') setIsAuthenticated(true);
@@ -93,6 +90,7 @@ export function AdminPanel() {
 
   useEffect(() => {
     if (!isAuthenticated) return;
+
     // Load banner/promo
     fetch('/api/banner').then(r => r.json()).then(data => {
       if (data.promoLines && Array.isArray(data.promoLines)) {
@@ -128,7 +126,8 @@ export function AdminPanel() {
       fetch('/api/business?module=reports&type=stock-shortage').then(r => r.json()).catch(() => []),
       fetch('/api/customers').then(r => r.json()).catch(() => ({})),
       fetch('/api/inventory').then(r => r.json()).catch(() => []),
-    ]).then(([sales, cash, stockShortage, customers, inventory]) => {
+      fetch('/api/sales?status=pending').then(r => r.json()).catch(() => ({})),
+    ]).then(([sales, cash, stockShortage, customers, inventory, pendingSales]) => {
       const invArr = Array.isArray(inventory) ? inventory : [];
       setDashStats({
         revenue: sales?.summary?.totalRevenue || 0,
@@ -141,6 +140,8 @@ export function AdminPanel() {
         outOfStock: invArr.filter((p: any) => p.stock?.trackInventory && !p.stock?.isInStock).length,
       });
       setShortage(Array.isArray(stockShortage) ? stockShortage.slice(0, 5) : []);
+      const pending = Array.isArray(pendingSales?.sales) ? pendingSales.sales : [];
+      setPendingOrders(pending.slice(0, 15));
     }).finally(() => setDashLoading(false));
   }, [isAuthenticated]);
 
@@ -214,7 +215,12 @@ export function AdminPanel() {
     } catch { alert('Failed to save.'); } finally { setCatSaving(null); }
   };
 
-  // ── PASSWORD SCREEN ──────────────────────────────────────────────────────────
+  const confirmOrder = async (id: string) => {
+    await fetch('/api/sales', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id, status: 'confirmed' }) });
+    setPendingOrders(prev => prev.filter(o => o._id !== id));
+  };
+
+  // ── PASSWORD SCREEN ──
   if (!isAuthenticated) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-[#0F0F0F]">
@@ -234,7 +240,7 @@ export function AdminPanel() {
             autoFocus />
           {passwordError && <p className="text-red-400 text-sm text-center mb-3">{passwordError}</p>}
           <button onClick={handlePasswordSubmit}
-            className="w-full bg-[#FA5600] text-white font-black py-3 rounded-xl hover:bg-[#E04A00] transition uppercase tracking-widest shadow-lg shadow-orange-500/20">
+            className="w-full bg-[#FA5600] text-white font-black py-3 rounded-xl hover:bg-[#E04A00] transition uppercase tracking-widest">
             Enter
           </button>
         </div>
@@ -242,18 +248,17 @@ export function AdminPanel() {
     );
   }
 
-  // ── MAIN LAYOUT ──────────────────────────────────────────────────────────────
+  // ── MAIN LAYOUT ──
   return (
     <div className="min-h-screen bg-[#F0F2F5] flex">
 
-      {/* ── SIDEBAR ── */}
       {/* Mobile overlay */}
       {sidebarOpen && (
         <div className="fixed inset-0 bg-black/60 z-40 lg:hidden" onClick={() => setSidebarOpen(false)} />
       )}
 
-      <aside className={`fixed top-0 left-0 h-full z-50 flex flex-col bg-[#1A1A1A] transition-all duration-300 ease-in-out
-        ${sidebarOpen ? 'w-60' : 'w-0 lg:w-16'} overflow-hidden`}>
+      {/* ── SIDEBAR ── */}
+      <aside className={`fixed top-0 left-0 h-full z-50 flex flex-col bg-[#1A1A1A] transition-all duration-300 ease-in-out ${sidebarOpen ? 'w-60' : 'w-0 lg:w-16'} overflow-hidden`}>
 
         {/* Logo */}
         <div className="flex items-center gap-3 px-3 py-4 border-b border-white/10 shrink-0">
@@ -261,38 +266,42 @@ export function AdminPanel() {
             <span className="text-white font-black text-lg">T</span>
           </div>
           {sidebarOpen && (
-            <div className="overflow-hidden">
+            <div>
               <p className="text-white font-black text-sm uppercase tracking-widest whitespace-nowrap">TAGS</p>
               <p className="text-white/40 text-[10px] uppercase tracking-widest whitespace-nowrap">Admin Panel</p>
             </div>
           )}
         </div>
 
-        {/* Nav Items */}
+        {/* Nav */}
         <nav className="flex-1 py-3 space-y-1 px-2 overflow-y-auto">
           {visibleModules.map(item => {
             const isActive = activeSection === item.id;
+            const isPendingBadge = item.id === 'business' && pendingOrders.length > 0;
             return (
               <button key={item.id}
                 onClick={() => { setActiveSection(item.id); setSidebarOpen(false); }}
                 title={!sidebarOpen ? item.label : ''}
-                className={`w-full flex items-center gap-3 px-2.5 py-2.5 rounded-xl transition-all group relative
+                className={`w-full flex items-center gap-3 px-2.5 py-2.5 rounded-xl transition-all relative
                   ${isActive ? 'bg-[#FA5600] text-white shadow-lg shadow-orange-500/20' : 'text-white/50 hover:bg-white/10 hover:text-white'}`}>
-                <item.icon className="w-5 h-5 shrink-0" />
+                <div className="relative shrink-0">
+                  <item.icon className="w-5 h-5" />
+                  {isPendingBadge && !sidebarOpen && (
+                    <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-red-500 rounded-full border border-[#1A1A1A]" />
+                  )}
+                </div>
                 {sidebarOpen && (
-                  <span className="text-xs font-black uppercase tracking-widest whitespace-nowrap">{item.label}</span>
+                  <span className="text-xs font-black uppercase tracking-widest whitespace-nowrap flex-1 text-left">{item.label}</span>
                 )}
-                {isActive && !sidebarOpen && (
-                  <span className="absolute left-full ml-2 bg-[#FA5600] text-white text-[10px] font-black uppercase px-2 py-1 rounded-lg whitespace-nowrap shadow-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
-                    {item.label}
-                  </span>
+                {sidebarOpen && isPendingBadge && (
+                  <span className="bg-red-500 text-white text-[9px] font-black px-1.5 py-0.5 rounded-full shrink-0">{pendingOrders.length}</span>
                 )}
               </button>
             );
           })}
         </nav>
 
-        {/* Bottom: View Site + Lock */}
+        {/* Bottom */}
         <div className="border-t border-white/10 p-2 space-y-1 shrink-0">
           <a href="/" target="_blank"
             className="w-full flex items-center gap-3 px-2.5 py-2.5 rounded-xl text-white/50 hover:bg-white/10 hover:text-white transition-all">
@@ -324,10 +333,16 @@ export function AdminPanel() {
               {ALL_MODULES.find(m => m.id === activeSection)?.desc}
             </p>
           </div>
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 bg-[#FA5600] rounded-xl flex items-center justify-center">
-              <span className="text-white font-black text-xs">T</span>
-            </div>
+          {/* Pending badge in header */}
+          {pendingOrders.length > 0 && (
+            <button onClick={() => setActiveSection('dashboard')}
+              className="flex items-center gap-2 bg-red-50 border border-red-200 text-red-600 text-xs font-black px-3 py-1.5 rounded-xl hover:bg-red-100 transition">
+              <span className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />
+              {pendingOrders.length} Pending
+            </button>
+          )}
+          <div className="w-8 h-8 bg-[#FA5600] rounded-xl flex items-center justify-center shrink-0">
+            <span className="text-white font-black text-xs">T</span>
           </div>
         </header>
 
@@ -351,7 +366,7 @@ export function AdminPanel() {
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
                   {[
                     { label: 'Revenue', value: `₹${Number(dashStats?.revenue || 0).toLocaleString('en-IN')}`, icon: TrendingUp, color: 'bg-green-50 text-green-600', border: 'border-green-100' },
-                    { label: 'Orders', value: String(dashStats?.orders || 0), icon: ShoppingCart, color: 'bg-blue-50 text-blue-600', border: 'border-blue-100' },
+                    { label: 'Orders', value: String(dashStats?.orders || 0), icon: ShoppingBag, color: 'bg-blue-50 text-blue-600', border: 'border-blue-100' },
                     { label: 'Customers', value: String(dashStats?.customers || 0), icon: Users, color: 'bg-purple-50 text-purple-600', border: 'border-purple-100' },
                     { label: 'Net Profit', value: `₹${Number(dashStats?.profit || 0).toLocaleString('en-IN')}`, icon: DollarSign, color: 'bg-orange-50 text-[#FA5600]', border: 'border-orange-100' },
                   ].map(card => (
@@ -366,26 +381,116 @@ export function AdminPanel() {
                 </div>
               )}
 
-              {/* Inventory + Stock Alerts row */}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              {/* Inventory quick stats */}
+              <div className="grid grid-cols-3 gap-4">
                 {[
                   { label: 'Total Products', value: dashStats?.totalProducts || 0, icon: Package, color: 'text-gray-600 bg-gray-100' },
                   { label: 'In Stock', value: dashStats?.inStock || 0, icon: Check, color: 'text-green-600 bg-green-100' },
                   { label: 'Out of Stock', value: dashStats?.outOfStock || 0, icon: AlertTriangle, color: 'text-red-600 bg-red-100' },
                 ].map(card => (
-                  <div key={card.label} className="bg-white rounded-2xl p-4 border border-gray-100 shadow-sm flex items-center gap-4">
-                    <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${card.color}`}>
-                      <card.icon className="w-5 h-5" />
+                  <div key={card.label} className="bg-white rounded-2xl p-4 border border-gray-100 shadow-sm flex items-center gap-3">
+                    <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${card.color}`}>
+                      <card.icon className="w-4 h-4" />
                     </div>
                     <div>
-                      <p className="text-2xl font-black text-gray-900">{card.value}</p>
-                      <p className="text-xs font-bold text-gray-400 uppercase tracking-widest">{card.label}</p>
+                      <p className="text-xl font-black text-gray-900">{card.value}</p>
+                      <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest leading-tight">{card.label}</p>
                     </div>
                   </div>
                 ))}
               </div>
 
-              {/* Low Stock Alert */}
+              {/* ── PENDING DELIVERIES ── */}
+              <div className="bg-white rounded-2xl border-2 border-orange-200 shadow-sm overflow-hidden">
+                <div className="flex items-center justify-between px-5 py-4 bg-orange-50 border-b border-orange-100">
+                  <div className="flex items-center gap-2">
+                    <span className="w-2.5 h-2.5 bg-[#FA5600] rounded-full animate-pulse" />
+                    <h3 className="font-black text-sm uppercase tracking-widest text-gray-800">Pending Deliveries</h3>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {pendingOrders.length > 0 && (
+                      <span className="bg-[#FA5600] text-white text-xs font-black px-2.5 py-0.5 rounded-full">
+                        {pendingOrders.length} orders
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {dashLoading ? (
+                  <div className="p-6 space-y-3">
+                    {[...Array(2)].map((_, i) => <div key={i} className="h-14 bg-gray-100 rounded-xl animate-pulse" />)}
+                  </div>
+                ) : pendingOrders.length === 0 ? (
+                  <div className="p-10 text-center">
+                    <div className="text-4xl mb-3">✅</div>
+                    <p className="font-black text-sm text-gray-400 uppercase tracking-widest">All orders delivered — nothing pending!</p>
+                  </div>
+                ) : (
+                  <div className="divide-y divide-gray-100">
+                    {pendingOrders.map((order: any) => (
+                      <div key={order._id} className="flex items-center gap-3 px-5 py-3.5 hover:bg-orange-50/50 transition">
+                        {/* Avatar */}
+                        <div className="w-10 h-10 bg-orange-100 rounded-xl flex items-center justify-center shrink-0 font-black text-[#FA5600] text-base">
+                          {(order.customerName || 'W')[0].toUpperCase()}
+                        </div>
+
+                        {/* Info */}
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <p className="text-sm font-black text-gray-900">{order.customerName || 'Walk-in Customer'}</p>
+                            <span className="text-[9px] bg-yellow-100 text-yellow-700 font-black uppercase px-1.5 py-0.5 rounded-full">Pending</span>
+                          </div>
+                          <p className="text-[10px] text-gray-400 mt-0.5">
+                            {order.saleNumber} · {order.customerPhone || 'No phone'} · {new Date(order.date).toLocaleDateString('en-IN')}
+                          </p>
+                          <div className="flex flex-wrap gap-1 mt-1">
+                            {order.items?.slice(0, 3).map((item: any, i: number) => (
+                              <span key={i} className="text-[9px] bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded-full">
+                                {item.productName} ×{item.quantity}
+                              </span>
+                            ))}
+                            {order.items?.length > 3 && (
+                              <span className="text-[9px] text-gray-400">+{order.items.length - 3} more</span>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Amount + Actions */}
+                        <div className="text-right shrink-0 space-y-1">
+                          <p className="font-black text-sm text-[#FA5600]">
+                            ₹{Number(order.totalAmount || 0).toLocaleString('en-IN')}
+                          </p>
+                          <div className="flex gap-1.5 justify-end">
+                            {order.customerPhone && (
+                              <a href={`https://wa.me/${order.customerPhone.replace(/[^0-9]/g, '')}`}
+                                target="_blank" rel="noopener noreferrer"
+                                className="text-[10px] bg-[#25D366] text-white font-black px-2 py-0.5 rounded-full hover:bg-[#20bd5a] transition">
+                                WA
+                              </a>
+                            )}
+                            <button onClick={() => confirmOrder(order._id)}
+                              className="text-[10px] bg-green-500 text-white font-black px-2 py-0.5 rounded-full hover:bg-green-600 transition">
+                              ✓ Done
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {pendingOrders.length > 0 && (
+                  <div className="px-5 py-3 bg-gray-50 border-t border-gray-100 flex items-center justify-between">
+                    <p className="text-[10px] text-gray-400">Mark as Done to remove from this list</p>
+                    <button onClick={() => setActiveSection('business')}
+                      className="text-xs text-[#FA5600] font-black uppercase tracking-widest hover:underline">
+                      View all in Business →
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* Low Stock Alerts */}
               {shortage.length > 0 && (
                 <div className="bg-white rounded-2xl border border-yellow-200 p-5 shadow-sm">
                   <div className="flex items-center gap-2 mb-4">
@@ -411,7 +516,7 @@ export function AdminPanel() {
                 </div>
               )}
 
-              {/* Quick actions */}
+              {/* Quick Actions */}
               <div>
                 <h3 className="text-xs font-black uppercase tracking-widest text-gray-400 mb-3">Quick Actions</h3>
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -468,10 +573,13 @@ export function AdminPanel() {
                   <div className="flex gap-4">
                     <div onClick={() => bannerRefs[i].current?.click()}
                       className="w-28 h-20 rounded-xl border-2 border-dashed border-gray-200 hover:border-[#FA5600] cursor-pointer flex items-center justify-center overflow-hidden shrink-0 transition bg-gray-50">
-                      {bannerUploading === i ? <p className="text-[10px] text-gray-400 font-bold">Uploading...</p>
-                        : slide.image ? <img src={slide.image} alt="" className="w-full h-full object-cover" />
-                        : <div className="text-center"><Upload className="w-5 h-5 text-gray-300 mx-auto mb-1" /><p className="text-[9px] text-gray-400 font-bold uppercase">Upload</p></div>}
-                      <input ref={bannerRefs[i]} type="file" accept="image/png,image/jpeg,image/webp" onChange={e => handleBannerImageUpload(i, e)} className="hidden" />
+                      {bannerUploading === i
+                        ? <p className="text-[10px] text-gray-400 font-bold">Uploading...</p>
+                        : slide.image
+                          ? <img src={slide.image} alt="" className="w-full h-full object-cover" />
+                          : <div className="text-center"><Upload className="w-5 h-5 text-gray-300 mx-auto mb-1" /><p className="text-[9px] text-gray-400 font-bold uppercase">Upload</p></div>}
+                      <input ref={bannerRefs[i]} type="file" accept="image/png,image/jpeg,image/webp"
+                        onChange={e => handleBannerImageUpload(i, e)} className="hidden" />
                     </div>
                     <div className="flex-1 space-y-2">
                       <input type="text" value={slide.text}
@@ -480,7 +588,7 @@ export function AdminPanel() {
                         className="w-full border-2 border-gray-200 rounded-xl p-2.5 font-bold focus:border-[#FA5600] outline-none text-sm" />
                       <input type="text" value={slide.description}
                         onChange={e => setBannerSlides(prev => { const n = [...prev]; n[i] = { ...n[i], description: e.target.value }; return n; })}
-                        placeholder="Description"
+                        placeholder="Description text"
                         className="w-full border-2 border-gray-200 rounded-xl p-2.5 font-bold focus:border-[#FA5600] outline-none text-sm" />
                       {slide.image && (
                         <button onClick={() => setBannerSlides(prev => { const n = [...prev]; n[i] = { image: '', text: '', description: '' }; return n; })}
@@ -526,7 +634,9 @@ export function AdminPanel() {
             <div className="max-w-2xl mx-auto space-y-4">
               <SectionHeader icon={Tag} title="Category Images" desc="Upload a cover image for each category" />
               {categories.length === 0 && (
-                <div className="bg-white rounded-2xl border border-gray-200 p-8 text-center text-gray-400 text-sm shadow-sm">No categories found. Add some first!</div>
+                <div className="bg-white rounded-2xl border border-gray-200 p-8 text-center text-gray-400 text-sm shadow-sm">
+                  No categories found. Add some first!
+                </div>
               )}
               {categories.map(cat => (
                 <div key={cat._id} className="bg-white rounded-2xl border border-gray-200 p-5 shadow-sm">
@@ -534,12 +644,17 @@ export function AdminPanel() {
                   <div className="flex items-center gap-4">
                     <div onClick={() => catRefs.current[cat._id]?.click()}
                       className="w-20 h-16 rounded-xl border-2 border-dashed border-gray-200 hover:border-[#FA5600] cursor-pointer flex items-center justify-center overflow-hidden shrink-0 transition bg-gray-50">
-                      {catUploading === cat._id ? <p className="text-[9px] text-gray-400 font-bold">...</p>
-                        : catImages[cat._id] ? <img src={catImages[cat._id]} alt={cat.name} className="w-full h-full object-cover" />
-                        : <div className="text-center"><Upload className="w-4 h-4 text-gray-300 mx-auto mb-0.5" /><p className="text-[9px] text-gray-400 font-bold uppercase">Upload</p></div>}
-                      <input ref={el => { catRefs.current[cat._id] = el; }} type="file" accept="image/png,image/jpeg,image/webp" onChange={e => handleCatImageUpload(cat._id, e)} className="hidden" />
+                      {catUploading === cat._id
+                        ? <p className="text-[9px] text-gray-400 font-bold">...</p>
+                        : catImages[cat._id]
+                          ? <img src={catImages[cat._id]} alt={cat.name} className="w-full h-full object-cover" />
+                          : <div className="text-center"><Upload className="w-4 h-4 text-gray-300 mx-auto mb-0.5" /><p className="text-[9px] text-gray-400 font-bold uppercase">Upload</p></div>}
+                      <input ref={el => { catRefs.current[cat._id] = el; }} type="file" accept="image/png,image/jpeg,image/webp"
+                        onChange={e => handleCatImageUpload(cat._id, e)} className="hidden" />
                     </div>
-                    <div className="flex-1 text-xs text-gray-400">{catImages[cat._id] ? 'Uploaded ✓ — click to replace' : 'Click to upload'}</div>
+                    <div className="flex-1 text-xs text-gray-400">
+                      {catImages[cat._id] ? 'Uploaded ✓ — click to replace' : 'Click to upload'}
+                    </div>
                     <button onClick={() => handleSaveCategoryImage(cat._id)} disabled={catSaving === cat._id}
                       className={`shrink-0 flex items-center gap-2 px-4 py-2 rounded-xl font-black text-xs uppercase tracking-widest transition ${catSaved === cat._id ? 'bg-green-500 text-white' : 'bg-[#FA5600] text-white hover:bg-[#E04A00]'}`}>
                       {catSaved === cat._id ? <><Check className="w-3.5 h-3.5" /> Saved</> : catSaving === cat._id ? '...' : <><Save className="w-3.5 h-3.5" /> Save</>}
@@ -569,8 +684,8 @@ export function AdminPanel() {
           {/* ── SETTINGS ── */}
           {activeSection === 'settings' && (
             <div className="max-w-2xl mx-auto space-y-4">
-              <SectionHeader icon={Settings} title="Settings" desc="Choose which modules appear in your sidebar" />
-              <div className="bg-white rounded-2xl border border-gray-200 p-6 shadow-sm space-y-3">
+              <SectionHeader icon={SettingsIcon} title="Settings" desc="Choose which modules appear in your sidebar" />
+              <div className="bg-white rounded-2xl border border-gray-200 p-6 shadow-sm space-y-2">
                 <p className="text-xs font-black uppercase tracking-widest text-gray-400 mb-4">Module Visibility</p>
                 {ALL_MODULES.filter(m => m.id !== 'dashboard' && m.id !== 'settings').map(item => (
                   <div key={item.id} className="flex items-center justify-between p-3 rounded-xl hover:bg-gray-50 transition">
@@ -589,7 +704,9 @@ export function AdminPanel() {
                     </button>
                   </div>
                 ))}
-                <p className="text-[10px] text-gray-400 pt-2 border-t border-gray-100">Dashboard and Settings are always visible. Changes are saved automatically.</p>
+                <p className="text-[10px] text-gray-400 pt-3 border-t border-gray-100">
+                  Dashboard and Settings are always visible. Changes save automatically.
+                </p>
               </div>
             </div>
           )}
@@ -623,21 +740,11 @@ function SaveButton({ onClick, loading, saved }: { onClick: () => void; loading:
   );
 }
 
-// Settings icon component since it's used in the module list
-function Settings({ className }: { className?: string }) {
+function SettingsIcon({ className }: { className?: string }) {
   return (
     <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
       <path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
       <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-    </svg>
-  );
-}
-
-// ShoppingCart icon
-function ShoppingCart({ className }: { className?: string }) {
-  return (
-    <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z" />
     </svg>
   );
 }
