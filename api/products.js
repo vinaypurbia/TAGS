@@ -36,7 +36,6 @@ async function pushProductToMeta(product, metaId = null) {
     brand: 'TAGS',
   };
 
-  // Set price — Meta expects "12000 INR" format (paise for INR)
   if (originalPrice > price) {
     body.price = `${Math.round(originalPrice * 100)} INR`;
     body.sale_price = `${Math.round(price * 100)} INR`;
@@ -44,7 +43,6 @@ async function pushProductToMeta(product, metaId = null) {
     body.price = `${Math.round(price * 100)} INR`;
   }
 
-  // Update existing Meta product
   if (metaId) {
     const res = await fetch(`https://graph.facebook.com/v25.0/${metaId}`, {
       method: 'POST',
@@ -54,7 +52,6 @@ async function pushProductToMeta(product, metaId = null) {
     return res.json();
   }
 
-  // Create new product in Meta catalog
   const res = await fetch(`https://graph.facebook.com/v25.0/${CATALOG_ID}/products`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -135,7 +132,7 @@ export default async function handler(req, res) {
     const inventory = db.collection('inventory');
 
     if (req.method === 'GET') {
-      const { id, withStock, syncMeta } = req.query;
+      const { id, withStock, syncMeta, pushAll } = req.query;
 
       // ── Pull Meta → MongoDB ────────────────────────────────────
       if (syncMeta === 'true') {
@@ -144,6 +141,41 @@ export default async function handler(req, res) {
           success: true,
           message: `Synced ${result.synced} of ${result.total} products from Meta catalog`,
           ...result,
+        });
+      }
+
+      // ── Push ALL MongoDB products → Meta ───────────────────────
+      if (pushAll === 'true') {
+        const allProducts = await collection.find({}).toArray();
+        let pushed = 0, failed = 0, errors = [];
+
+        for (const product of allProducts) {
+          try {
+            const pid = product._id.toString();
+            const metaResult = await pushProductToMeta(
+              { ...product, _id: pid },
+              product.metaId || null
+            );
+            if (metaResult?.id) {
+              await collection.updateOne(
+                { _id: product._id },
+                { $set: { metaId: metaResult.id } }
+              );
+            }
+            pushed++;
+          } catch (err) {
+            failed++;
+            errors.push({ name: product.name, error: err.message });
+          }
+        }
+
+        return res.status(200).json({
+          success: true,
+          message: `Pushed ${pushed} of ${allProducts.length} products to Meta/WhatsApp catalog`,
+          pushed,
+          failed,
+          total: allProducts.length,
+          errors: errors.length > 0 ? errors : undefined,
         });
       }
 
@@ -220,7 +252,6 @@ export default async function handler(req, res) {
         });
       }
 
-      // Push to Meta catalog (don't fail if Meta push fails)
       try {
         const metaResult = await pushProductToMeta({ ...product, _id: insertedId });
         if (metaResult?.id) {
@@ -249,7 +280,6 @@ export default async function handler(req, res) {
       );
       if (result.matchedCount === 0) return res.status(404).json({ error: 'Product not found' });
 
-      // Push update to Meta catalog
       try {
         const existing = await collection.findOne({ _id: new ObjectId(id) });
         if (existing) {
@@ -271,7 +301,6 @@ export default async function handler(req, res) {
       const result = await collection.deleteOne({ _id: new ObjectId(id) });
       if (result.deletedCount === 0) return res.status(404).json({ error: 'Product not found' });
 
-      // Delete from Meta catalog too
       try {
         if (existing?.metaId) {
           await deleteProductFromMeta(existing.metaId);
