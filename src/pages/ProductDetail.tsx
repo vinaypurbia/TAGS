@@ -148,11 +148,11 @@ export function ProductDetail() {
 
             <div className="mb-8 pb-4 border-b-4 border-black">
               <span className="text-3xl font-black text-black">
-                ₹${Number(displayPrice).toFixed(2)}
+                ₹{Number(displayPrice).toFixed(2)}
               </span>
               {product.discountedPrice && product.originalPrice && (
                 <span className="text-lg text-slate-400 line-through ml-3">
-                  ₹${Number(product.originalPrice).toFixed(2)}
+                  ₹{Number(product.originalPrice).toFixed(2)}
                 </span>
               )}
             </div>
