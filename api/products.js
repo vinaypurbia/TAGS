@@ -1,6 +1,9 @@
 import { MongoClient, ObjectId } from 'mongodb';
 
 const uri = process.env.TAGS_MONGO;
+const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN;
+const CATALOG_ID = '1901314136807871';
+
 let client;
 
 async function getClient() {
@@ -9,6 +12,56 @@ async function getClient() {
     await client.connect();
   }
   return client;
+}
+
+function parseMetaPrice(priceStr) {
+  if (!priceStr) return 0;
+  return parseFloat(priceStr.replace(/[^0-9.]/g, '')) || 0;
+}
+
+async function syncMetaToMongo(collection) {
+  if (!META_ACCESS_TOKEN) throw new Error('META_ACCESS_TOKEN is not set');
+
+  let allProducts = [];
+  let url = `https://graph.facebook.com/v25.0/${CATALOG_ID}/products?fields=id,name,description,price,sale_price,image_url,availability,category&limit=100&access_token=${META_ACCESS_TOKEN}`;
+
+  while (url) {
+    const res = await fetch(url);
+    const data = await res.json();
+    if (data.error) throw new Error(`Meta API error: ${data.error.message}`);
+    allProducts = allProducts.concat(data.data || []);
+    url = data.paging?.next || null;
+  }
+
+  let synced = 0;
+  for (const mp of allProducts) {
+    const price = parseMetaPrice(mp.price);
+    const salePrice = mp.sale_price ? parseMetaPrice(mp.sale_price) : null;
+
+    await collection.updateOne(
+      { metaId: mp.id },
+      {
+        $set: {
+          metaId: mp.id,
+          name: mp.name || '',
+          description: mp.description || '',
+          price: price,
+          originalPrice: price,
+          discountedPrice: salePrice || undefined,
+          category: mp.category || 'General',
+          image: mp.image_url || '',
+          imageUrl: mp.image_url || '',
+          availability: mp.availability || 'in stock',
+          updatedAt: new Date(),
+        },
+        $setOnInsert: { createdAt: new Date() },
+      },
+      { upsert: true }
+    );
+    synced++;
+  }
+
+  return { synced, total: allProducts.length };
 }
 
 export default async function handler(req, res) {
@@ -24,14 +77,23 @@ export default async function handler(req, res) {
     const inventory = db.collection('inventory');
 
     if (req.method === 'GET') {
-      const { id, withStock } = req.query;
+      const { id, withStock, syncMeta } = req.query;
 
-      // Single product by ID
+      // ── Meta Sync ──────────────────────────────────────────────
+      if (syncMeta === 'true') {
+        const result = await syncMetaToMongo(collection);
+        return res.status(200).json({
+          success: true,
+          message: `Synced ${result.synced} of ${result.total} products from Meta catalog`,
+          ...result,
+        });
+      }
+
+      // ── Single product by ID ───────────────────────────────────
       if (id) {
         const product = await collection.findOne({ _id: new ObjectId(id) });
         if (!product) return res.status(404).json({ error: 'Product not found' });
 
-        // Always attach stock info to single product fetch
         const stock = await inventory.findOne({ productId: id });
         product.stock = stock
           ? {
@@ -39,7 +101,8 @@ export default async function handler(req, res) {
               total: stock.currentStock,
               reserved: stock.reservedStock,
               isInStock: stock.availableStock > 0,
-              lowStock: stock.trackInventory && stock.availableStock <= stock.lowStockAlert && stock.availableStock > 0,
+              isLowStock: stock.trackInventory && stock.availableStock <= stock.lowStockAlert && stock.availableStock > 0,
+              availableStock: stock.availableStock,
               trackInventory: stock.trackInventory,
               sku: stock.sku,
             }
@@ -48,11 +111,9 @@ export default async function handler(req, res) {
         return res.status(200).json(product);
       }
 
-      // All products
+      // ── All products ───────────────────────────────────────────
       const products = await collection.find({}).sort({ createdAt: -1 }).toArray();
 
-      // Attach stock to every product if withStock=true (for admin panel)
-      // On the public website, stock is fetched per-product to keep it fast
       if (withStock === 'true') {
         const enriched = await Promise.all(
           products.map(async (p) => {
@@ -64,7 +125,8 @@ export default async function handler(req, res) {
                   total: stock.currentStock,
                   reserved: stock.reservedStock,
                   isInStock: stock.availableStock > 0,
-                  lowStock: stock.trackInventory && stock.availableStock <= stock.lowStockAlert && stock.availableStock > 0,
+                  isLowStock: stock.trackInventory && stock.availableStock <= stock.lowStockAlert && stock.availableStock > 0,
+                  availableStock: stock.availableStock,
                   trackInventory: stock.trackInventory,
                   sku: stock.sku,
                 }
@@ -82,7 +144,6 @@ export default async function handler(req, res) {
       const product = { ...req.body, createdAt: new Date() };
       const result = await collection.insertOne(product);
 
-      // Auto-create inventory entry with 0 stock if trackInventory requested
       if (req.body.trackInventory) {
         await inventory.insertOne({
           productId: result.insertedId.toString(),
