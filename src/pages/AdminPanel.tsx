@@ -757,31 +757,45 @@ function SettingsIcon({ className }: { className?: string }) {
 
 function ImportProductsSection() {
   const [status, setStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
-  const [message, setMessage] = useState('');
+  const [progress, setProgress] = useState({ current: 0, total: 0 });
+  const [results, setResults] = useState<{ name: string; ok: boolean; error?: string }[]>([]);
   const [preview, setPreview] = useState<any[]>([]);
+  const [message, setMessage] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
+
+  // Same CSV columns as AddProductFormEmbed fields
+  const CSV_COLUMNS = ['name', 'category', 'subcategory', 'originalPrice', 'discountedPrice', 'description', 'videoUrl', 'imageUrl'];
 
   const parseCSV = (text: string) => {
     const lines = text.trim().split('\n');
     const headers = lines[0].split(',').map(h => h.trim().replace(/"/g, ''));
     return lines.slice(1).map(line => {
-      const values = line.split(',').map(v => v.trim().replace(/"/g, ''));
+      // handle commas inside quoted fields
+      const values: string[] = [];
+      let cur = ''; let inQ = false;
+      for (const ch of line) {
+        if (ch === '"') { inQ = !inQ; }
+        else if (ch === ',' && !inQ) { values.push(cur.trim()); cur = ''; }
+        else { cur += ch; }
+      }
+      values.push(cur.trim());
       const obj: Record<string, string> = {};
-      headers.forEach((h, i) => { obj[h] = values[i] || ''; });
+      headers.forEach((h, i) => { obj[h] = (values[i] || '').replace(/"/g, ''); });
       return obj;
-    }).filter(row => Object.values(row).some(v => v));
+    }).filter(row => row.name?.trim());
   };
 
   const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    setStatus('idle'); setMessage(''); setPreview([]);
+    setStatus('idle'); setMessage(''); setPreview([]); setResults([]);
     const reader = new FileReader();
     reader.onload = (ev) => {
       try {
         const rows = parseCSV(ev.target?.result as string);
+        if (rows.length === 0) { setMessage('❌ No valid rows found. Check your CSV has a "name" column.'); return; }
         setPreview(rows.slice(0, 5));
-        setMessage(`✅ ${rows.length} rows ready to import. Preview shows first 5.`);
+        setMessage(`✅ ${rows.length} products ready to import. Preview shows first 5.`);
       } catch {
         setMessage('❌ Could not parse CSV. Please check the format.');
       }
@@ -789,45 +803,88 @@ function ImportProductsSection() {
     reader.readAsText(file);
   };
 
+  // Same exact API call as AddProductFormEmbed.handleSubmit
+  const saveProduct = async (row: Record<string, string>) => {
+    const imageUrls: string[] = [];
+
+    // If imageUrl column has a value it's already a URL (no file upload needed for CSV)
+    if (row.imageUrl?.trim()) imageUrls.push(row.imageUrl.trim());
+
+    const payload = {
+      name:            row.name || '',
+      category:        row.category || '',
+      subcategory:     row.subcategory || '',
+      originalPrice:   row.originalPrice || '',
+      discountedPrice: row.discountedPrice || '',
+      description:     row.description || '',
+      videoUrl:        row.videoUrl || '',
+      imageUrl:        imageUrls[0] || '',   // exact same keys as AddProductFormEmbed
+      image:           imageUrls[0] || '',
+      imageUrls,
+    };
+
+    const res = await fetch('/api/products', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || res.statusText);
+    }
+    return res.json();
+  };
+
   const handleImport = async () => {
     const file = fileRef.current?.files?.[0];
     if (!file) return;
-    setStatus('loading'); setMessage('Importing...');
-    try {
-      const text = await file.text();
-      const rows = parseCSV(text);
-      const res = await fetch('/api/import-products', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ items: rows }),
-      });
-      if (res.ok) {
-        setStatus('success');
-        setMessage(`✅ Successfully imported ${rows.length} products!`);
-        setPreview([]);
-        if (fileRef.current) fileRef.current.value = '';
-      } else {
-        const err = await res.json().catch(() => ({}));
-        setStatus('error');
-        setMessage(`❌ Import failed: ${err.error || res.statusText}`);
+    const rows = parseCSV(await file.text());
+    setStatus('loading');
+    setProgress({ current: 0, total: rows.length });
+    setResults([]);
+    setMessage('');
+
+    const newResults: { name: string; ok: boolean; error?: string }[] = [];
+
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      try {
+        await saveProduct(row);
+        newResults.push({ name: row.name, ok: true });
+      } catch (err: any) {
+        newResults.push({ name: row.name, ok: false, error: err.message });
       }
-    } catch (err) {
-      setStatus('error');
-      setMessage('❌ Import failed. Check your connection and try again.');
+      setProgress({ current: i + 1, total: rows.length });
+      setResults([...newResults]);
     }
+
+    const failed = newResults.filter(r => !r.ok).length;
+    setStatus(failed === 0 ? 'success' : 'error');
+    setMessage(failed === 0
+      ? `✅ All ${rows.length} products imported successfully! They will sync to FB Shop & WhatsApp automatically.`
+      : `⚠️ ${rows.length - failed} imported, ${failed} failed. See details below.`
+    );
+    if (fileRef.current) fileRef.current.value = '';
+    setPreview([]);
   };
 
   const downloadTemplate = () => {
-    const csv = `name,category,sub_category,price,description,stock\nRC Car,Toys,R.C Toys,25.99,Fast RC Car,100\nTent,Adventure Gears,Camping,89.99,2-person tent,50`;
+    const header = CSV_COLUMNS.join(',');
+    const example1 = 'RC Car,Toys,R.C Toys,2599,1999,Fast and fun RC car,,https://your-image-url.com/rc-car.jpg';
+    const example2 = 'Camping Tent,Adventure Gears,Camping,8999,,Waterproof 2-person tent,,https://your-image-url.com/tent.jpg';
+    const csv = `${header}\n${example1}\n${example2}`;
     const blob = new Blob([csv], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
-    const a = document.createElement('a'); a.href = url; a.download = 'products-template.csv'; a.click();
+    const a = document.createElement('a'); a.href = url; a.download = 'tags-products-template.csv'; a.click();
     URL.revokeObjectURL(url);
   };
 
+  const pct = progress.total > 0 ? Math.round((progress.current / progress.total) * 100) : 0;
+
   return (
     <div className="max-w-2xl mx-auto space-y-4">
-      <SectionHeader icon={Upload} title="Import Products" desc="Bulk import products via CSV file" />
+      <SectionHeader icon={Upload} title="Import Products" desc="Bulk import via CSV — syncs to FB Shop & WhatsApp automatically" />
 
       {/* Download Template */}
       <div className="bg-blue-50 border border-blue-200 rounded-2xl p-5 flex items-center gap-4">
@@ -836,7 +893,7 @@ function ImportProductsSection() {
         </div>
         <div className="flex-1">
           <p className="text-sm font-black text-gray-800">Download CSV Template</p>
-          <p className="text-xs text-gray-500">Use this template to fill in your product data</p>
+          <p className="text-xs text-gray-500">Fill in this template and upload it below</p>
         </div>
         <button onClick={downloadTemplate}
           className="shrink-0 bg-blue-600 text-white text-xs font-black px-4 py-2 rounded-xl hover:bg-blue-700 transition uppercase tracking-widest">
@@ -844,59 +901,73 @@ function ImportProductsSection() {
         </button>
       </div>
 
-      {/* CSV Format Guide */}
+      {/* Column guide */}
       <div className="bg-white rounded-2xl border border-gray-200 p-5 shadow-sm">
-        <p className="text-xs font-black uppercase tracking-widest text-gray-500 mb-3">CSV Format (required columns)</p>
-        <div className="overflow-x-auto">
-          <table className="w-full text-xs">
-            <thead>
-              <tr className="bg-gray-50 rounded-xl">
-                {['name','category','sub_category','price','description','stock'].map(h => (
-                  <th key={h} className="text-left px-3 py-2 font-black uppercase tracking-widest text-gray-500">{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              <tr className="border-t border-gray-100">
-                <td className="px-3 py-2 text-gray-600">RC Car</td>
-                <td className="px-3 py-2 text-gray-600">Toys</td>
-                <td className="px-3 py-2 text-gray-600">R.C Toys</td>
-                <td className="px-3 py-2 text-gray-600">25.99</td>
-                <td className="px-3 py-2 text-gray-600">Fast RC Car</td>
-                <td className="px-3 py-2 text-gray-600">100</td>
-              </tr>
-            </tbody>
-          </table>
+        <p className="text-xs font-black uppercase tracking-widest text-gray-500 mb-3">CSV Columns (same as Add Product form)</p>
+        <div className="grid grid-cols-2 gap-2">
+          {[
+            { col: 'name', note: 'Required', req: true },
+            { col: 'category', note: 'Required — must match your categories', req: true },
+            { col: 'subcategory', note: 'Optional' },
+            { col: 'originalPrice', note: 'Required — numbers only (e.g. 2599)', req: true },
+            { col: 'discountedPrice', note: 'Optional — sale price' },
+            { col: 'description', note: 'Optional' },
+            { col: 'videoUrl', note: 'Optional — YouTube/FB/IG/TikTok' },
+            { col: 'imageUrl', note: 'Optional — paste image URL' },
+          ].map(({ col, note, req }) => (
+            <div key={col} className="flex items-start gap-2 p-2 rounded-xl bg-gray-50">
+              <span className={`text-[10px] font-black px-1.5 py-0.5 rounded-full shrink-0 mt-0.5 ${req ? 'bg-orange-100 text-[#FA5600]' : 'bg-gray-200 text-gray-400'}`}>
+                {req ? 'REQ' : 'OPT'}
+              </span>
+              <div>
+                <p className="text-xs font-black text-gray-800">{col}</p>
+                <p className="text-[10px] text-gray-400">{note}</p>
+              </div>
+            </div>
+          ))}
         </div>
       </div>
 
-      {/* Upload Area */}
+      {/* Upload area */}
       <div className="bg-white rounded-2xl border border-gray-200 p-6 shadow-sm space-y-4">
-        <div
-          onClick={() => fileRef.current?.click()}
+        <div onClick={() => fileRef.current?.click()}
           className="border-2 border-dashed border-gray-200 hover:border-[#FA5600] rounded-2xl p-10 text-center cursor-pointer transition group">
           <Upload className="w-10 h-10 text-gray-300 group-hover:text-[#FA5600] mx-auto mb-3 transition" />
           <p className="font-black text-sm text-gray-700 uppercase tracking-widest">Click to Upload CSV</p>
-          <p className="text-xs text-gray-400 mt-1">Only .csv files are supported</p>
+          <p className="text-xs text-gray-400 mt-1">Only .csv files supported</p>
           <input ref={fileRef} type="file" accept=".csv" onChange={handleFile} className="hidden" />
         </div>
 
         {message && (
           <div className={`rounded-xl p-3 text-sm font-bold text-center ${
             status === 'success' ? 'bg-green-50 text-green-700 border border-green-200' :
-            status === 'error'   ? 'bg-red-50 text-red-700 border border-red-200' :
+            status === 'error'   ? 'bg-orange-50 text-orange-700 border border-orange-200' :
                                    'bg-blue-50 text-blue-700 border border-blue-200'
           }`}>{message}</div>
         )}
 
-        {/* Preview Table */}
-        {preview.length > 0 && (
+        {/* Progress bar */}
+        {status === 'loading' && (
+          <div>
+            <div className="flex justify-between text-xs font-black text-gray-500 mb-1">
+              <span>Importing... {progress.current} / {progress.total}</span>
+              <span>{pct}%</span>
+            </div>
+            <div className="w-full bg-gray-100 rounded-full h-3">
+              <div className="bg-[#FA5600] h-3 rounded-full transition-all" style={{ width: `${pct}%` }} />
+            </div>
+          </div>
+        )}
+
+        {/* Preview table */}
+        {preview.length > 0 && status === 'idle' && (
           <div className="overflow-x-auto rounded-xl border border-gray-100">
-            <table className="w-full text-xs">
+            <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 px-3 pt-2">Preview (first 5 rows)</p>
+            <table className="w-full text-xs mt-1">
               <thead>
                 <tr className="bg-gray-50">
                   {Object.keys(preview[0]).map(h => (
-                    <th key={h} className="text-left px-3 py-2 font-black uppercase tracking-widest text-gray-500">{h}</th>
+                    <th key={h} className="text-left px-3 py-2 font-black uppercase tracking-widest text-gray-500 whitespace-nowrap">{h}</th>
                   ))}
                 </tr>
               </thead>
@@ -904,7 +975,7 @@ function ImportProductsSection() {
                 {preview.map((row, i) => (
                   <tr key={i} className="hover:bg-gray-50">
                     {Object.values(row).map((val: any, j) => (
-                      <td key={j} className="px-3 py-2 text-gray-600 truncate max-w-[120px]">{val}</td>
+                      <td key={j} className="px-3 py-2 text-gray-600 truncate max-w-[100px]">{val}</td>
                     ))}
                   </tr>
                 ))}
@@ -913,10 +984,23 @@ function ImportProductsSection() {
           </div>
         )}
 
-        {preview.length > 0 && (
-          <button onClick={handleImport} disabled={status === 'loading'}
-            className="w-full py-3 bg-[#FA5600] text-white font-black uppercase tracking-widest text-sm rounded-xl hover:bg-[#E04A00] transition disabled:opacity-60 flex items-center justify-center gap-2">
-            {status === 'loading' ? 'Importing...' : <><Upload className="w-4 h-4" /> Import Now</>}
+        {/* Per-product results */}
+        {results.length > 0 && (
+          <div className="space-y-1 max-h-48 overflow-y-auto">
+            {results.map((r, i) => (
+              <div key={i} className={`flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-bold ${r.ok ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-600'}`}>
+                <span>{r.ok ? '✅' : '❌'}</span>
+                <span className="flex-1 truncate">{r.name}</span>
+                {r.error && <span className="text-[10px] opacity-70">{r.error}</span>}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {preview.length > 0 && status === 'idle' && (
+          <button onClick={handleImport}
+            className="w-full py-3 bg-[#FA5600] text-white font-black uppercase tracking-widest text-sm rounded-xl hover:bg-[#E04A00] transition flex items-center justify-center gap-2">
+            <Upload className="w-4 h-4" /> Import {preview.length > 0 ? 'All Products' : ''}
           </button>
         )}
       </div>
