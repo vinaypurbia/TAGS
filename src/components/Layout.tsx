@@ -8,7 +8,7 @@ export function Layout({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
   const [searchQuery, setSearchQuery] = useState('');
   const [categories, setCategories] = useState<string[]>([]);
-  const [promoText, setPromoText] = useState('🔥 TAGS · Free Shipping on Orders Over ₹999 · Up to 90% Off Today!');
+  const [promoText, setPromoText] = useState<string | null>(null); // null = not loaded yet
   const [promoLines, setPromoLines] = useState<string[]>([]);
   const [promoIndex, setPromoIndex] = useState(0);
 
@@ -32,7 +32,10 @@ export function Layout({ children }: { children: ReactNode }) {
       .then(data => {
         if (data?.promoLines) {
           const active = data.promoLines.filter((l: any) => l.text?.trim()).map((l: any) => l.text);
-          if (active.length > 0) { setPromoLines(active); setPromoText(active[0]); }
+          if (active.length > 0) {
+            setPromoLines(active);
+            setPromoText(active[0]);
+          }
         } else if (data?.promoText) {
           setPromoText(data.promoText);
         }
@@ -59,16 +62,18 @@ export function Layout({ children }: { children: ReactNode }) {
   return (
     <div className="min-h-screen flex flex-col max-w-[1200px] mx-auto bg-[#F5F5F5] shadow-2xl relative">
 
-      {/* Dynamic Scrolling Promo Banner */}
-      <div className="bg-[#FA5600] text-white text-[10px] font-bold uppercase tracking-widest px-8 py-1.5 text-center overflow-hidden relative h-6 flex items-center justify-center">
-        {promoLines.length > 1 ? (
-          <span key={promoIndex} className="animate-fade-in absolute">
-            {promoLines[promoIndex]}
-          </span>
-        ) : (
-          <span>{promoText}</span>
-        )}
-      </div>
+      {/* Dynamic Scrolling Promo Banner — hidden until backend data is loaded */}
+      {promoText !== null && (
+        <div className="bg-[#FA5600] text-white text-[10px] font-bold uppercase tracking-widest px-8 py-1.5 text-center overflow-hidden relative h-6 flex items-center justify-center">
+          {promoLines.length > 1 ? (
+            <span key={promoIndex} className="animate-fade-in absolute">
+              {promoLines[promoIndex]}
+            </span>
+          ) : (
+            <span>{promoText}</span>
+          )}
+        </div>
+      )}
 
       {/* Main Header */}
       <header className="bg-white text-[#1A1A1A] px-6 py-3 z-50 sticky top-0 flex justify-between items-center shadow-sm border-b border-gray-200">
@@ -163,7 +168,6 @@ export function Layout({ children }: { children: ReactNode }) {
                 <MapPin className="w-3.5 h-3.5 text-[#FA5600] mt-0.5 shrink-0" />
                 <span>5, B Inside Hathipole, Street #2,<br />Gulabeshwar Marg, Udaipur - 313001,<br />Rajasthan, India</span>
               </li>
-              {/* ✅ Google Maps button below address */}
               <li>
                 <a href={mapsLink} target="_blank" rel="noopener noreferrer"
                   className="inline-flex items-center gap-1 text-[#FA5600] hover:underline font-bold text-xs mt-1">
