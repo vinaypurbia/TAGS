@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 
 export function Home() {
   const [categories, setCategories] = useState<{ _id: string; name: string; image?: string }[]>([]);
+  const [categoriesLoaded, setCategoriesLoaded] = useState(false);
   const [settings, setSettings] = useState<{
     promoText?: string;
     bannerImage?: string;
@@ -26,7 +27,8 @@ export function Home() {
           setCategories(filtered);
         }
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setCategoriesLoaded(true));
 
     fetch('/api/banner')
       .then(res => res.json())
@@ -67,7 +69,7 @@ export function Home() {
       {/* ===== DYNAMIC HERO BANNER CAROUSEL ===== */}
       <section className="relative overflow-hidden border-b-4 border-[#FA5600] min-h-[400px] lg:min-h-[500px] flex items-center">
 
-        {/* ✅ Loading spinner — shown while API is in flight */}
+        {/* Loading spinner — shown while API is in flight */}
         {!settingsLoaded && (
           <div className="absolute inset-0 bg-[#1A1A1A] flex items-center justify-center">
             <div className="w-10 h-10 border-4 border-white/20 border-t-[#FA5600] rounded-full animate-spin" />
@@ -216,25 +218,29 @@ export function Home() {
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {(categories.length > 0
-              ? categories
-              : ['Electronics', 'Automotive', 'Travel Gear', 'Toys'].map(name => ({ _id: name, name }))
-            ).map((cat: any, index) => (
-              <Link
-                to={`/products?category=${encodeURIComponent(cat.name)}`}
-                key={cat._id}
-                className="group relative h-48 border-2 border-black overflow-hidden card-hover block bg-black">
-                <img
-                  src={cat.image || defaultImages[cat.name] || fallbackImages[index % 4]}
-                  alt={cat.name}
-                  className="absolute inset-0 w-full h-full object-cover transition-transform duration-500 group-hover:scale-105 opacity-60 group-hover:opacity-40"
-                />
-                <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent" />
-                <div className="absolute inset-0 p-6 flex flex-col justify-end">
-                  <h3 className="text-3xl font-black text-white uppercase tracking-tighter">{cat.name}</h3>
-                </div>
-              </Link>
-            ))}
+            {!categoriesLoaded ? (
+              // Skeleton placeholders while loading — no hardcoded data shown
+              [1, 2, 3, 4].map(i => (
+                <div key={i} className="h-48 border-2 border-black bg-gray-800 animate-pulse rounded" />
+              ))
+            ) : (
+              categories.map((cat: any, index) => (
+                <Link
+                  to={`/products?category=${encodeURIComponent(cat.name)}`}
+                  key={cat._id}
+                  className="group relative h-48 border-2 border-black overflow-hidden card-hover block bg-black">
+                  <img
+                    src={cat.image || defaultImages[cat.name] || fallbackImages[index % 4]}
+                    alt={cat.name}
+                    className="absolute inset-0 w-full h-full object-cover transition-transform duration-500 group-hover:scale-105 opacity-60 group-hover:opacity-40"
+                  />
+                  <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent" />
+                  <div className="absolute inset-0 p-6 flex flex-col justify-end">
+                    <h3 className="text-3xl font-black text-white uppercase tracking-tighter">{cat.name}</h3>
+                  </div>
+                </Link>
+              ))
+            )}
           </div>
 
           <div className="mt-8 sm:hidden text-center">
