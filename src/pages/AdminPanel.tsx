@@ -16,7 +16,7 @@ const VISIBILITY_KEY = 'tagsAdminVisibility';
 
 type Section =
   | 'dashboard' | 'promo' | 'banner' | 'category-images'
-  | 'products' | 'categories' | 'inventory' | 'business' | 'settings';
+  | 'products' | 'categories' | 'inventory' | 'business' | 'settings' | 'import';
 
 interface BannerSlide { image: string; text: string; description: string; }
 interface PromoLine { text: string; }
@@ -30,6 +30,7 @@ const ALL_MODULES: { id: Section; label: string; icon: any; desc: string }[] = [
   { id: 'category-images', label: 'Category Images',  icon: Tag,             desc: 'Upload category covers' },
   { id: 'banner',          label: 'Hero Banners',     icon: Image,           desc: 'Homepage banners' },
   { id: 'promo',           label: 'Offer Bar',        icon: Megaphone,       desc: 'Scrolling announcements' },
+  { id: 'import',          label: 'Import Products',  icon: Upload,          desc: 'Bulk import via CSV' },
   { id: 'settings',        label: 'Settings',         icon: SettingsIcon,    desc: 'Module visibility' },
 ];
 
@@ -681,6 +682,11 @@ export function AdminPanel() {
             </div>
           )}
 
+          {/* ── IMPORT PRODUCTS ── */}
+          {activeSection === 'import' && (
+            <ImportProductsSection />
+          )}
+
           {/* ── SETTINGS ── */}
           {activeSection === 'settings' && (
             <div className="max-w-2xl mx-auto space-y-4">
@@ -746,6 +752,175 @@ function SettingsIcon({ className }: { className?: string }) {
       <path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
       <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
     </svg>
+  );
+}
+
+function ImportProductsSection() {
+  const [status, setStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
+  const [message, setMessage] = useState('');
+  const [preview, setPreview] = useState<any[]>([]);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const parseCSV = (text: string) => {
+    const lines = text.trim().split('\n');
+    const headers = lines[0].split(',').map(h => h.trim().replace(/"/g, ''));
+    return lines.slice(1).map(line => {
+      const values = line.split(',').map(v => v.trim().replace(/"/g, ''));
+      const obj: Record<string, string> = {};
+      headers.forEach((h, i) => { obj[h] = values[i] || ''; });
+      return obj;
+    }).filter(row => Object.values(row).some(v => v));
+  };
+
+  const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setStatus('idle'); setMessage(''); setPreview([]);
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const rows = parseCSV(ev.target?.result as string);
+        setPreview(rows.slice(0, 5));
+        setMessage(`✅ ${rows.length} rows ready to import. Preview shows first 5.`);
+      } catch {
+        setMessage('❌ Could not parse CSV. Please check the format.');
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  const handleImport = async () => {
+    const file = fileRef.current?.files?.[0];
+    if (!file) return;
+    setStatus('loading'); setMessage('Importing...');
+    try {
+      const text = await file.text();
+      const rows = parseCSV(text);
+      const res = await fetch('/api/import-products', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items: rows }),
+      });
+      if (res.ok) {
+        setStatus('success');
+        setMessage(`✅ Successfully imported ${rows.length} products!`);
+        setPreview([]);
+        if (fileRef.current) fileRef.current.value = '';
+      } else {
+        const err = await res.json().catch(() => ({}));
+        setStatus('error');
+        setMessage(`❌ Import failed: ${err.error || res.statusText}`);
+      }
+    } catch (err) {
+      setStatus('error');
+      setMessage('❌ Import failed. Check your connection and try again.');
+    }
+  };
+
+  const downloadTemplate = () => {
+    const csv = `name,category,sub_category,price,description,stock\nRC Car,Toys,R.C Toys,25.99,Fast RC Car,100\nTent,Adventure Gears,Camping,89.99,2-person tent,50`;
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = 'products-template.csv'; a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div className="max-w-2xl mx-auto space-y-4">
+      <SectionHeader icon={Upload} title="Import Products" desc="Bulk import products via CSV file" />
+
+      {/* Download Template */}
+      <div className="bg-blue-50 border border-blue-200 rounded-2xl p-5 flex items-center gap-4">
+        <div className="w-10 h-10 bg-blue-100 rounded-xl flex items-center justify-center shrink-0">
+          <Upload className="w-5 h-5 text-blue-600" />
+        </div>
+        <div className="flex-1">
+          <p className="text-sm font-black text-gray-800">Download CSV Template</p>
+          <p className="text-xs text-gray-500">Use this template to fill in your product data</p>
+        </div>
+        <button onClick={downloadTemplate}
+          className="shrink-0 bg-blue-600 text-white text-xs font-black px-4 py-2 rounded-xl hover:bg-blue-700 transition uppercase tracking-widest">
+          Download
+        </button>
+      </div>
+
+      {/* CSV Format Guide */}
+      <div className="bg-white rounded-2xl border border-gray-200 p-5 shadow-sm">
+        <p className="text-xs font-black uppercase tracking-widest text-gray-500 mb-3">CSV Format (required columns)</p>
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="bg-gray-50 rounded-xl">
+                {['name','category','sub_category','price','description','stock'].map(h => (
+                  <th key={h} className="text-left px-3 py-2 font-black uppercase tracking-widest text-gray-500">{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              <tr className="border-t border-gray-100">
+                <td className="px-3 py-2 text-gray-600">RC Car</td>
+                <td className="px-3 py-2 text-gray-600">Toys</td>
+                <td className="px-3 py-2 text-gray-600">R.C Toys</td>
+                <td className="px-3 py-2 text-gray-600">25.99</td>
+                <td className="px-3 py-2 text-gray-600">Fast RC Car</td>
+                <td className="px-3 py-2 text-gray-600">100</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Upload Area */}
+      <div className="bg-white rounded-2xl border border-gray-200 p-6 shadow-sm space-y-4">
+        <div
+          onClick={() => fileRef.current?.click()}
+          className="border-2 border-dashed border-gray-200 hover:border-[#FA5600] rounded-2xl p-10 text-center cursor-pointer transition group">
+          <Upload className="w-10 h-10 text-gray-300 group-hover:text-[#FA5600] mx-auto mb-3 transition" />
+          <p className="font-black text-sm text-gray-700 uppercase tracking-widest">Click to Upload CSV</p>
+          <p className="text-xs text-gray-400 mt-1">Only .csv files are supported</p>
+          <input ref={fileRef} type="file" accept=".csv" onChange={handleFile} className="hidden" />
+        </div>
+
+        {message && (
+          <div className={`rounded-xl p-3 text-sm font-bold text-center ${
+            status === 'success' ? 'bg-green-50 text-green-700 border border-green-200' :
+            status === 'error'   ? 'bg-red-50 text-red-700 border border-red-200' :
+                                   'bg-blue-50 text-blue-700 border border-blue-200'
+          }`}>{message}</div>
+        )}
+
+        {/* Preview Table */}
+        {preview.length > 0 && (
+          <div className="overflow-x-auto rounded-xl border border-gray-100">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="bg-gray-50">
+                  {Object.keys(preview[0]).map(h => (
+                    <th key={h} className="text-left px-3 py-2 font-black uppercase tracking-widest text-gray-500">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {preview.map((row, i) => (
+                  <tr key={i} className="hover:bg-gray-50">
+                    {Object.values(row).map((val: any, j) => (
+                      <td key={j} className="px-3 py-2 text-gray-600 truncate max-w-[120px]">{val}</td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {preview.length > 0 && (
+          <button onClick={handleImport} disabled={status === 'loading'}
+            className="w-full py-3 bg-[#FA5600] text-white font-black uppercase tracking-widest text-sm rounded-xl hover:bg-[#E04A00] transition disabled:opacity-60 flex items-center justify-center gap-2">
+            {status === 'loading' ? 'Importing...' : <><Upload className="w-4 h-4" /> Import Now</>}
+          </button>
+        )}
+      </div>
+    </div>
   );
 }
 
