@@ -19,17 +19,15 @@ function parseMetaPrice(priceStr) {
   return parseFloat(priceStr.replace(/[^0-9.]/g, '')) || 0;
 }
 
-// Map your categories to Google product category IDs
-// Full list: https://www.google.com/basepages/producttype/taxonomy-with-ids.en-US.txt
 function getFbProductCategory(category) {
   const map = {
-    'Toys': '1253',           // Toys & Games
-    'Electronics': '222',     // Electronics
-    'Automotive': '916',      // Vehicles & Parts
-    'Travel Gear': '5613',    // Luggage & Bags
-    'Sports': '499',          // Sporting Goods
-    'Gadgets': '222',         // Electronics
-    'General': '1',           // Arts & Entertainment (fallback)
+    'Toys': '1253',
+    'Electronics': '222',
+    'Automotive': '916',
+    'Travel Gear': '5613',
+    'Sports': '499',
+    'Gadgets': '222',
+    'General': '1',
   };
   return map[category] || '1';
 }
@@ -41,6 +39,10 @@ async function pushProductToMeta(product, metaId = null) {
   const price = parseFloat(product.discountedPrice || product.originalPrice || product.price || 0);
   const originalPrice = parseFloat(product.originalPrice || product.price || 0);
 
+  // Meta Catalog API expects price as integer (minor units) + separate currency
+  const priceInPaise = Math.round(price * 100);
+  const originalPriceInPaise = Math.round(originalPrice * 100);
+
   const body = {
     name: product.name,
     description: product.description || product.name,
@@ -50,13 +52,14 @@ async function pushProductToMeta(product, metaId = null) {
     url: `https://www.ta-gs.online/products/${product._id || ''}`,
     brand: 'TAGS',
     fb_product_category: getFbProductCategory(product.category),
+    currency: 'INR',
+    price: priceInPaise,
   };
 
   if (originalPrice > price) {
-    body.price = `${Math.round(originalPrice * 100)} INR`;
-    body.sale_price = `${Math.round(price * 100)} INR`;
-  } else {
-    body.price = `${Math.round(price * 100)} INR`;
+    body.price = originalPriceInPaise;
+    body.sale_price = priceInPaise;
+    body.sale_price_currency = 'INR';
   }
 
   if (metaId) {
@@ -65,8 +68,7 @@ async function pushProductToMeta(product, metaId = null) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ...body, access_token: META_ACCESS_TOKEN }),
     });
-    const data = await res.json();
-    return data;
+    return res.json();
   }
 
   const res = await fetch(`https://graph.facebook.com/v25.0/${CATALOG_ID}/products`, {
@@ -78,8 +80,7 @@ async function pushProductToMeta(product, metaId = null) {
       access_token: META_ACCESS_TOKEN,
     }),
   });
-  const data = await res.json();
-  return data;
+  return res.json();
 }
 
 // ── Delete a product FROM Meta catalog ────────────────────────
@@ -152,7 +153,6 @@ export default async function handler(req, res) {
     if (req.method === 'GET') {
       const { id, withStock, syncMeta, pushAll } = req.query;
 
-      // ── Pull Meta → MongoDB ────────────────────────────────────
       if (syncMeta === 'true') {
         const result = await syncMetaToMongo(collection);
         return res.status(200).json({
@@ -162,7 +162,6 @@ export default async function handler(req, res) {
         });
       }
 
-      // ── Push ALL MongoDB products → Meta ───────────────────────
       if (pushAll === 'true') {
         const allProducts = await collection.find({}).toArray();
         let pushed = 0, failed = 0, errors = [], results = [];
@@ -175,19 +174,18 @@ export default async function handler(req, res) {
               product.metaId || null
             );
 
-            // Log Meta response for debugging
             results.push({ name: product.name, metaResponse: metaResult });
 
-            if (metaResult?.id) {
-              await collection.updateOne(
-                { _id: product._id },
-                { $set: { metaId: metaResult.id } }
-              );
-              pushed++;
-            } else if (metaResult?.error) {
+            if (metaResult?.error) {
               failed++;
               errors.push({ name: product.name, error: metaResult.error.message });
             } else {
+              if (metaResult?.id) {
+                await collection.updateOne(
+                  { _id: product._id },
+                  { $set: { metaId: metaResult.id } }
+                );
+              }
               pushed++;
             }
           } catch (err) {
@@ -203,11 +201,10 @@ export default async function handler(req, res) {
           failed,
           total: allProducts.length,
           errors: errors.length > 0 ? errors : undefined,
-          results, // detailed per-product Meta responses
+          results,
         });
       }
 
-      // ── Single product by ID ───────────────────────────────────
       if (id) {
         const product = await collection.findOne({ _id: new ObjectId(id) });
         if (!product) return res.status(404).json({ error: 'Product not found' });
@@ -229,7 +226,6 @@ export default async function handler(req, res) {
         return res.status(200).json(product);
       }
 
-      // ── All products ───────────────────────────────────────────
       const products = await collection.find({}).sort({ createdAt: -1 }).toArray();
 
       if (withStock === 'true') {
@@ -258,7 +254,6 @@ export default async function handler(req, res) {
       return res.status(200).json(products);
     }
 
-    // ── POST: Add product → MongoDB + Meta ────────────────────────
     if (req.method === 'POST') {
       const product = { ...req.body, createdAt: new Date() };
       const result = await collection.insertOne(product);
@@ -295,7 +290,6 @@ export default async function handler(req, res) {
       return res.status(201).json({ success: true, _id: result.insertedId });
     }
 
-    // ── PUT: Update product → MongoDB + Meta ───────────────────────
     if (req.method === 'PUT') {
       const { id, ...updateData } = req.body;
       if (!id) return res.status(400).json({ error: 'ID is required' });
@@ -320,7 +314,6 @@ export default async function handler(req, res) {
       return res.status(200).json({ success: true });
     }
 
-    // ── DELETE: Remove product → MongoDB + Meta ────────────────────
     if (req.method === 'DELETE') {
       const { id } = req.body;
       if (!id) return res.status(400).json({ error: 'ID is required' });
