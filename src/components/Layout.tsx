@@ -2,46 +2,21 @@ import { ReactNode, useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { ShoppingBag, Phone, Mail, MapPin, Search } from 'lucide-react';
 import { useCart } from '../context/CartContext';
+import { useAppData } from '../context/AppDataContext';
 
 export function Layout({ children }: { children: ReactNode }) {
   const { totalItems } = useCart();
+  const { categories, banner, isLoaded } = useAppData();
   const navigate = useNavigate();
   const [searchQuery, setSearchQuery] = useState('');
-  const [categories, setCategories] = useState<string[]>([]);
-  const [promoText, setPromoText] = useState<string | null>(null); // null = not loaded yet
-  const [promoLines, setPromoLines] = useState<string[]>([]);
   const [promoIndex, setPromoIndex] = useState(0);
 
-  useEffect(() => {
-    fetch('/api/categories')
-      .then(res => res.json())
-      .then(data => {
-        if (Array.isArray(data)) {
-          const mainCats = data
-            .filter((c: any) => !c.parentId && c.name)
-            .sort((a: any, b: any) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime())
-            .map((c: any) => c.name);
-          setCategories(mainCats);
-        }
-      })
-      .catch(() => {});
-
-    // Load dynamic promo text
-    fetch('/api/banner')
-      .then(res => res.json())
-      .then(data => {
-        if (data?.promoLines) {
-          const active = data.promoLines.filter((l: any) => l.text?.trim()).map((l: any) => l.text);
-          if (active.length > 0) {
-            setPromoLines(active);
-            setPromoText(active[0]);
-          }
-        } else if (data?.promoText) {
-          setPromoText(data.promoText);
-        }
-      })
-      .catch(() => {});
-  }, []);
+  // Build promo lines from shared banner data
+  const promoLines = banner?.promoLines
+    ? banner.promoLines.filter((l: any) => l.text?.trim()).map((l: any) => l.text)
+    : banner?.promoText
+    ? [banner.promoText]
+    : [];
 
   // Auto-scroll promo lines
   useEffect(() => {
@@ -62,15 +37,15 @@ export function Layout({ children }: { children: ReactNode }) {
   return (
     <div className="min-h-screen flex flex-col max-w-[1200px] mx-auto bg-[#F5F5F5] shadow-2xl relative">
 
-      {/* Dynamic Scrolling Promo Banner — hidden until backend data is loaded */}
-      {promoText !== null && (
+      {/* Promo Banner — hidden until BOTH APIs loaded, then fades in */}
+      {isLoaded && promoLines.length > 0 && (
         <div className="bg-[#FA5600] text-white text-[10px] font-bold uppercase tracking-widest px-8 py-1.5 text-center overflow-hidden relative h-6 flex items-center justify-center">
           {promoLines.length > 1 ? (
             <span key={promoIndex} className="animate-fade-in absolute">
               {promoLines[promoIndex]}
             </span>
           ) : (
-            <span>{promoText}</span>
+            <span>{promoLines[0]}</span>
           )}
         </div>
       )}
@@ -115,17 +90,23 @@ export function Layout({ children }: { children: ReactNode }) {
         </div>
       </header>
 
-      {/* Category Strip */}
-      <div className="bg-white border-b border-gray-200 px-6 py-2 flex gap-4 overflow-x-auto no-scrollbar">
+      {/* Category Strip — skeleton until BOTH APIs loaded */}
+      <div className="bg-white border-b border-gray-200 px-6 py-2 flex gap-4 overflow-x-auto no-scrollbar items-center">
         <Link to="/products" className="text-xs font-bold uppercase tracking-widest whitespace-nowrap px-3 py-1 rounded-full hover:bg-[#FFF3E0] hover:text-[#FA5600] transition-colors text-gray-600">
           All
         </Link>
-        {categories.map((cat) => (
-          <Link key={cat} to={`/products?category=${encodeURIComponent(cat)}`}
-            className="text-xs font-bold uppercase tracking-widest whitespace-nowrap px-3 py-1 rounded-full hover:bg-[#FFF3E0] hover:text-[#FA5600] transition-colors text-gray-600">
-            {cat}
-          </Link>
-        ))}
+        {!isLoaded ? (
+          [80, 120, 90, 110].map((w, i) => (
+            <div key={i} className="h-5 rounded-full bg-gray-200 animate-pulse shrink-0" style={{ width: w }} />
+          ))
+        ) : (
+          categories.map((cat) => (
+            <Link key={cat._id} to={`/products?category=${encodeURIComponent(cat.name)}`}
+              className="text-xs font-bold uppercase tracking-widest whitespace-nowrap px-3 py-1 rounded-full hover:bg-[#FFF3E0] hover:text-[#FA5600] transition-colors text-gray-600">
+              {cat.name}
+            </Link>
+          ))
+        )}
       </div>
 
       <main className="flex-grow bg-[#F5F5F5] overflow-x-hidden">
