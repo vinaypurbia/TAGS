@@ -19,6 +19,21 @@ function parseMetaPrice(priceStr) {
   return parseFloat(priceStr.replace(/[^0-9.]/g, '')) || 0;
 }
 
+// Map your categories to Google product category IDs
+// Full list: https://www.google.com/basepages/producttype/taxonomy-with-ids.en-US.txt
+function getFbProductCategory(category) {
+  const map = {
+    'Toys': '1253',           // Toys & Games
+    'Electronics': '222',     // Electronics
+    'Automotive': '916',      // Vehicles & Parts
+    'Travel Gear': '5613',    // Luggage & Bags
+    'Sports': '499',          // Sporting Goods
+    'Gadgets': '222',         // Electronics
+    'General': '1',           // Arts & Entertainment (fallback)
+  };
+  return map[category] || '1';
+}
+
 // ── Push a product TO Meta catalog ────────────────────────────
 async function pushProductToMeta(product, metaId = null) {
   if (!META_ACCESS_TOKEN) return null;
@@ -34,6 +49,7 @@ async function pushProductToMeta(product, metaId = null) {
     image_url: product.imageUrl || product.image || '',
     url: `https://www.ta-gs.online/products/${product._id || ''}`,
     brand: 'TAGS',
+    fb_product_category: getFbProductCategory(product.category),
   };
 
   if (originalPrice > price) {
@@ -49,7 +65,8 @@ async function pushProductToMeta(product, metaId = null) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ...body, access_token: META_ACCESS_TOKEN }),
     });
-    return res.json();
+    const data = await res.json();
+    return data;
   }
 
   const res = await fetch(`https://graph.facebook.com/v25.0/${CATALOG_ID}/products`, {
@@ -61,7 +78,8 @@ async function pushProductToMeta(product, metaId = null) {
       access_token: META_ACCESS_TOKEN,
     }),
   });
-  return res.json();
+  const data = await res.json();
+  return data;
 }
 
 // ── Delete a product FROM Meta catalog ────────────────────────
@@ -147,7 +165,7 @@ export default async function handler(req, res) {
       // ── Push ALL MongoDB products → Meta ───────────────────────
       if (pushAll === 'true') {
         const allProducts = await collection.find({}).toArray();
-        let pushed = 0, failed = 0, errors = [];
+        let pushed = 0, failed = 0, errors = [], results = [];
 
         for (const product of allProducts) {
           try {
@@ -156,13 +174,22 @@ export default async function handler(req, res) {
               { ...product, _id: pid },
               product.metaId || null
             );
+
+            // Log Meta response for debugging
+            results.push({ name: product.name, metaResponse: metaResult });
+
             if (metaResult?.id) {
               await collection.updateOne(
                 { _id: product._id },
                 { $set: { metaId: metaResult.id } }
               );
+              pushed++;
+            } else if (metaResult?.error) {
+              failed++;
+              errors.push({ name: product.name, error: metaResult.error.message });
+            } else {
+              pushed++;
             }
-            pushed++;
           } catch (err) {
             failed++;
             errors.push({ name: product.name, error: err.message });
@@ -176,6 +203,7 @@ export default async function handler(req, res) {
           failed,
           total: allProducts.length,
           errors: errors.length > 0 ? errors : undefined,
+          results, // detailed per-product Meta responses
         });
       }
 
