@@ -1,43 +1,13 @@
 import { Link } from 'react-router-dom';
 import { MessageCircle, FileText, CheckCircle, Package, ArrowRight } from 'lucide-react';
 import { useEffect, useState } from 'react';
+import { useAppData } from '../context/AppDataContext';
 
 export function Home() {
-  const [categories, setCategories] = useState<{ _id: string; name: string; image?: string }[]>([]);
-  const [categoriesLoaded, setCategoriesLoaded] = useState(false);
-  const [settings, setSettings] = useState<{
-    promoText?: string;
-    bannerImage?: string;
-    bannerText?: string;
-    bannerSlides?: { image: string; text: string; description: string }[];
-  } | null>(null);
-  const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const { categories, banner, isLoaded } = useAppData();
   const [currentBanner, setCurrentBanner] = useState(0);
 
-  useEffect(() => {
-    fetch('/api/categories')
-      .then(res => res.json())
-      .then(data => {
-        if (Array.isArray(data)) {
-          const filtered = data
-            .filter((c: any) => !c.parentId && c.name && c.name.trim() !== '')
-            .sort((a: any, b: any) =>
-              new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime()
-            );
-          setCategories(filtered);
-        }
-      })
-      .catch(() => {})
-      .finally(() => setCategoriesLoaded(true));
-
-    fetch('/api/banner')
-      .then(res => res.json())
-      .then(data => { if (data && !data.error) setSettings(data); })
-      .catch(() => {})
-      .finally(() => setSettingsLoaded(true));
-  }, []);
-
-  const activeBanners = (settings?.bannerSlides || []).filter(s => s.image);
+  const activeBanners = (banner?.bannerSlides || []).filter(s => s.image);
 
   useEffect(() => {
     if (activeBanners.length <= 1) return;
@@ -46,8 +16,8 @@ export function Home() {
   }, [activeBanners.length]);
 
   const currentSlide = activeBanners[currentBanner];
-  const bannerBg = currentSlide?.image || settings?.bannerImage;
-  const bannerHeading = currentSlide?.text || settings?.bannerText;
+  const bannerBg = currentSlide?.image || banner?.bannerImage;
+  const bannerHeading = currentSlide?.text || banner?.bannerText;
   const bannerDescription = currentSlide?.description;
 
   const defaultImages: Record<string, string> = {
@@ -66,18 +36,18 @@ export function Home() {
 
   return (
     <div>
-      {/* ===== DYNAMIC HERO BANNER CAROUSEL ===== */}
+      {/* ===== HERO BANNER ===== */}
       <section className="relative overflow-hidden border-b-4 border-[#FA5600] min-h-[400px] lg:min-h-[500px] flex items-center">
 
-        {/* Loading spinner — shown while API is in flight */}
-        {!settingsLoaded && (
+        {/* Spinner — shown while APIs are in flight */}
+        {!isLoaded && (
           <div className="absolute inset-0 bg-[#1A1A1A] flex items-center justify-center">
             <div className="w-10 h-10 border-4 border-white/20 border-t-[#FA5600] rounded-full animate-spin" />
           </div>
         )}
 
-        {/* Slide backgrounds — only rendered once loaded */}
-        {settingsLoaded && (
+        {/* Slide backgrounds — only rendered once both APIs loaded */}
+        {isLoaded && (
           activeBanners.length > 0 ? (
             activeBanners.map((slide, i) => (
               <div
@@ -101,59 +71,61 @@ export function Home() {
           )
         )}
 
-        {settingsLoaded && <div className="absolute inset-0 bg-black/50" />}
+        {isLoaded && <div className="absolute inset-0 bg-black/50" />}
 
-        {/* Content */}
-        <div className={`relative z-10 w-full max-w-5xl mx-auto px-8 py-20 lg:py-28 text-center flex flex-col items-center transition-opacity duration-500 ${settingsLoaded ? 'opacity-100' : 'opacity-0'}`}>
+        {/* Content — only shown once both APIs loaded */}
+        {isLoaded && (
+          <div className="relative z-10 w-full max-w-5xl mx-auto px-8 py-20 lg:py-28 text-center flex flex-col items-center animate-fade-in">
 
-          <Link
-            to="/products"
-            className="inline-flex items-center gap-2 px-4 py-2 bg-[#FA5600] text-white text-[10px] font-bold uppercase tracking-widest mb-6 rounded-full hover:bg-[#E04A00] transition-colors">
-            <MessageCircle className="w-4 h-4" /> Order Directly via WhatsApp
-          </Link>
-
-          {bannerHeading ? (
-            <div className="text-4xl md:text-6xl font-black text-white tracking-tighter leading-tight uppercase mb-6 max-w-3xl transition-all duration-700">
-              {bannerHeading}
-            </div>
-          ) : (
-            <h1 className="text-5xl md:text-7xl font-black text-white tracking-tighter leading-none uppercase mb-6">
-              Discover Great<br />
-              <span className="text-[#FA5600]">Toys, Gear</span><br />
-              <span className="text-3xl md:text-5xl text-white/80">& Sports</span>
-            </h1>
-          )}
-
-          <p className="text-sm md:text-base font-bold text-white/70 max-w-2xl mx-auto mb-10 uppercase tracking-wide transition-all duration-700">
-            {bannerDescription ||
-              'Discover great toys, Adventure gear, gadgets, sports items — Browse our curated collection and send your order directly via WhatsApp!'}
-          </p>
-
-          <div className="flex flex-col sm:flex-row items-center justify-center gap-4 w-full sm:w-auto">
-            <Link to="/products"
-              className="bg-[#FA5600] hover:bg-[#E04A00] text-white font-black uppercase text-sm tracking-widest py-4 px-8 w-full sm:w-auto flex items-center justify-center gap-2 transition-all rounded-full shadow-lg">
-              Browse Catalog <ArrowRight className="w-5 h-5" />
+            <Link
+              to="/products"
+              className="inline-flex items-center gap-2 px-4 py-2 bg-[#FA5600] text-white text-[10px] font-bold uppercase tracking-widest mb-6 rounded-full hover:bg-[#E04A00] transition-colors">
+              <MessageCircle className="w-4 h-4" /> Order Directly via WhatsApp
             </Link>
-            <a href="https://wa.me/916350021226" target="_blank" rel="noopener noreferrer"
-              className="flex items-center justify-center gap-2 bg-[#25D366] text-white font-black uppercase text-sm tracking-widest py-4 px-8 hover:bg-[#20bd5a] transition-all w-full sm:w-auto rounded-full shadow-lg">
-              <MessageCircle className="w-5 h-5" /> Chat with Us
-            </a>
-          </div>
 
-          {activeBanners.length > 1 && (
-            <div className="flex gap-2 mt-8">
-              {activeBanners.map((_, i) => (
-                <button
-                  key={i}
-                  onClick={() => setCurrentBanner(i)}
-                  className={`h-2 rounded-full transition-all duration-300 ${
-                    i === currentBanner ? 'bg-[#FA5600] w-6' : 'bg-white/40 w-2 hover:bg-white/70'
-                  }`}
-                />
-              ))}
+            {bannerHeading ? (
+              <div className="text-4xl md:text-6xl font-black text-white tracking-tighter leading-tight uppercase mb-6 max-w-3xl">
+                {bannerHeading}
+              </div>
+            ) : (
+              <h1 className="text-5xl md:text-7xl font-black text-white tracking-tighter leading-none uppercase mb-6">
+                Discover Great<br />
+                <span className="text-[#FA5600]">Toys, Gear</span><br />
+                <span className="text-3xl md:text-5xl text-white/80">& Sports</span>
+              </h1>
+            )}
+
+            <p className="text-sm md:text-base font-bold text-white/70 max-w-2xl mx-auto mb-10 uppercase tracking-wide">
+              {bannerDescription ||
+                'Discover great toys, Adventure gear, gadgets, sports items — Browse our curated collection and send your order directly via WhatsApp!'}
+            </p>
+
+            <div className="flex flex-col sm:flex-row items-center justify-center gap-4 w-full sm:w-auto">
+              <Link to="/products"
+                className="bg-[#FA5600] hover:bg-[#E04A00] text-white font-black uppercase text-sm tracking-widest py-4 px-8 w-full sm:w-auto flex items-center justify-center gap-2 transition-all rounded-full shadow-lg">
+                Browse Catalog <ArrowRight className="w-5 h-5" />
+              </Link>
+              <a href="https://wa.me/916350021226" target="_blank" rel="noopener noreferrer"
+                className="flex items-center justify-center gap-2 bg-[#25D366] text-white font-black uppercase text-sm tracking-widest py-4 px-8 hover:bg-[#20bd5a] transition-all w-full sm:w-auto rounded-full shadow-lg">
+                <MessageCircle className="w-5 h-5" /> Chat with Us
+              </a>
             </div>
-          )}
-        </div>
+
+            {activeBanners.length > 1 && (
+              <div className="flex gap-2 mt-8">
+                {activeBanners.map((_, i) => (
+                  <button
+                    key={i}
+                    onClick={() => setCurrentBanner(i)}
+                    className={`h-2 rounded-full transition-all duration-300 ${
+                      i === currentBanner ? 'bg-[#FA5600] w-6' : 'bg-white/40 w-2 hover:bg-white/70'
+                    }`}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </section>
 
       {/* ===== HOW IT WORKS ===== */}
@@ -218,8 +190,8 @@ export function Home() {
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {!categoriesLoaded ? (
-              // Skeleton placeholders while loading — no hardcoded data shown
+            {!isLoaded ? (
+              // Skeleton cards — shown until both APIs loaded
               [1, 2, 3, 4].map(i => (
                 <div key={i} className="h-48 border-2 border-black bg-gray-800 animate-pulse rounded" />
               ))
