@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { Search, Filter, SlidersHorizontal, Image as ImageIcon, Tag, ChevronDown, X, Check, Pencil, Trash2, Plus, Upload, Eye, RotateCcw } from 'lucide-react';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -169,6 +170,10 @@ function EditModal({
     product.videoUrl ? getEmbedUrl(product.videoUrl) : null
   );
   const [saveSuccess, setSaveSuccess] = useState(false);
+  // Auto-expand if product already has images or video
+  const [showMore, setShowMore] = useState(
+    !!(product.imageUrls?.length || product.imageUrl || product.videoUrl)
+  );
 
   const imageInputRefs = [useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null)];
 
@@ -277,7 +282,7 @@ function EditModal({
 
   const img = getImg(product);
 
-  return (
+  return createPortal(
     <div className="fixed inset-0 z-[100] flex">
       {/* Backdrop */}
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
@@ -356,86 +361,107 @@ function EditModal({
               className="w-full border-2 border-gray-200 rounded-xl p-3 text-sm font-bold focus:border-[#FA5600] outline-none transition resize-none" />
           </div>
 
-          {/* Existing Images */}
-          {existingImageUrls.length > 0 && (
-            <div>
-              <label className="block text-[10px] font-black uppercase tracking-widest text-gray-500 mb-2">Current Images</label>
-              <div className="flex gap-2 flex-wrap">
-                {existingImageUrls.map((url, i) => (
-                  <div key={i} className="relative w-20 h-20 rounded-xl border-2 border-gray-200 overflow-hidden group/img">
-                    <img src={url} alt={`Image ${i + 1}`} className="w-full h-full object-cover" />
-                    <button onClick={() => removeExistingImage(i)}
-                      className="absolute inset-0 bg-black/0 group-hover/img:bg-black/40 transition flex items-center justify-center">
-                      <X className="w-4 h-4 text-white opacity-0 group-hover/img:opacity-100 transition" />
-                    </button>
-                    {i === 0 && (
-                      <span className="absolute bottom-0 left-0 right-0 bg-[#FA5600] text-white text-[8px] font-black text-center py-0.5 uppercase tracking-widest">Main</span>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
+          {/* Collapsible: Images + Video */}
+          <div className="border-2 border-gray-100 rounded-xl overflow-hidden">
+            <button
+              onClick={() => setShowMore(v => !v)}
+              className="w-full flex items-center justify-between px-4 py-3 bg-gray-50 hover:bg-gray-100 transition text-left">
+              <span className="text-[10px] font-black uppercase tracking-widest text-gray-500">
+                Images & Video
+                {(existingImageUrls.length > 0 || imageFiles.some(Boolean) || formData.videoUrl) && (
+                  <span className="ml-2 bg-[#FA5600] text-white text-[8px] px-1.5 py-0.5 rounded-full">✓</span>
+                )}
+              </span>
+              <ChevronDown className={`w-4 h-4 text-gray-400 transition-transform ${showMore ? 'rotate-180' : ''}`} />
+            </button>
 
-          {/* Add New Images */}
-          <div>
-            <label className="block text-[10px] font-black uppercase tracking-widest text-gray-500 mb-2">
-              Add New Images <span className="text-gray-400 normal-case font-bold tracking-normal">(up to 3)</span>
-            </label>
-            <div className="grid grid-cols-3 gap-2">
-              {[0, 1, 2].map((index) => (
-                <div key={index}>
-                  <div onClick={() => imageInputRefs[index].current?.click()}
-                    className="cursor-pointer border-2 border-dashed border-gray-200 rounded-xl text-center hover:border-[#FA5600] hover:bg-orange-50/50 transition aspect-square flex items-center justify-center relative overflow-hidden">
-                    {imagePreviews[index] ? (
-                      <>
-                        <img src={imagePreviews[index]!} alt="" className="w-full h-full object-cover" />
-                        <button onClick={(e) => { e.stopPropagation(); removeNewImage(index); }}
-                          className="absolute top-1 right-1 bg-red-500 text-white rounded-full w-5 h-5 flex items-center justify-center shadow hover:bg-red-600">
-                          <X className="w-2.5 h-2.5" />
-                        </button>
-                      </>
-                    ) : (
-                      <div className="flex flex-col items-center gap-1">
-                        <Upload className="w-5 h-5 text-gray-300" />
-                        <p className="text-[9px] text-gray-400 font-black uppercase">Add</p>
+            {showMore && (
+              <div className="px-4 py-4 space-y-4">
+
+                {/* Existing Images */}
+                {existingImageUrls.length > 0 && (
+                  <div>
+                    <label className="block text-[10px] font-black uppercase tracking-widest text-gray-500 mb-2">Current Images</label>
+                    <div className="flex gap-2 flex-wrap">
+                      {existingImageUrls.map((url, i) => (
+                        <div key={i} className="relative w-20 h-20 rounded-xl border-2 border-gray-200 overflow-hidden group/img">
+                          <img src={url} alt={`Image ${i + 1}`} className="w-full h-full object-cover" />
+                          <button onClick={() => removeExistingImage(i)}
+                            className="absolute inset-0 bg-black/0 group-hover/img:bg-black/40 transition flex items-center justify-center">
+                            <X className="w-4 h-4 text-white opacity-0 group-hover/img:opacity-100 transition" />
+                          </button>
+                          {i === 0 && (
+                            <span className="absolute bottom-0 left-0 right-0 bg-[#FA5600] text-white text-[8px] font-black text-center py-0.5 uppercase tracking-widest">Main</span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Add New Images */}
+                <div>
+                  <label className="block text-[10px] font-black uppercase tracking-widest text-gray-500 mb-2">
+                    Add New Images <span className="text-gray-400 normal-case font-bold tracking-normal">(up to 3)</span>
+                  </label>
+                  <div className="grid grid-cols-3 gap-2">
+                    {[0, 1, 2].map((index) => (
+                      <div key={index}>
+                        <div onClick={() => imageInputRefs[index].current?.click()}
+                          className="cursor-pointer border-2 border-dashed border-gray-200 rounded-xl text-center hover:border-[#FA5600] hover:bg-orange-50/50 transition aspect-square flex items-center justify-center relative overflow-hidden">
+                          {imagePreviews[index] ? (
+                            <>
+                              <img src={imagePreviews[index]!} alt="" className="w-full h-full object-cover" />
+                              <button onClick={(e) => { e.stopPropagation(); removeNewImage(index); }}
+                                className="absolute top-1 right-1 bg-red-500 text-white rounded-full w-5 h-5 flex items-center justify-center shadow hover:bg-red-600">
+                                <X className="w-2.5 h-2.5" />
+                              </button>
+                            </>
+                          ) : (
+                            <div className="flex flex-col items-center gap-1">
+                              <Upload className="w-5 h-5 text-gray-300" />
+                              <p className="text-[9px] text-gray-400 font-black uppercase">Add</p>
+                            </div>
+                          )}
+                        </div>
+                        <input ref={imageInputRefs[index]} type="file" accept="image/png,image/jpeg,image/webp"
+                          onChange={(e) => handleImageChange(index, e)} className="hidden" />
                       </div>
-                    )}
+                    ))}
                   </div>
-                  <input ref={imageInputRefs[index]} type="file" accept="image/png,image/jpeg,image/webp"
-                    onChange={(e) => handleImageChange(index, e)} className="hidden" />
+                  <p className="text-[10px] text-gray-400 mt-1.5">⭐ First image is main display image</p>
                 </div>
-              ))}
-            </div>
-            <p className="text-[10px] text-gray-400 mt-1.5">⭐ First image is main display image</p>
-          </div>
 
-          {/* Video URL */}
-          <div>
-            <label className="block text-[10px] font-black uppercase tracking-widest text-gray-500 mb-1.5">
-              Product Video URL <span className="text-gray-400 normal-case font-bold tracking-normal">(Optional)</span>
-            </label>
-            <div className="flex gap-2">
-              <input type="url" name="videoUrl" value={formData.videoUrl} onChange={handleChange}
-                placeholder="YouTube, Facebook, Instagram or TikTok..."
-                className={`flex-1 border-2 rounded-xl p-3 text-sm font-bold outline-none transition ${videoUrlError ? 'border-red-400' : 'border-gray-200 focus:border-[#FA5600]'}`} />
-              <button onClick={handlePreviewVideo}
-                className="shrink-0 bg-gray-100 hover:bg-[#FA5600] hover:text-white text-gray-600 text-xs font-black px-3 rounded-xl transition uppercase tracking-widest">
-                Preview
-              </button>
-            </div>
-            {videoUrlError && <p className="text-red-500 text-xs mt-1 font-bold">{videoUrlError}</p>}
-            {embedUrl && (
-              <div className="mt-3 rounded-xl overflow-hidden border border-gray-200 bg-black">
-                <div className="bg-gray-800 text-white text-[10px] px-3 py-1.5 flex items-center justify-between font-black uppercase tracking-widest">
-                  <span>📺 Preview</span>
-                  <button onClick={() => { setEmbedUrl(null); setFormData(f => ({ ...f, videoUrl: '' })); }} className="text-gray-400 hover:text-white">✕</button>
+                {/* Video URL */}
+                <div>
+                  <label className="block text-[10px] font-black uppercase tracking-widest text-gray-500 mb-1.5">
+                    Product Video URL <span className="text-gray-400 normal-case font-bold tracking-normal">(Optional)</span>
+                  </label>
+                  <div className="flex gap-2">
+                    <input type="url" name="videoUrl" value={formData.videoUrl} onChange={handleChange}
+                      placeholder="YouTube, Facebook, Instagram or TikTok..."
+                      className={`flex-1 border-2 rounded-xl p-3 text-sm font-bold outline-none transition ${videoUrlError ? 'border-red-400' : 'border-gray-200 focus:border-[#FA5600]'}`} />
+                    <button onClick={handlePreviewVideo}
+                      className="shrink-0 bg-gray-100 hover:bg-[#FA5600] hover:text-white text-gray-600 text-xs font-black px-3 rounded-xl transition uppercase tracking-widest">
+                      Preview
+                    </button>
+                  </div>
+                  {videoUrlError && <p className="text-red-500 text-xs mt-1 font-bold">{videoUrlError}</p>}
+                  {embedUrl && (
+                    <div className="mt-3 rounded-xl overflow-hidden border border-gray-200 bg-black">
+                      <div className="bg-gray-800 text-white text-[10px] px-3 py-1.5 flex items-center justify-between font-black uppercase tracking-widest">
+                        <span>📺 Preview</span>
+                        <button onClick={() => { setEmbedUrl(null); setFormData(f => ({ ...f, videoUrl: '' })); }} className="text-gray-400 hover:text-white">✕</button>
+                      </div>
+                      <div className="relative w-full" style={{ paddingTop: '56.25%' }}>
+                        <iframe src={embedUrl} className="absolute top-0 left-0 w-full h-full"
+                          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                          allowFullScreen frameBorder="0" />
+                      </div>
+                    </div>
+                  )}
                 </div>
-                <div className="relative w-full" style={{ paddingTop: '56.25%' }}>
-                  <iframe src={embedUrl} className="absolute top-0 left-0 w-full h-full"
-                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                    allowFullScreen frameBorder="0" />
-                </div>
+
               </div>
             )}
           </div>
@@ -469,7 +495,8 @@ function EditModal({
         }
         .animate-slide-in { animation: slideIn 0.25s cubic-bezier(0.16, 1, 0.3, 1); }
       `}</style>
-    </div>
+    </div>,
+    document.body
   );
 }
 
@@ -884,7 +911,7 @@ function AddProductInline({
     }
   };
 
-  return (
+  return createPortal(
     <div className="fixed inset-0 z-[100] flex">
       {/* Backdrop */}
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
@@ -1021,7 +1048,8 @@ function AddProductInline({
         }
         .animate-slide-in { animation: slideIn 0.25s cubic-bezier(0.16, 1, 0.3, 1); }
       `}</style>
-    </div>
+    </div>,
+    document.body
   );
 }
 
