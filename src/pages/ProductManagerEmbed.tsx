@@ -885,99 +885,142 @@ function AddProductInline({
   };
 
   return (
-    <div className="bg-white rounded-2xl border-2 border-[#FA5600] shadow-lg p-5 space-y-4">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <div className="w-7 h-7 bg-[#FA5600] rounded-lg flex items-center justify-center">
-            <Plus className="w-4 h-4 text-white" />
-          </div>
-          <p className="text-sm font-black uppercase tracking-widest text-gray-900">Add New Product</p>
-        </div>
-        <button onClick={onClose} className="w-7 h-7 flex items-center justify-center rounded-xl hover:bg-gray-100 text-gray-400 transition">
-          <X className="w-4 h-4" />
-        </button>
-      </div>
+    <div className="fixed inset-0 z-[100] flex">
+      {/* Backdrop */}
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <div className="sm:col-span-2">
-          <label className="block text-[10px] font-black uppercase tracking-widest text-gray-500 mb-1.5">Product Name *</label>
-          <input type="text" name="name" value={formData.name} onChange={handleChange}
-            className="w-full border-2 border-gray-200 rounded-xl p-3 text-sm font-bold focus:border-[#FA5600] outline-none transition" />
+      {/* Panel */}
+      <div className="relative ml-auto h-full w-full max-w-xl bg-white shadow-2xl flex flex-col overflow-hidden animate-slide-in">
+
+        {/* Header */}
+        <div className="flex items-center gap-3 px-5 py-4 border-b border-gray-100 shrink-0">
+          <div className="w-10 h-10 bg-[#FA5600] rounded-xl flex items-center justify-center shrink-0">
+            <Plus className="w-5 h-5 text-white" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-xs font-black uppercase tracking-widest text-[#FA5600]">New Product</p>
+            <p className="text-sm font-black text-gray-900">Add to Database</p>
+          </div>
+          <button onClick={onClose} className="w-8 h-8 flex items-center justify-center rounded-xl hover:bg-gray-100 text-gray-500 transition">
+            <X className="w-4 h-4" />
+          </button>
         </div>
-        <div>
-          <label className="block text-[10px] font-black uppercase tracking-widest text-gray-500 mb-1.5">Category *</label>
-          <select name="category" value={formData.category} onChange={handleChange}
-            className="w-full border-2 border-gray-200 rounded-xl p-3 text-sm font-bold focus:border-[#FA5600] outline-none transition bg-white">
-            <option value="">Select Category</option>
-            {parentCategories.map((cat: any) => <option key={cat._id} value={cat.name}>{cat.name}</option>)}
-          </select>
-        </div>
-        <div>
-          <label className="block text-[10px] font-black uppercase tracking-widest text-gray-500 mb-1.5">Subcategory</label>
-          <select name="subcategory" value={formData.subcategory} onChange={handleChange}
-            disabled={subcategories.length === 0}
-            className="w-full border-2 border-gray-200 rounded-xl p-3 text-sm font-bold focus:border-[#FA5600] outline-none transition bg-white disabled:bg-gray-50 disabled:text-gray-400">
-            <option value="">{subcategories.length === 0 ? 'No subcategories' : 'Select Subcategory'}</option>
-            {subcategories.map((sub: any) => <option key={sub._id} value={sub.name}>{sub.name}</option>)}
-          </select>
-        </div>
-        <div>
-          <label className="block text-[10px] font-black uppercase tracking-widest text-gray-500 mb-1.5">Original Price *</label>
-          <input type="number" name="originalPrice" value={formData.originalPrice} onChange={handleChange}
-            className="w-full border-2 border-gray-200 rounded-xl p-3 text-sm font-bold focus:border-[#FA5600] outline-none transition" />
-        </div>
-        <div>
-          <label className="block text-[10px] font-black uppercase tracking-widest text-gray-500 mb-1.5">Discounted Price</label>
-          <input type="number" name="discountedPrice" value={formData.discountedPrice} onChange={handleChange}
-            className="w-full border-2 border-gray-200 rounded-xl p-3 text-sm font-bold focus:border-[#FA5600] outline-none transition" />
-        </div>
-        <div className="sm:col-span-2">
-          <label className="block text-[10px] font-black uppercase tracking-widest text-gray-500 mb-1.5">Description</label>
-          <textarea name="description" value={formData.description} onChange={handleChange} rows={2}
-            className="w-full border-2 border-gray-200 rounded-xl p-3 text-sm font-bold focus:border-[#FA5600] outline-none transition resize-none" />
-        </div>
-        <div className="sm:col-span-2">
-          <label className="block text-[10px] font-black uppercase tracking-widest text-gray-500 mb-2">Product Images (up to 3)</label>
-          <div className="grid grid-cols-3 gap-2">
-            {[0, 1, 2].map((index) => (
-              <div key={index}>
-                <div onClick={() => imageInputRefs[index].current?.click()}
-                  className="cursor-pointer border-2 border-dashed border-gray-200 rounded-xl hover:border-[#FA5600] hover:bg-orange-50/50 transition aspect-square flex items-center justify-center relative overflow-hidden">
-                  {imagePreviews[index] ? (
-                    <>
-                      <img src={imagePreviews[index]!} alt="" className="w-full h-full object-cover" />
-                      <button onClick={(e) => { e.stopPropagation(); const nf = [...imageFiles]; const np = [...imagePreviews]; nf[index] = null; np[index] = null; setImageFiles(nf); setImagePreviews(np); }}
-                        className="absolute top-1 right-1 bg-red-500 text-white rounded-full w-5 h-5 flex items-center justify-center shadow">
-                        <X className="w-2.5 h-2.5" />
-                      </button>
-                    </>
-                  ) : (
-                    <div className="flex flex-col items-center gap-1">
-                      <Upload className="w-5 h-5 text-gray-300" />
-                      <p className="text-[9px] text-gray-400 font-black uppercase">Image {index + 1}</p>
-                      {index === 0 && <p className="text-[8px] text-[#FA5600] font-black">Main</p>}
-                    </div>
-                  )}
+
+        {/* Scrollable Body */}
+        <div className="flex-1 overflow-y-auto px-5 py-5 space-y-5">
+
+          {/* Name */}
+          <div>
+            <label className="block text-[10px] font-black uppercase tracking-widest text-gray-500 mb-1.5">Product Name *</label>
+            <input type="text" name="name" value={formData.name} onChange={handleChange}
+              className="w-full border-2 border-gray-200 rounded-xl p-3 text-sm font-bold focus:border-[#FA5600] outline-none transition" />
+          </div>
+
+          {/* Category / Subcategory */}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-[10px] font-black uppercase tracking-widest text-gray-500 mb-1.5">Category *</label>
+              <select name="category" value={formData.category} onChange={handleChange}
+                className="w-full border-2 border-gray-200 rounded-xl p-3 text-sm font-bold focus:border-[#FA5600] outline-none transition bg-white">
+                <option value="">Select</option>
+                {parentCategories.map((cat: any) => <option key={cat._id} value={cat.name}>{cat.name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-[10px] font-black uppercase tracking-widest text-gray-500 mb-1.5">Subcategory</label>
+              <select name="subcategory" value={formData.subcategory} onChange={handleChange}
+                disabled={subcategories.length === 0}
+                className="w-full border-2 border-gray-200 rounded-xl p-3 text-sm font-bold focus:border-[#FA5600] outline-none transition bg-white disabled:bg-gray-50 disabled:text-gray-400">
+                <option value="">{subcategories.length === 0 ? 'None' : 'Select'}</option>
+                {subcategories.map((sub: any) => <option key={sub._id} value={sub.name}>{sub.name}</option>)}
+              </select>
+            </div>
+          </div>
+
+          {/* Prices */}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-[10px] font-black uppercase tracking-widest text-gray-500 mb-1.5">Original Price *</label>
+              <input type="number" name="originalPrice" value={formData.originalPrice} onChange={handleChange}
+                className="w-full border-2 border-gray-200 rounded-xl p-3 text-sm font-bold focus:border-[#FA5600] outline-none transition" />
+            </div>
+            <div>
+              <label className="block text-[10px] font-black uppercase tracking-widest text-gray-500 mb-1.5">Discounted Price</label>
+              <input type="number" name="discountedPrice" value={formData.discountedPrice} onChange={handleChange}
+                className="w-full border-2 border-gray-200 rounded-xl p-3 text-sm font-bold focus:border-[#FA5600] outline-none transition" />
+            </div>
+          </div>
+
+          {/* Description */}
+          <div>
+            <label className="block text-[10px] font-black uppercase tracking-widest text-gray-500 mb-1.5">Description</label>
+            <textarea name="description" value={formData.description} onChange={handleChange} rows={3}
+              className="w-full border-2 border-gray-200 rounded-xl p-3 text-sm font-bold focus:border-[#FA5600] outline-none transition resize-none" />
+          </div>
+
+          {/* Images */}
+          <div>
+            <label className="block text-[10px] font-black uppercase tracking-widest text-gray-500 mb-2">
+              Product Images <span className="text-gray-400 normal-case font-bold tracking-normal">(up to 3)</span>
+            </label>
+            <div className="grid grid-cols-3 gap-2">
+              {[0, 1, 2].map((index) => (
+                <div key={index}>
+                  <div onClick={() => imageInputRefs[index].current?.click()}
+                    className="cursor-pointer border-2 border-dashed border-gray-200 rounded-xl hover:border-[#FA5600] hover:bg-orange-50/50 transition aspect-square flex items-center justify-center relative overflow-hidden">
+                    {imagePreviews[index] ? (
+                      <>
+                        <img src={imagePreviews[index]!} alt="" className="w-full h-full object-cover" />
+                        <button onClick={(e) => { e.stopPropagation(); const nf = [...imageFiles]; const np = [...imagePreviews]; nf[index] = null; np[index] = null; setImageFiles(nf); setImagePreviews(np); }}
+                          className="absolute top-1 right-1 bg-red-500 text-white rounded-full w-5 h-5 flex items-center justify-center shadow">
+                          <X className="w-2.5 h-2.5" />
+                        </button>
+                      </>
+                    ) : (
+                      <div className="flex flex-col items-center gap-1">
+                        <Upload className="w-5 h-5 text-gray-300" />
+                        <p className="text-[9px] text-gray-400 font-black uppercase">Image {index + 1}</p>
+                        {index === 0 && <p className="text-[8px] text-[#FA5600] font-black">Main</p>}
+                      </div>
+                    )}
+                  </div>
+                  <input ref={imageInputRefs[index]} type="file" accept="image/png,image/jpeg,image/webp"
+                    onChange={(e) => handleImageChange(index, e)} className="hidden" />
                 </div>
-                <input ref={imageInputRefs[index]} type="file" accept="image/png,image/jpeg,image/webp"
-                  onChange={(e) => handleImageChange(index, e)} className="hidden" />
-              </div>
-            ))}
+              ))}
+            </div>
+            <p className="text-[10px] text-gray-400 mt-1.5">⭐ First image is main display image</p>
           </div>
+
+        </div>
+
+        {/* Footer Buttons */}
+        <div className="px-5 py-4 border-t border-gray-100 flex gap-3 shrink-0 bg-white">
+          <button onClick={onClose}
+            className="flex-1 bg-gray-100 text-gray-700 font-black py-3 rounded-xl hover:bg-gray-200 transition text-sm uppercase tracking-widest">
+            Cancel
+          </button>
+          <button onClick={handleSubmit} disabled={uploading}
+            className={`flex-1 font-black py-3 rounded-xl transition text-sm uppercase tracking-widest flex items-center justify-center gap-2 disabled:opacity-60
+              ${success ? 'bg-green-500 text-white' : 'bg-[#FA5600] hover:bg-[#E04A00] text-white shadow-lg shadow-orange-200'}`}>
+            {uploading ? (
+              <><span className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" /> Uploading...</>
+            ) : success ? (
+              <><Check className="w-4 h-4" /> Product Added!</>
+            ) : (
+              <><Plus className="w-4 h-4" /> Add Product</>
+            )}
+          </button>
         </div>
       </div>
 
-      <button onClick={handleSubmit} disabled={uploading}
-        className={`w-full font-black py-3.5 rounded-xl transition text-sm uppercase tracking-widest flex items-center justify-center gap-2 disabled:opacity-60
-          ${success ? 'bg-green-500 text-white' : 'bg-[#FA5600] hover:bg-[#E04A00] text-white shadow-lg shadow-orange-200'}`}>
-        {uploading ? (
-          <><span className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" /> Uploading...</>
-        ) : success ? (
-          <><Check className="w-4 h-4" /> Product Added!</>
-        ) : (
-          <><Plus className="w-4 h-4" /> Add Product to Database</>
-        )}
-      </button>
+      <style>{`
+        @keyframes slideIn {
+          from { transform: translateX(100%); opacity: 0; }
+          to { transform: translateX(0); opacity: 1; }
+        }
+        .animate-slide-in { animation: slideIn 0.25s cubic-bezier(0.16, 1, 0.3, 1); }
+      `}</style>
     </div>
   );
 }
