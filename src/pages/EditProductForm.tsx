@@ -279,21 +279,26 @@ export function EditProductForm() {
   }
 
   return (
-    <div className="max-w-3xl mx-auto p-8 bg-white shadow-xl rounded-xl mt-10 border border-gray-100">
-      <div className="flex justify-between items-center border-b pb-4 mb-8">
-        <h2 className="text-3xl font-bold text-gray-900">Edit Product</h2>
-        <div className="flex gap-3">
-          <button onClick={handleDelete}
-            className="text-sm text-red-400 hover:text-red-600 font-bold transition">
-            🗑️ Delete Product
-          </button>
-          <button onClick={() => setIsAuthenticated(false)}
-            className="text-sm text-gray-400 hover:text-red-500 transition">
-            🔓 Lock
-          </button>
-        </div>
-      </div>
+    <div className="fixed inset-0 flex items-center justify-center bg-gray-100 p-4 overflow-hidden">
+      <div className="w-full max-w-3xl bg-white shadow-xl rounded-xl border border-gray-100 flex flex-col" style={{ maxHeight: '92vh' }}>
 
+        {/* Sticky Header */}
+        <div className="flex justify-between items-center border-b px-8 py-4 shrink-0">
+          <h2 className="text-2xl font-bold text-gray-900">Edit Product</h2>
+          <div className="flex gap-3">
+            <button onClick={handleDelete}
+              className="text-sm text-red-400 hover:text-red-600 font-bold transition">
+              🗑️ Delete Product
+            </button>
+            <button onClick={() => setIsAuthenticated(false)}
+              className="text-sm text-gray-400 hover:text-red-500 transition">
+              🔓 Lock
+            </button>
+          </div>
+        </div>
+
+        {/* Scrollable Body */}
+        <div className="overflow-y-auto px-8 py-6 flex-1">
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
 
         {/* Name */}
@@ -348,8 +353,10 @@ export function EditProductForm() {
 
         {/* Description */}
         <div className="md:col-span-2">
-          <label className="block text-sm font-semibold text-gray-700">Description</label>
-          <textarea name="description" value={formData.description} onChange={handleChange} rows={4}
+          <label className="block text-sm font-semibold text-gray-700">
+            Description <span className="text-gray-400 font-normal">(Optional)</span>
+          </label>
+          <textarea name="description" value={formData.description} onChange={handleChange} rows={3}
             className="mt-1 block w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 outline-none" />
         </div>
 
@@ -455,19 +462,22 @@ export function EditProductForm() {
           )}
         </div>
 
-        {/* Submit */}
-        <div className="md:col-span-2 flex gap-3">
+      </div>
+        </div>{/* end scrollable body */}
+
+        {/* Sticky Footer */}
+        <div className="border-t px-8 py-4 shrink-0 bg-white flex gap-3 rounded-b-xl">
           <button onClick={() => navigate(`/products/${id}`)}
-            className="flex-1 bg-gray-100 text-gray-700 font-bold py-4 rounded-lg hover:bg-gray-200 transition">
+            className="flex-1 bg-gray-100 text-gray-700 font-bold py-3 rounded-lg hover:bg-gray-200 transition">
             Cancel
           </button>
           <button onClick={handleSubmit} disabled={uploading}
-            className="flex-1 bg-blue-600 text-white font-bold py-4 rounded-lg hover:bg-blue-700 transition shadow-lg disabled:opacity-60 disabled:cursor-not-allowed">
+            className="flex-1 bg-blue-600 text-white font-bold py-3 rounded-lg hover:bg-blue-700 transition shadow-lg disabled:opacity-60 disabled:cursor-not-allowed">
             {uploading ? '⏳ Saving...' : '💾 Save Changes'}
           </button>
         </div>
 
-      </div>
+      </div>{/* end modal card */}
     </div>
   );
 }
