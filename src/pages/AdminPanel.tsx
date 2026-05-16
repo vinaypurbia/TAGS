@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { AddProductFormEmbed } from './AddProductFormEmbed';
+import { ProductManagerEmbed } from './ProductManagerEmbed';
 import { ManageCategoriesEmbed } from './ManageCategoriesEmbed';
 import { InventoryEmbed } from './InventoryEmbed';
 import { BusinessEmbed } from './BusinessEmbed';
@@ -334,7 +334,6 @@ export function AdminPanel() {
               {ALL_MODULES.find(m => m.id === activeSection)?.desc}
             </p>
           </div>
-          {/* Pending badge in header */}
           {pendingOrders.length > 0 && (
             <button onClick={() => setActiveSection('dashboard')}
               className="flex items-center gap-2 bg-red-50 border border-red-200 text-red-600 text-xs font-black px-3 py-1.5 rounded-xl hover:bg-red-100 transition">
@@ -430,12 +429,9 @@ export function AdminPanel() {
                   <div className="divide-y divide-gray-100">
                     {pendingOrders.map((order: any) => (
                       <div key={order._id} className="flex items-center gap-3 px-5 py-3.5 hover:bg-orange-50/50 transition">
-                        {/* Avatar */}
                         <div className="w-10 h-10 bg-orange-100 rounded-xl flex items-center justify-center shrink-0 font-black text-[#FA5600] text-base">
                           {(order.customerName || 'W')[0].toUpperCase()}
                         </div>
-
-                        {/* Info */}
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2 flex-wrap">
                             <p className="text-sm font-black text-gray-900">{order.customerName || 'Walk-in Customer'}</p>
@@ -455,8 +451,6 @@ export function AdminPanel() {
                             )}
                           </div>
                         </div>
-
-                        {/* Amount + Actions */}
                         <div className="text-right shrink-0 space-y-1">
                           <p className="font-black text-sm text-[#FA5600]">
                             ₹{Number(order.totalAmount || 0).toLocaleString('en-IN')}
@@ -616,9 +610,9 @@ export function AdminPanel() {
 
           {/* ── PRODUCTS ── */}
           {activeSection === 'products' && (
-            <div className="max-w-3xl mx-auto">
-              <SectionHeader icon={Package} title="Products" desc="Add new products or search to edit existing ones" />
-              <AddProductFormEmbed />
+            <div className="max-w-5xl mx-auto">
+              <SectionHeader icon={Package} title="Products" desc="Browse, filter & edit all your products" />
+              <ProductManagerEmbed />
             </div>
           )}
 
@@ -763,14 +757,12 @@ function ImportProductsSection() {
   const [message, setMessage] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
 
-  // Same CSV columns as AddProductFormEmbed fields
   const CSV_COLUMNS = ['name', 'category', 'subcategory', 'originalPrice', 'discountedPrice', 'description', 'videoUrl', 'imageUrl'];
 
   const parseCSV = (text: string) => {
     const lines = text.trim().split('\n');
     const headers = lines[0].split(',').map(h => h.trim().replace(/"/g, ''));
     return lines.slice(1).map(line => {
-      // handle commas inside quoted fields
       const values: string[] = [];
       let cur = ''; let inQ = false;
       for (const ch of line) {
@@ -803,13 +795,9 @@ function ImportProductsSection() {
     reader.readAsText(file);
   };
 
-  // Same exact API call as AddProductFormEmbed.handleSubmit
   const saveProduct = async (row: Record<string, string>) => {
     const imageUrls: string[] = [];
-
-    // If imageUrl column has a value it's already a URL (no file upload needed for CSV)
     if (row.imageUrl?.trim()) imageUrls.push(row.imageUrl.trim());
-
     const payload = {
       name:            row.name || '',
       category:        row.category || '',
@@ -818,17 +806,15 @@ function ImportProductsSection() {
       discountedPrice: row.discountedPrice || '',
       description:     row.description || '',
       videoUrl:        row.videoUrl || '',
-      imageUrl:        imageUrls[0] || '',   // exact same keys as AddProductFormEmbed
+      imageUrl:        imageUrls[0] || '',
       image:           imageUrls[0] || '',
       imageUrls,
     };
-
     const res = await fetch('/api/products', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
-
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       throw new Error(err.error || res.statusText);
@@ -846,7 +832,6 @@ function ImportProductsSection() {
     setMessage('');
 
     const newResults: { name: string; ok: boolean; error?: string }[] = [];
-
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i];
       try {
@@ -886,7 +871,6 @@ function ImportProductsSection() {
     <div className="max-w-2xl mx-auto space-y-4">
       <SectionHeader icon={Upload} title="Import Products" desc="Bulk import via CSV — syncs to FB Shop & WhatsApp automatically" />
 
-      {/* Download Template */}
       <div className="bg-blue-50 border border-blue-200 rounded-2xl p-5 flex items-center gap-4">
         <div className="w-10 h-10 bg-blue-100 rounded-xl flex items-center justify-center shrink-0">
           <Upload className="w-5 h-5 text-blue-600" />
@@ -901,7 +885,6 @@ function ImportProductsSection() {
         </button>
       </div>
 
-      {/* Column guide */}
       <div className="bg-white rounded-2xl border border-gray-200 p-5 shadow-sm">
         <p className="text-xs font-black uppercase tracking-widest text-gray-500 mb-3">CSV Columns (same as Add Product form)</p>
         <div className="grid grid-cols-2 gap-2">
@@ -928,7 +911,6 @@ function ImportProductsSection() {
         </div>
       </div>
 
-      {/* Upload area */}
       <div className="bg-white rounded-2xl border border-gray-200 p-6 shadow-sm space-y-4">
         <div onClick={() => fileRef.current?.click()}
           className="border-2 border-dashed border-gray-200 hover:border-[#FA5600] rounded-2xl p-10 text-center cursor-pointer transition group">
@@ -946,7 +928,6 @@ function ImportProductsSection() {
           }`}>{message}</div>
         )}
 
-        {/* Progress bar */}
         {status === 'loading' && (
           <div>
             <div className="flex justify-between text-xs font-black text-gray-500 mb-1">
@@ -959,7 +940,6 @@ function ImportProductsSection() {
           </div>
         )}
 
-        {/* Preview table */}
         {preview.length > 0 && status === 'idle' && (
           <div className="overflow-x-auto rounded-xl border border-gray-100">
             <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 px-3 pt-2">Preview (first 5 rows)</p>
@@ -984,7 +964,6 @@ function ImportProductsSection() {
           </div>
         )}
 
-        {/* Per-product results */}
         {results.length > 0 && (
           <div className="space-y-1 max-h-48 overflow-y-auto">
             {results.map((r, i) => (
