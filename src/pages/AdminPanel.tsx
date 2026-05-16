@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { ProductManagerEmbed } from './ProductManagerEmbed';
 import { ManageCategoriesEmbed } from './ManageCategoriesEmbed';
 import { InventoryEmbed } from './InventoryEmbed';
@@ -40,6 +40,35 @@ export function AdminPanel() {
   const [passwordError, setPasswordError] = useState('');
   const [activeSection, setActiveSection] = useState<Section>('dashboard');
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [idleWarning, setIdleWarning] = useState(false);
+  const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const warnTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const IDLE_MS = 10 * 60 * 1000;
+  const WARN_MS = 9 * 60 * 1000;
+
+  const resetIdleTimer = useCallback(() => {
+    if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
+    if (warnTimerRef.current) clearTimeout(warnTimerRef.current);
+    setIdleWarning(false);
+    warnTimerRef.current = setTimeout(() => setIdleWarning(true), WARN_MS);
+    idleTimerRef.current = setTimeout(() => {
+      sessionStorage.removeItem(SESSION_KEY);
+      setIsAuthenticated(false);
+      setIdleWarning(false);
+    }, IDLE_MS);
+  }, []);
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    const events = ['mousemove', 'mousedown', 'keydown', 'touchstart', 'scroll', 'click'];
+    events.forEach(e => window.addEventListener(e, resetIdleTimer, { passive: true }));
+    resetIdleTimer();
+    return () => {
+      events.forEach(e => window.removeEventListener(e, resetIdleTimer));
+      if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
+      if (warnTimerRef.current) clearTimeout(warnTimerRef.current);
+    };
+  }, [isAuthenticated, resetIdleTimer]);
 
   const [visibility, setVisibility] = useState<Record<string, boolean>>(() => {
     try {
@@ -253,6 +282,16 @@ export function AdminPanel() {
   return (
     <div className="min-h-screen bg-[#F0F2F5] flex">
 
+      {/* Idle warning banner */}
+      {idleWarning && (
+        <div className="fixed top-0 left-0 right-0 z-[200] bg-yellow-400 text-yellow-900 text-xs font-black uppercase tracking-widest px-4 py-2 flex items-center justify-center gap-3 shadow-lg">
+          <span>⚠️ You'll be logged out in 1 minute due to inactivity</span>
+          <button onClick={resetIdleTimer} className="bg-yellow-900 text-yellow-100 px-3 py-1 rounded-lg hover:bg-yellow-800 transition">
+            Stay Logged In
+          </button>
+        </div>
+      )}
+
       {/* Mobile overlay */}
       {sidebarOpen && (
         <div className="fixed inset-0 bg-black/60 z-40 lg:hidden" onClick={() => setSidebarOpen(false)} />
@@ -347,7 +386,7 @@ export function AdminPanel() {
         </header>
 
         {/* Page content */}
-        <main className="flex-1 p-4 md:p-6 overflow-auto">
+        <main className="flex-1 p-4 md:p-6 overflow-y-auto overflow-x-hidden">
 
           {/* ── DASHBOARD ── */}
           {activeSection === 'dashboard' && (
