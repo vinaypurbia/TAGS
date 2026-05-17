@@ -53,6 +53,14 @@ const roundToNearest5 = (value: string): string => {
   return String(Math.round(n / 5) * 5);
 };
 
+// Rounds a raw price for display and formats it
+const roundedPrice = (value: string | number | undefined): number => {
+  const n = Number(value) || 0;
+  return Math.round(n / 5) * 5;
+};
+const fmt = (value: string | number | undefined): string =>
+  `₹${roundedPrice(value).toLocaleString('en-IN')}`;
+
 const getEmbedUrl = (url: string): string | null => {
   if (!url) return null;
   const yt = url.match(/youtube\.com\/watch\?v=([\w-]+)/) || url.match(/youtu\.be\/([\w-]+)/) || url.match(/youtube\.com\/shorts\/([\w-]+)/);
@@ -122,11 +130,11 @@ function ProductCard({ product, onEdit }: { product: Product; onEdit: () => void
           <div>
             {hasDiscount(product) ? (
               <div className="flex items-center gap-1.5">
-                <span className="text-sm font-black text-[#FA5600]">₹{Number(product.discountedPrice).toLocaleString('en-IN')}</span>
-                <span className="text-[10px] text-gray-400 line-through">₹{Number(product.originalPrice).toLocaleString('en-IN')}</span>
+                <span className="text-sm font-black text-[#FA5600]">{fmt(product.discountedPrice)}</span>
+                <span className="text-[10px] text-gray-400 line-through">{fmt(product.originalPrice)}</span>
               </div>
             ) : (
-              <span className="text-sm font-black text-gray-900">₹{Number(product.originalPrice).toLocaleString('en-IN')}</span>
+              <span className="text-sm font-black text-gray-900">{fmt(product.originalPrice)}</span>
             )}
           </div>
           <button
@@ -832,12 +840,12 @@ function ListRow({ product, onEdit }: { product: Product; onEdit: () => void }) 
       <div className="text-right shrink-0 mr-3">
         {hasDiscount(product) ? (
           <div className="flex items-center gap-1.5 justify-end">
-            <span className="text-sm font-black text-[#FA5600]">₹{Number(product.discountedPrice).toLocaleString('en-IN')}</span>
-            <span className="text-[10px] text-gray-400 line-through">₹{Number(product.originalPrice).toLocaleString('en-IN')}</span>
+            <span className="text-sm font-black text-[#FA5600]">{fmt(product.discountedPrice)}</span>
+            <span className="text-[10px] text-gray-400 line-through">{fmt(product.originalPrice)}</span>
             <span className="text-[9px] bg-orange-100 text-[#FA5600] font-black px-1.5 py-0.5 rounded-full">-{disc}%</span>
           </div>
         ) : (
-          <span className="text-sm font-black text-gray-900">₹{Number(product.originalPrice).toLocaleString('en-IN')}</span>
+          <span className="text-sm font-black text-gray-900">{fmt(product.originalPrice)}</span>
         )}
       </div>
       <button onClick={onEdit}
