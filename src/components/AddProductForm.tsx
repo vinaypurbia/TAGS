@@ -75,6 +75,16 @@ function blobToFile(blob: Blob, originalName: string, format: 'webp' | 'jpeg'): 
 }
 
 // ─────────────────────────────────────────────
+// PRICE ROUNDING UTILITY
+// Rounds to nearest 5 (e.g. 22.8 → 25, 28 → 30)
+// ─────────────────────────────────────────────
+function roundToNearest5(value: string): string {
+  const n = parseFloat(value);
+  if (isNaN(n) || value === '') return value;
+  return String(Math.round(n / 5) * 5);
+}
+
+// ─────────────────────────────────────────────
 // COMPRESSION INFO BADGE (shown under each slot)
 // ─────────────────────────────────────────────
 interface CompressionInfo { originalKB: number; compressedKB: number; savedPct: number }
@@ -425,12 +435,14 @@ const AddProductForm = () => {
         <div>
           <label className="block text-sm font-semibold text-gray-700">Original Price *</label>
           <input type="number" name="originalPrice" value={formData.originalPrice} onChange={handleChange}
+            onBlur={e => setFormData(prev => ({ ...prev, originalPrice: roundToNearest5(e.target.value) }))}
             className="mt-1 block w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 outline-none" />
         </div>
 
         <div>
           <label className="block text-sm font-semibold text-gray-700">Discounted Price <span className="text-gray-400 font-normal">(Optional)</span></label>
           <input type="number" name="discountedPrice" value={formData.discountedPrice} onChange={handleChange}
+            onBlur={e => setFormData(prev => ({ ...prev, discountedPrice: roundToNearest5(e.target.value) }))}
             className="mt-1 block w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 outline-none" />
         </div>
 
