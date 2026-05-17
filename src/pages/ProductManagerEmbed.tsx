@@ -46,6 +46,13 @@ const discountPct = (p: Product): number => {
   return Math.round(((Number(p.originalPrice) - Number(p.discountedPrice)) / Number(p.originalPrice)) * 100);
 };
 
+// Rounds to nearest 5 (e.g. 22.8 → 25, 28 → 30, 31 → 30, 33 → 35)
+const roundToNearest5 = (value: string): string => {
+  const n = parseFloat(value);
+  if (isNaN(n) || value === '') return value;
+  return String(Math.round(n / 5) * 5);
+};
+
 const getEmbedUrl = (url: string): string | null => {
   if (!url) return null;
   const yt = url.match(/youtube\.com\/watch\?v=([\w-]+)/) || url.match(/youtu\.be\/([\w-]+)/) || url.match(/youtube\.com\/shorts\/([\w-]+)/);
@@ -345,11 +352,13 @@ function EditModal({
             <div>
               <label className="block text-[10px] font-black uppercase tracking-widest text-gray-500 mb-1.5">Original Price *</label>
               <input type="number" name="originalPrice" value={formData.originalPrice} onChange={handleChange}
+                onBlur={e => setFormData(prev => ({ ...prev, originalPrice: roundToNearest5(e.target.value) }))}
                 className="w-full border-2 border-gray-200 rounded-xl p-3 text-sm font-bold focus:border-[#FA5600] outline-none transition" />
             </div>
             <div>
               <label className="block text-[10px] font-black uppercase tracking-widest text-gray-500 mb-1.5">Discounted Price</label>
               <input type="number" name="discountedPrice" value={formData.discountedPrice} onChange={handleChange}
+                onBlur={e => setFormData(prev => ({ ...prev, discountedPrice: roundToNearest5(e.target.value) }))}
                 className="w-full border-2 border-gray-200 rounded-xl p-3 text-sm font-bold focus:border-[#FA5600] outline-none transition" />
             </div>
           </div>
@@ -607,14 +616,21 @@ export function ProductManagerEmbed() {
 
           {/* Search */}
           <div className="relative flex-1 min-w-[180px]">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
             <input
               type="text"
               value={search}
               onChange={e => setSearch(e.target.value)}
               placeholder="Search products..."
-              className="w-full pl-9 pr-4 py-2.5 border-2 border-gray-200 rounded-xl text-sm font-bold focus:border-[#FA5600] outline-none transition"
+              className="w-full pl-9 pr-9 py-2.5 border-2 border-gray-200 rounded-xl text-sm font-bold focus:border-[#FA5600] outline-none transition"
             />
+            {search && (
+              <button
+                onClick={() => setSearch('')}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 w-5 h-5 flex items-center justify-center rounded-full bg-gray-200 hover:bg-gray-300 text-gray-500 hover:text-gray-700 transition">
+                <X className="w-3 h-3" />
+              </button>
+            )}
           </div>
 
           {/* Filter toggle */}
@@ -969,11 +985,13 @@ function AddProductInline({
             <div>
               <label className="block text-[10px] font-black uppercase tracking-widest text-gray-500 mb-1.5">Original Price *</label>
               <input type="number" name="originalPrice" value={formData.originalPrice} onChange={handleChange}
+                onBlur={e => setFormData(prev => ({ ...prev, originalPrice: roundToNearest5(e.target.value) }))}
                 className="w-full border-2 border-gray-200 rounded-xl p-3 text-sm font-bold focus:border-[#FA5600] outline-none transition" />
             </div>
             <div>
               <label className="block text-[10px] font-black uppercase tracking-widest text-gray-500 mb-1.5">Discounted Price</label>
               <input type="number" name="discountedPrice" value={formData.discountedPrice} onChange={handleChange}
+                onBlur={e => setFormData(prev => ({ ...prev, discountedPrice: roundToNearest5(e.target.value) }))}
                 className="w-full border-2 border-gray-200 rounded-xl p-3 text-sm font-bold focus:border-[#FA5600] outline-none transition" />
             </div>
           </div>
