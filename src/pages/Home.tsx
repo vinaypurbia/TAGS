@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom';
 import { MessageCircle, FileText, CheckCircle, Package, ArrowRight } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useAppData } from '../context/AppDataContext';
+import { CatalogMascot } from '../components/CatalogMascot';
 
 export function Home() {
   const { categories, banner, isLoaded } = useAppData();
@@ -46,7 +47,7 @@ export function Home() {
           </div>
         )}
 
-        {/* Slide backgrounds — only rendered once both APIs loaded */}
+        {/* Slide backgrounds */}
         {isLoaded && (
           activeBanners.length > 0 ? (
             activeBanners.map((slide, i) => (
@@ -73,7 +74,7 @@ export function Home() {
 
         {isLoaded && <div className="absolute inset-0 bg-black/50" />}
 
-        {/* Content — only shown once both APIs loaded */}
+        {/* Content */}
         {isLoaded && (
           <div className="relative z-10 w-full max-w-5xl mx-auto px-8 py-20 lg:py-28 text-center flex flex-col items-center animate-fade-in">
 
@@ -100,11 +101,19 @@ export function Home() {
                 'Discover great toys, Adventure gear, gadgets, sports items — Browse our curated collection and send your order directly via WhatsApp!'}
             </p>
 
+            {/* ── BUTTON ROW — mascot replaces the plain Browse Catalog button ── */}
             <div className="flex flex-col sm:flex-row items-center justify-center gap-4 w-full sm:w-auto">
-              <Link to="/products"
-                className="bg-[#FA5600] hover:bg-[#E04A00] text-white font-black uppercase text-sm tracking-widest py-4 px-8 w-full sm:w-auto flex items-center justify-center gap-2 transition-all rounded-full shadow-lg">
-                Browse Catalog <ArrowRight className="w-5 h-5" />
-              </Link>
+
+              {/*
+                CatalogMascot renders its own <Link to="/products"> button
+                with the bouncing robot mascot sitting above it.
+                Extra top padding (pt-24) makes room for the mascot so it
+                doesn't overlap the heading text.
+              */}
+              <div className="pt-24">
+                <CatalogMascot />
+              </div>
+
               <a href="https://wa.me/916350021226" target="_blank" rel="noopener noreferrer"
                 className="flex items-center justify-center gap-2 bg-[#25D366] text-white font-black uppercase text-sm tracking-widest py-4 px-8 hover:bg-[#20bd5a] transition-all w-full sm:w-auto rounded-full shadow-lg">
                 <MessageCircle className="w-5 h-5" /> Chat with Us
@@ -191,7 +200,6 @@ export function Home() {
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             {!isLoaded ? (
-              // Skeleton cards — shown until both APIs loaded
               [1, 2, 3, 4].map(i => (
                 <div key={i} className="h-48 border-2 border-black bg-gray-800 animate-pulse rounded" />
               ))
