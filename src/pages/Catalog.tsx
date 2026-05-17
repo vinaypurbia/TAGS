@@ -498,15 +498,18 @@ export function Catalog() {
               </button>
 
               {/* Desktop sort quick-select */}
-              <select
-                value={filters.sort}
-                onChange={e => setFilter('sort', e.target.value as FilterState['sort'])}
-                className="hidden lg:block border border-gray-200 rounded-lg px-3 py-2 text-xs font-bold text-gray-700 outline-none focus:border-[#FA5600] transition-colors cursor-pointer bg-white">
-                <option value="newest">Newest</option>
-                <option value="price_asc">Price ↑</option>
-                <option value="price_desc">Price ↓</option>
-                <option value="discount">Top Discount</option>
-              </select>
+              <div className="hidden lg:flex flex-col items-end gap-1">
+                <span className="text-[9px] font-black uppercase tracking-widest text-gray-400">Sort By</span>
+                <select
+                  value={filters.sort}
+                  onChange={e => setFilter('sort', e.target.value as FilterState['sort'])}
+                  className="border border-gray-200 rounded-lg px-3 py-2 text-xs font-bold text-gray-700 outline-none focus:border-[#FA5600] transition-colors cursor-pointer bg-white">
+                  <option value="newest">Newest</option>
+                  <option value="price_asc">Price ↑</option>
+                  <option value="price_desc">Price ↓</option>
+                  <option value="discount">Top Discount</option>
+                </select>
+              </div>
             </div>
           </div>
 
