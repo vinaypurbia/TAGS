@@ -23,9 +23,9 @@ export function Home() {
 
   const defaultImages: Record<string, string> = {
     'Electronics': 'https://images.unsplash.com/photo-1596461404969-9ae70f2830c1?auto=format&fit=crop&q=80&w=800',
-    'Automotive': 'https://images.unsplash.com/photo-1504280390224-340788ee5c60?auto=format&fit=crop&q=80&w=800',
+    'Automotive':  'https://images.unsplash.com/photo-1504280390224-340788ee5c60?auto=format&fit=crop&q=80&w=800',
     'Travel Gear': 'https://images.unsplash.com/photo-1579829366248-204fe8413f31?auto=format&fit=crop&q=80&w=800',
-    'Toys': 'https://images.unsplash.com/photo-1519861531473-920026076da6?auto=format&fit=crop&q=80&w=800',
+    'Toys':        'https://images.unsplash.com/photo-1519861531473-920026076da6?auto=format&fit=crop&q=80&w=800',
   };
 
   const fallbackImages = [
@@ -40,24 +40,19 @@ export function Home() {
       {/* ===== HERO BANNER ===== */}
       <section className="relative overflow-hidden border-b-4 border-[#FA5600] min-h-[400px] lg:min-h-[500px] flex items-center">
 
-        {/* Spinner — shown while APIs are in flight */}
         {!isLoaded && (
           <div className="absolute inset-0 bg-[#1A1A1A] flex items-center justify-center">
             <div className="w-10 h-10 border-4 border-white/20 border-t-[#FA5600] rounded-full animate-spin" />
           </div>
         )}
 
-        {/* Slide backgrounds */}
         {isLoaded && (
           activeBanners.length > 0 ? (
             activeBanners.map((slide, i) => (
               <div
                 key={i}
                 className="absolute inset-0 transition-opacity duration-1000"
-                style={{
-                  opacity: i === currentBanner ? 1 : 0,
-                  background: `url(${slide.image}) center/cover no-repeat`,
-                }}
+                style={{ opacity: i === currentBanner ? 1 : 0, background: `url(${slide.image}) center/cover no-repeat` }}
               />
             ))
           ) : (
@@ -74,7 +69,6 @@ export function Home() {
 
         {isLoaded && <div className="absolute inset-0 bg-black/50" />}
 
-        {/* Content */}
         {isLoaded && (
           <div className="relative z-10 w-full max-w-5xl mx-auto px-8 py-20 lg:py-28 text-center flex flex-col items-center animate-fade-in">
 
@@ -101,21 +95,23 @@ export function Home() {
                 'Discover great toys, Adventure gear, gadgets, sports items — Browse our curated collection and send your order directly via WhatsApp!'}
             </p>
 
-            {/* ── BUTTON ROW — mascot replaces the plain Browse Catalog button ── */}
-            <div className="flex flex-col sm:flex-row items-center justify-center gap-4 w-full sm:w-auto">
+            {/*
+              Button row:
+              - CatalogMascot is self-contained (130px tall scene, button at bottom)
+              - Chat With Us button uses align-self: flex-end so it lines up with
+                the bottom of the mascot scene (i.e. sits beside the button visually)
+            */}
+            <div className="flex flex-col sm:flex-row items-center sm:items-end justify-center gap-6 w-full sm:w-auto">
 
-              {/*
-                CatalogMascot renders its own <Link to="/products"> button
-                with the bouncing robot mascot sitting above it.
-                Extra top padding (pt-24) makes room for the mascot so it
-                doesn't overlap the heading text.
-              */}
-              <div className="pt-24">
-                <CatalogMascot />
-              </div>
+              <CatalogMascot />
 
-              <a href="https://wa.me/916350021226" target="_blank" rel="noopener noreferrer"
-                className="flex items-center justify-center gap-2 bg-[#25D366] text-white font-black uppercase text-sm tracking-widest py-4 px-8 hover:bg-[#20bd5a] transition-all w-full sm:w-auto rounded-full shadow-lg">
+              <a
+                href="https://wa.me/916350021226"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center justify-center gap-2 bg-[#25D366] text-white font-black uppercase text-sm tracking-widest py-4 px-8 hover:bg-[#20bd5a] transition-all w-full sm:w-auto rounded-full shadow-lg mb-0 sm:mb-0"
+                style={{ alignSelf: 'flex-end', marginBottom: '0px' }}
+              >
                 <MessageCircle className="w-5 h-5" /> Chat with Us
               </a>
             </div>
@@ -144,7 +140,6 @@ export function Home() {
             <h2 className="text-4xl font-black text-gray-900 mb-2 tracking-tighter uppercase">How to Order</h2>
             <p className="text-sm font-bold uppercase tracking-widest text-slate-400">Quick, personalized service via chat</p>
           </div>
-
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
             <div className="relative overflow-hidden p-6 bg-slate-50 border-2 border-black card-hover">
               <span className="step-number">1</span>
@@ -154,7 +149,6 @@ export function Home() {
                 <p className="text-xs font-bold text-slate-500 uppercase tracking-wide">Add favorite toys and gear to your order list.</p>
               </div>
             </div>
-
             <div className="relative overflow-hidden p-6 bg-slate-50 border-2 border-black card-hover">
               <span className="step-number">2</span>
               <div className="relative z-10 flex flex-col h-full items-start">
@@ -163,7 +157,6 @@ export function Home() {
                 <p className="text-xs font-bold text-slate-500 uppercase tracking-wide">Enter your name, phone and delivery address.</p>
               </div>
             </div>
-
             <div className="relative overflow-hidden p-6 bg-[#FA5600] border-2 border-black card-hover">
               <span className="step-number text-black opacity-10">3</span>
               <div className="relative z-10 flex flex-col h-full items-start">
@@ -172,7 +165,6 @@ export function Home() {
                 <p className="text-xs font-bold text-black/70 uppercase tracking-wide">One click sends your order directly on WhatsApp!</p>
               </div>
             </div>
-
             <div className="relative overflow-hidden p-6 bg-slate-50 border-2 border-black card-hover">
               <span className="step-number">4</span>
               <div className="relative z-10 flex flex-col h-full items-start">
@@ -197,7 +189,6 @@ export function Home() {
               View All <ArrowRight className="w-4 h-4" />
             </Link>
           </div>
-
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             {!isLoaded ? (
               [1, 2, 3, 4].map(i => (
@@ -222,7 +213,6 @@ export function Home() {
               ))
             )}
           </div>
-
           <div className="mt-8 sm:hidden text-center">
             <Link to="/products" className="inline-flex items-center gap-2 text-black font-black uppercase text-sm tracking-widest border-b-2 border-black pb-1 hover:text-[#FA5600] hover:border-[#FA5600] transition-all">
               View All Products <ArrowRight className="w-5 h-5" />
