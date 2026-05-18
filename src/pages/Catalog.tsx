@@ -82,19 +82,22 @@ export function Catalog() {
   }, []);
 
   // ── Build API URL for a given page ───────────────────────
-  const buildUrl = useCallback((pageNum: number) => {
+  const buildUrl = useCallback((pageNum: number, subcategoryOverride?: string) => {
     const params = new URLSearchParams();
     params.set('withStock', 'true');
     params.set('page', String(pageNum));
     params.set('limit', String(PAGE_SIZE));
     if (categoryFilter) params.set('category', categoryFilter);
     if (searchQuery.trim()) params.set('search', searchQuery.trim());
+    // subcategory is server-side so ALL pages are scanned, not just the loaded 20
+    const sub = subcategoryOverride !== undefined ? subcategoryOverride : filters.subcategory;
+    if (sub) params.set('subcategory', sub);
     return `/api/products?${params.toString()}`;
-  }, [categoryFilter, searchQuery]);
+  }, [categoryFilter, searchQuery, filters.subcategory]);
 
-  // ── Initial / reset fetch when category or search changes ─
+  // ── Initial / reset fetch when category, search, or subcategory changes ─
   useEffect(() => {
-    const key = `${categoryFilter}||${searchQuery}`;
+    const key = `${categoryFilter}||${searchQuery}||${filters.subcategory}`;
     if (lastFetchKey.current === key) return;
     lastFetchKey.current = key;
 
@@ -104,7 +107,7 @@ export function Catalog() {
     setHasMore(false);
     setError('');
 
-    fetch(buildUrl(1))
+    fetch(buildUrl(1, filters.subcategory))
       .then(r => r.json())
       .then(data => {
         setProducts(data.products ?? []);
@@ -114,7 +117,7 @@ export function Catalog() {
       })
       .catch(() => setError('Failed to load products. Please refresh.'))
       .finally(() => setLoading(false));
-  }, [categoryFilter, searchQuery, buildUrl]);
+  }, [categoryFilter, searchQuery, filters.subcategory, buildUrl]);
 
   // ── Load more (append next page) ─────────────────────────
   const loadMore = useCallback(() => {
@@ -176,11 +179,7 @@ export function Catalog() {
   const filteredProducts = useMemo(() => {
     let result = [...products];
 
-    if (filters.subcategory) {
-      result = result.filter(p =>
-        (p.subcategory || p.subCategory || '') === filters.subcategory
-      );
-    }
+    // subcategory is now filtered server-side via the API — no client-side filter needed
     if (filters.priceMin !== '') {
       const min = parseFloat(filters.priceMin);
       result = result.filter(p =>
