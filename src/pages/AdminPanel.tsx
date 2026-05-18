@@ -17,10 +17,11 @@ const VISIBILITY_KEY = 'tagsAdminVisibility';
 
 type Section =
   | 'dashboard' | 'promo' | 'banner' | 'category-images'
-  | 'products' | 'categories' | 'inventory' | 'business' | 'settings' | 'import';
+  | 'products' | 'categories' | 'inventory' | 'business' | 'settings' | 'import' | 'perks';
 
 interface BannerSlide { image: string; text: string; description: string; }
 interface PromoLine   { text: string; }
+interface Perk        { icon: string; text: string; }
 
 const ALL_MODULES: { id: Section; label: string; icon: any; desc: string }[] = [
   { id: 'dashboard',       label: 'Dashboard',       icon: LayoutDashboard, desc: 'Overview & quick stats' },
@@ -31,6 +32,7 @@ const ALL_MODULES: { id: Section; label: string; icon: any; desc: string }[] = [
   { id: 'category-images', label: 'Category Images',  icon: Tag,             desc: 'Upload category covers' },
   { id: 'banner',          label: 'Hero Banners',     icon: Image,           desc: 'Homepage banners' },
   { id: 'promo',           label: 'Offer Bar',        icon: Megaphone,       desc: 'Scrolling announcements' },
+  { id: 'perks',           label: 'Product Perks',    icon: Tag,             desc: 'Free shipping, returns bar on product pages' },
   { id: 'import',          label: 'Import Products',  icon: Upload,          desc: 'Bulk import via CSV' },
   { id: 'settings',        label: 'Settings',         icon: SettingsIcon,    desc: 'Module visibility' },
 ];
@@ -255,6 +257,15 @@ export function AdminPanel() {
   const [promoSaved,    setPromoSaved]    = useState(false);
   const [promoLoading,  setPromoLoading]  = useState(false);
 
+  const DEFAULT_PERKS: Perk[] = [
+    { icon: '🚚', text: 'Free Shipping' },
+    { icon: '✅', text: 'Secure Payments' },
+    { icon: '🔁', text: 'Easy Returns' },
+  ];
+  const [perks,       setPerks]       = useState<Perk[]>(DEFAULT_PERKS);
+  const [perksSaved,  setPerksSaved]  = useState(false);
+  const [perksLoading,setPerksLoading]= useState(false);
+
   const [bannerSlides,  setBannerSlides]  = useState<BannerSlide[]>([
     { image: '', text: '', description: '' }, { image: '', text: '', description: '' },
     { image: '', text: '', description: '' }, { image: '', text: '', description: '' },
@@ -302,6 +313,9 @@ export function AdminPanel() {
         setBannerSlides(slides.slice(0, 5));
       } else if (data.bannerImage) {
         setBannerSlides(prev => { const n = [...prev]; n[0] = { image: data.bannerImage, text: data.bannerText || '', description: '' }; return n; });
+      }
+      if (data.perks && Array.isArray(data.perks) && data.perks.length === 3) {
+        setPerks(data.perks);
       }
     }).catch(() => {});
 
@@ -396,6 +410,15 @@ export function AdminPanel() {
     setCatUploading(catId);
     try { const url = await uploadImage(file); setCatImages(prev => ({ ...prev, [catId]: url })); }
     catch { alert('Image upload failed.'); } finally { setCatUploading(null); }
+  };
+
+  const handleSavePerks = async () => {
+    setPerksLoading(true);
+    try {
+      const activeLines = promoLines.filter(l => l.text.trim());
+      await fetch('/api/banner', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ promoLines, promoText: activeLines[0]?.text || '', bannerSlides, bannerImage: bannerSlides[0]?.image || '', bannerText: bannerSlides[0]?.text || '', perks }) });
+      setPerksSaved(true); setTimeout(() => setPerksSaved(false), 2500);
+    } catch { alert('Failed to save perks.'); } finally { setPerksLoading(false); }
   };
 
   const handleSavePromo = async () => {
@@ -853,6 +876,56 @@ export function AdminPanel() {
                 </div>
               ))}
               <SaveButton onClick={handleSaveBanners} loading={bannerLoading} saved={bannerSaved} />
+            </div>
+          )}
+
+          {/* ── PRODUCT PERKS ── */}
+          {activeSection === 'perks' && (
+            <div className="max-w-2xl mx-auto space-y-4">
+              <SectionHeader icon={Tag} title="Product Perks" desc="Edit the 3 trust badges shown on every product page" />
+              <div className="bg-white rounded-2xl border border-gray-200 p-6 shadow-sm space-y-5">
+                <p className="text-xs text-gray-400 font-bold">These 3 items appear in the green strip on every product detail page. Use an emoji + short label.</p>
+                {perks.map((perk, i) => (
+                  <div key={i} className="flex items-center gap-3">
+                    <div className="shrink-0">
+                      <label className="block text-[10px] font-black uppercase tracking-widest text-gray-500 mb-1">Icon</label>
+                      <input
+                        type="text"
+                        value={perk.icon}
+                        onChange={e => setPerks(prev => { const n = [...prev]; n[i] = { ...n[i], icon: e.target.value }; return n; })}
+                        maxLength={4}
+                        className="w-16 text-center border-2 border-gray-200 rounded-xl p-2.5 text-xl font-bold focus:border-[#FA5600] outline-none transition"
+                        placeholder="🚚"
+                      />
+                    </div>
+                    <div className="flex-1">
+                      <label className="block text-[10px] font-black uppercase tracking-widest text-gray-500 mb-1">Label</label>
+                      <input
+                        type="text"
+                        value={perk.text}
+                        onChange={e => setPerks(prev => { const n = [...prev]; n[i] = { ...n[i], text: e.target.value }; return n; })}
+                        placeholder={['Free Shipping', 'Secure Payments', 'Easy Returns'][i]}
+                        className="w-full border-2 border-gray-200 rounded-xl p-2.5 text-sm font-bold focus:border-[#FA5600] outline-none transition"
+                      />
+                    </div>
+                  </div>
+                ))}
+
+                {/* Live Preview */}
+                <div>
+                  <p className="text-[10px] font-black uppercase tracking-widest text-gray-500 mb-2">Live Preview</p>
+                  <div className="border border-[#25D366]/30 rounded-xl bg-[#25D366]/5 divide-x divide-[#25D366]/20 flex overflow-hidden">
+                    {perks.map((perk, i) => (
+                      <div key={i} className="flex-1 flex flex-col items-center justify-center gap-1 py-3 px-2 text-center">
+                        <span className="text-lg leading-none">{perk.icon || '?'}</span>
+                        <span className="text-[10px] font-black text-[#1a9e4f] uppercase tracking-wide leading-tight">{perk.text || '—'}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <SaveButton onClick={handleSavePerks} loading={perksLoading} saved={perksSaved} />
+              </div>
             </div>
           )}
 
