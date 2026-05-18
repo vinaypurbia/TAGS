@@ -14,27 +14,37 @@ export function ProductDetail() {
   const [selectedImage, setSelectedImage] = useState<string>('');
 
   useEffect(() => {
-    fetch('/api/products')
-      .then(res => res.json())
-      .then(data => {
-        const found = data.find((p: any) => p._id === id);
-        setProduct(found || null);
-        if (found) {
-          // Support imageUrls array, imageUrl string, or image string
-          const imgs = found.imageUrls?.length > 0
-            ? found.imageUrls
-            : found.imageUrl
-              ? [found.imageUrl]
-              : found.image
-                ? [found.image]
-                : [];
-          if (imgs.length > 0) setSelectedImage(imgs[0]);
-        }
-        setLoading(false);
+    if (!id) { setLoading(false); return; }
+
+    // ── FIX: fetch single product by ID directly ──────────────
+    // Old code fetched ALL products then did array.find() which broke
+    // when the API switched to a paginated envelope { products, total, hasMore }
+    // New code uses ?id=<id> which returns a single product object directly
+    fetch(`/api/products?id=${id}`)
+      .then(res => {
+        if (!res.ok) throw new Error('Not found');
+        return res.json();
       })
-      .catch(() => setLoading(false));
+      .then(data => {
+        // data is a single product object (not an array or envelope)
+        setProduct(data);
+
+        // Resolve display image — support imageUrls[], imageUrl, or image
+        const imgs: string[] =
+          data.imageUrls?.length > 0
+            ? data.imageUrls
+            : data.imageUrl
+              ? [data.imageUrl]
+              : data.image
+                ? [data.image]
+                : [];
+        if (imgs.length > 0) setSelectedImage(imgs[0]);
+      })
+      .catch(() => setProduct(null))
+      .finally(() => setLoading(false));
   }, [id]);
 
+  // ── Loading ───────────────────────────────────────────────
   if (loading) {
     return (
       <div className="max-w-7xl mx-auto px-4 py-20 text-center">
@@ -43,6 +53,7 @@ export function ProductDetail() {
     );
   }
 
+  // ── Not found ─────────────────────────────────────────────
   if (!product) {
     return (
       <div className="max-w-7xl mx-auto px-4 sm:px-6 py-20 text-center">
@@ -57,24 +68,27 @@ export function ProductDetail() {
     );
   }
 
+  // ── Handlers ─────────────────────────────────────────────
   const handleAddItem = () => {
     addItem(product);
     setIsRecentlyAdded(true);
     setTimeout(() => setIsRecentlyAdded(false), 1500);
   };
 
-  const quantityInCart = items.find(i => i.product.id === product._id)?.quantity || 0;
-  const displayPrice = product.discountedPrice || product.originalPrice || product.price;
+  const quantityInCart = items.find(i => i.product.id === product._id?.toString())?.quantity || 0;
+  const displayPrice   = product.discountedPrice || product.originalPrice || product.price;
 
-  // Normalize images — support imageUrls[], imageUrl, or image
-  const allImages: string[] = product.imageUrls?.length > 0
-    ? product.imageUrls
-    : product.imageUrl
-      ? [product.imageUrl]
-      : product.image
-        ? [product.image]
-        : [];
+  // Normalize images
+  const allImages: string[] =
+    product.imageUrls?.length > 0
+      ? product.imageUrls
+      : product.imageUrl
+        ? [product.imageUrl]
+        : product.image
+          ? [product.image]
+          : [];
 
+  // ── Video embed ───────────────────────────────────────────
   const getEmbedUrl = (url: string): string | null => {
     if (!url) return null;
     const ytMatch =
@@ -93,6 +107,7 @@ export function ProductDetail() {
 
   const embedUrl = product.videoUrl ? getEmbedUrl(product.videoUrl) : null;
 
+  // ── Render ────────────────────────────────────────────────
   return (
     <div className="p-8">
       <Link
@@ -104,7 +119,7 @@ export function ProductDetail() {
       <div className="bg-white border-2 border-black max-w-5xl mx-auto shadow-[8px_8px_0px_0px_rgba(0,0,0,1)]">
         <div className="grid grid-cols-1 md:grid-cols-2">
 
-          {/* Image Gallery */}
+          {/* ── Image Gallery ── */}
           <div className="overflow-hidden bg-slate-50 border-b-2 md:border-b-0 md:border-r-2 border-black flex flex-col">
             <div className="flex-1 flex items-center justify-center p-4">
               {selectedImage ? (
@@ -120,14 +135,14 @@ export function ProductDetail() {
             </div>
 
             {allImages.length > 1 && (
-              <div className="flex gap-2 p-3 border-t-2 border-black bg-white">
+              <div className="flex gap-2 p-3 border-t-2 border-black bg-white overflow-x-auto">
                 {allImages.map((img: string, i: number) => (
                   <button
                     key={i}
                     onClick={() => setSelectedImage(img)}
                     className={cn(
-                      "w-16 h-16 border-2 overflow-hidden flex-shrink-0 transition-all",
-                      selectedImage === img ? "border-black" : "border-gray-200 hover:border-gray-400"
+                      'w-16 h-16 border-2 overflow-hidden flex-shrink-0 transition-all',
+                      selectedImage === img ? 'border-black' : 'border-gray-200 hover:border-gray-400'
                     )}>
                     <img src={img} alt={`${product.name} ${i + 1}`} className="w-full h-full object-cover" />
                   </button>
@@ -136,7 +151,7 @@ export function ProductDetail() {
             )}
           </div>
 
-          {/* Product Details */}
+          {/* ── Product Details ── */}
           <div className="flex flex-col justify-center p-8 lg:p-12">
             <div className="inline-flex px-3 py-1 bg-black text-white text-[10px] font-black uppercase tracking-widest w-max mb-6">
               {product.category}
@@ -174,10 +189,10 @@ export function ProductDetail() {
                 onClick={handleAddItem}
                 disabled={isRecentlyAdded}
                 className={cn(
-                  "w-full py-5 px-6 font-black uppercase tracking-tighter flex items-center justify-center gap-2 transition-all text-sm border-2",
+                  'w-full py-5 px-6 font-black uppercase tracking-tighter flex items-center justify-center gap-2 transition-all text-sm border-2',
                   isRecentlyAdded
-                    ? "bg-slate-100 text-black border-black/20"
-                    : "bg-[var(--color-wa-green)] hover:bg-[#20bd5a] text-white border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:translate-y-1 hover:shadow-none"
+                    ? 'bg-slate-100 text-black border-black/20'
+                    : 'bg-[var(--color-wa-green)] hover:bg-[#20bd5a] text-white border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:translate-y-1 hover:shadow-none'
                 )}>
                 {isRecentlyAdded ? (
                   <><Check className="w-5 h-5" /> Added to List!</>
@@ -192,7 +207,7 @@ export function ProductDetail() {
           </div>
         </div>
 
-        {/* Video Section */}
+        {/* ── Video Section ── */}
         {embedUrl && (
           <div className="border-t-2 border-black p-8">
             <h3 className="font-black uppercase tracking-widest text-sm mb-4">Product Video</h3>
