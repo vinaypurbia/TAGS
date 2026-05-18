@@ -1,4 +1,4 @@
-import { ReactNode, useState, useEffect } from 'react';
+import { ReactNode, useState, useEffect, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { ShoppingBag, Phone, Mail, MapPin, Search } from 'lucide-react';
 import { useCart } from '../context/CartContext';
@@ -9,7 +9,7 @@ export function Layout({ children }: { children: ReactNode }) {
   const { categories, banner, isLoaded } = useAppData();
   const navigate = useNavigate();
   const [searchQuery, setSearchQuery] = useState('');
-  const [promoIndex, setPromoIndex] = useState(0);
+  const tickerRef = useRef<HTMLDivElement>(null);
 
   // Build promo lines from shared banner data
   const promoLines = banner?.promoLines
@@ -18,11 +18,14 @@ export function Layout({ children }: { children: ReactNode }) {
     ? [banner.promoText]
     : [];
 
-  // Auto-scroll promo lines
+  // Sync CSS animation duration based on content width so speed stays constant
   useEffect(() => {
-    if (promoLines.length <= 1) return;
-    const timer = setInterval(() => setPromoIndex(p => (p + 1) % promoLines.length), 4000);
-    return () => clearInterval(timer);
+    const el = tickerRef.current;
+    if (!el || promoLines.length === 0) return;
+    // ~80px per second; content is duplicated so use half the scrollWidth
+    const contentWidth = el.scrollWidth / 2;
+    const duration = Math.max(12, contentWidth / 80);
+    el.style.animationDuration = `${duration}s`;
   }, [promoLines.length]);
 
   const handleSearch = (e: React.FormEvent) => {
@@ -37,16 +40,31 @@ export function Layout({ children }: { children: ReactNode }) {
   return (
     <div className="min-h-screen flex flex-col max-w-[1200px] mx-auto bg-[#F5F5F5] shadow-2xl relative">
 
-      {/* Promo Banner — hidden until BOTH APIs loaded, then fades in */}
+      {/* Promo Banner — continuous relay marquee */}
       {isLoaded && promoLines.length > 0 && (
-        <div className="bg-[#FA5600] text-white text-[10px] font-bold uppercase tracking-widest px-8 py-1.5 text-center overflow-hidden relative h-6 flex items-center justify-center">
-          {promoLines.length > 1 ? (
-            <span key={promoIndex} className="animate-fade-in absolute">
-              {promoLines[promoIndex]}
-            </span>
-          ) : (
-            <span>{promoLines[0]}</span>
-          )}
+        <div className="bg-[#FA5600] text-white text-[10px] font-bold uppercase tracking-widest overflow-hidden h-6 flex items-center">
+          <div
+            ref={tickerRef}
+            className="flex whitespace-nowrap"
+            style={{
+              animation: 'tags-ticker 30s linear infinite',
+              willChange: 'transform',
+            }}
+          >
+            {/* Duplicate the list twice so the scroll loops seamlessly */}
+            {[...promoLines, ...promoLines].map((line, i) => (
+              <span key={i} className="flex items-center">
+                <span className="px-8">{line}</span>
+                <span className="text-white/40 select-none">•</span>
+              </span>
+            ))}
+          </div>
+          <style>{`
+            @keyframes tags-ticker {
+              0%   { transform: translateX(0); }
+              100% { transform: translateX(-50%); }
+            }
+          `}</style>
         </div>
       )}
 
