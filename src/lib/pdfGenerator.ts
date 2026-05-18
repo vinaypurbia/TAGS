@@ -152,11 +152,21 @@ export const generateOrderPDF = async (
   doc.text('All prices include GST (where applicable)', 112, custY + 19);
   doc.text('No online payment required at this step', 112, custY + 25);
 
+  // ─── NORMALISE PRICES (guard against undefined/string prices) ────────────────
+  const safeItems = items.map((item) => ({
+    ...item,
+    product: {
+      ...item.product,
+      price: Number(item.product.price) || 0,
+    },
+    quantity: Number(item.quantity) || 1,
+  }));
+
   // ─── ITEMS TABLE WITH THUMBNAILS ─────────────────────────────────────────────
   // Pre-load all product images
   const imageCache: Record<string, string> = {};
   await Promise.all(
-    items.map(async (item) => {
+    safeItems.map(async (item) => {
       if (item.product.image) {
         const b64 = await loadImageAsBase64(item.product.image);
         if (b64) imageCache[item.product.id] = b64;
@@ -170,7 +180,7 @@ export const generateOrderPDF = async (
   autoTable(doc, {
     startY: tableStartY,
     head: [['', 'Product', 'Category', 'Unit Price', 'Qty', 'Amount']],
-    body: items.map((item) => [
+    body: safeItems.map((item) => [
       '', // image cell — filled via didDrawCell
       item.product.name,
       item.product.category || '—',
@@ -212,7 +222,7 @@ export const generateOrderPDF = async (
     // Draw product thumbnails in first column
     didDrawCell: (data) => {
       if (data.section === 'body' && data.column.index === 0) {
-        const item = items[data.row.index];
+        const item = safeItems[data.row.index];
         const imgData = imageCache[item.product.id];
         if (imgData) {
           const cellX = data.cell.x + 1;
@@ -231,7 +241,7 @@ export const generateOrderPDF = async (
   const afterTable = (doc as any).lastAutoTable.finalY || 140;
 
   // ─── TOTALS SECTION ──────────────────────────────────────────────────────────
-  const subtotal = items.reduce((s, i) => s + i.product.price * i.quantity, 0);
+  const subtotal = safeItems.reduce((s, i) => s + i.product.price * i.quantity, 0);
 
   // Subtotal row
   doc.setFontSize(9);
