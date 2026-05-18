@@ -4,12 +4,24 @@ import { generateOrderPDF, getWhatsAppLink } from '../lib/pdfGenerator';
 import { Trash2, Plus, Minus, MessageCircle, AlertCircle, ShoppingBag } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
+// Safely resolve price from any product shape (price / discountedPrice / originalPrice)
+const resolvePrice = (product: any): number => {
+  const candidates = [product.discountedPrice, product.price, product.originalPrice];
+  for (const v of candidates) {
+    if (v !== undefined && v !== null) {
+      const n = typeof v === 'number' ? v : parseFloat(String(v).replace(/[^0-9.]/g, ''));
+      if (!isNaN(n) && n > 0) return n;
+    }
+  }
+  return 0;
+};
+
 export function OrderSummary() {
   const { items, updateQuantity, removeItem, clearCart } = useCart();
   const [formData, setFormData] = useState({ name: '', phone: '', address: '' });
   const [isSending, setIsSending] = useState(false);
 
-  const subtotal = items.reduce((sum, item) => sum + (item.product.price * item.quantity), 0);
+  const subtotal = items.reduce((sum, item) => sum + (resolvePrice(item.product) * item.quantity), 0);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     setFormData(prev => ({ ...prev, [e.target.name]: e.target.value }));
@@ -91,7 +103,7 @@ export function OrderSummary() {
                   <div className="flex-1 text-center sm:text-left">
                     <h3 className="font-black uppercase text-base leading-tight mb-1">{item.product.name}</h3>
                     <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">{item.product.category}</p>
-                    <div className="font-black text-lg mt-2 text-[#E53935]">₹{item.product.price.toFixed(2)}</div>
+                    <div className="font-black text-lg mt-2 text-[#E53935]">₹{resolvePrice(item.product).toFixed(2)}</div>
                   </div>
 
                   <div className="flex flex-col sm:items-end gap-3">
