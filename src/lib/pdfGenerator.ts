@@ -9,24 +9,38 @@ export interface UserDetails {
 }
 
 // Helper: load an image URL as base64 for jsPDF
+// Uses a proxy to bypass CORS restrictions on Meta CDN images
 const loadImageAsBase64 = (url: string): Promise<string> => {
   return new Promise((resolve) => {
-    const img = new Image();
-    img.crossOrigin = 'anonymous';
-    img.onload = () => {
-      const canvas = document.createElement('canvas');
-      canvas.width = img.width;
-      canvas.height = img.height;
-      const ctx = canvas.getContext('2d');
-      if (ctx) {
-        ctx.drawImage(img, 0, 0);
-        resolve(canvas.toDataURL('image/jpeg', 0.8));
-      } else {
-        resolve('');
-      }
-    };
-    img.onerror = () => resolve('');
-    img.src = url;
+    if (!url) { resolve(''); return; }
+
+    const tryLoad = (src: string) =>
+      new Promise<string>((res) => {
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        img.onload = () => {
+          try {
+            const canvas = document.createElement('canvas');
+            canvas.width  = img.naturalWidth  || img.width;
+            canvas.height = img.naturalHeight || img.height;
+            const ctx = canvas.getContext('2d');
+            if (ctx) { ctx.drawImage(img, 0, 0); res(canvas.toDataURL('image/jpeg', 0.8)); }
+            else res('');
+          } catch { res(''); }
+        };
+        img.onerror = () => res('');
+        img.src = src;
+      });
+
+    // Try direct first; if it fails (CORS), try via a public CORS proxy
+    tryLoad(url).then(async (b64) => {
+      if (b64) { resolve(b64); return; }
+      // Fallback: route through a simple proxy endpoint you can add to your API
+      // or use the image URL directly without CORS
+      const proxyUrl = `/api/banner?proxy=${encodeURIComponent(url)}`;
+      const b64proxy = await tryLoad(proxyUrl);
+      resolve(b64proxy);
+    });
   });
 };
 
@@ -34,9 +48,18 @@ const loadImageAsBase64 = (url: string): Promise<string> => {
 const parsePrice = (val: any): number => {
   if (val === null || val === undefined) return 0;
   if (typeof val === 'number') return isNaN(val) ? 0 : val;
-  // Strip everything except digits and dot
   const cleaned = String(val).replace(/[^0-9.]/g, '');
   return parseFloat(cleaned) || 0;
+};
+
+// Resolve the best price from a product object (tries discountedPrice, price, originalPrice)
+const resolvePrice = (product: any): number => {
+  const candidates = [product.discountedPrice, product.price, product.originalPrice];
+  for (const v of candidates) {
+    const n = parsePrice(v);
+    if (n > 0) return n;
+  }
+  return 0;
 };
 
 export const generateOrderPDF = async (
@@ -138,9 +161,9 @@ export const generateOrderPDF = async (
   doc.setFontSize(9);
   doc.setTextColor(40, 40, 40);
   doc.text(`${userDetails.name}`, 18, custY + 12);
-  doc.text(`📞 ${userDetails.phone}`, 18, custY + 18);
+  doc.text(`Tel: ${userDetails.phone}`, 18, custY + 18);
   if (userDetails.address) {
-    const addrLines = doc.splitTextToSize(`📍 ${userDetails.address}`, 78);
+    const addrLines = doc.splitTextToSize(`Addr: ${userDetails.address}`, 78);
     doc.text(addrLines, 18, custY + 24);
   }
 
@@ -166,7 +189,7 @@ export const generateOrderPDF = async (
     ...item,
     product: {
       ...item.product,
-      price: parsePrice(item.product.price),
+      price: resolvePrice(item.product),
     },
     quantity: Number(item.quantity) || 1,
   }));
