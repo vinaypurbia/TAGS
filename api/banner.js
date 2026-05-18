@@ -18,6 +18,25 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
 
   try {
+    // ── IMAGE PROXY (GET ?proxy=<url>) ────────────────────────────────────────
+    // Used by pdfGenerator.ts to bypass CORS on Meta CDN product images
+    if (req.method === 'GET' && req.query.proxy) {
+      const imageUrl = decodeURIComponent(req.query.proxy);
+      if (!imageUrl.startsWith('http://') && !imageUrl.startsWith('https://')) {
+        return res.status(400).json({ error: 'Invalid URL' });
+      }
+      const imgRes = await fetch(imageUrl, {
+        headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'image/*' },
+      });
+      if (!imgRes.ok) return res.status(imgRes.status).end();
+      const contentType = imgRes.headers.get('content-type') || 'image/jpeg';
+      const buffer = await imgRes.arrayBuffer();
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      return res.send(Buffer.from(buffer));
+    }
+
     const dbClient = await getClient();
     const db = dbClient.db('tagsdb');
     const collection = db.collection('settings');
@@ -34,7 +53,6 @@ export default async function handler(req, res) {
         bannerSlides,   // array of { image, text, description }
         bannerImage,    // legacy fallback
         bannerText,     // legacy fallback
-        perks,          // array of { icon, text }
       } = req.body;
 
       // Only keep slides that have at least an image
@@ -56,7 +74,6 @@ export default async function handler(req, res) {
             bannerSlides: cleanedSlides,   // ✅ properly saved now
             bannerImage: bannerImage || '',
             bannerText: bannerText || '',
-            perks: Array.isArray(perks) ? perks : [],
             updatedAt: new Date(),
           }
         },
