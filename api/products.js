@@ -150,7 +150,7 @@ export default async function handler(req, res) {
     const inventory = db.collection('inventory');
 
     if (req.method === 'GET') {
-      const { id, withStock, syncMeta, pushAll, page, limit, category, search } = req.query;
+      const { id, withStock, syncMeta, pushAll, page, limit, category, subcategory, search } = req.query;
 
       // ── Special ops (unchanged) ──────────────────────────────
       if (syncMeta === 'true') {
@@ -235,6 +235,9 @@ export default async function handler(req, res) {
       const mongoFilter = {};
       if (category && category !== '') {
         mongoFilter.category = category;
+      }
+      if (subcategory && subcategory.trim() !== '') {
+        mongoFilter.subcategory = { $regex: `^${subcategory.trim()}$`, $options: 'i' };
       }
       if (search && search.trim() !== '') {
         const q = search.trim();
