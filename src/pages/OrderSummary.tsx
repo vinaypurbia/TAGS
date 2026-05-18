@@ -22,7 +22,7 @@ export function OrderSummary() {
     setIsSending(true);
 
     try {
-      const { orderId, pdfBlob } = generateOrderPDF(items, formData);
+      const { orderId, pdfBlob } = await generateOrderPDF(items, formData);
 
       // Download PDF
       const url = URL.createObjectURL(pdfBlob);
