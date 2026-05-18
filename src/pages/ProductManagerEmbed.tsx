@@ -544,10 +544,16 @@ export function ProductManagerEmbed() {
 
   useEffect(() => {
     Promise.all([
-      fetch('/api/products').then(r => r.json()).catch(() => []),
+      fetch('/api/products?limit=1000').then(r => r.json()).catch(() => ({})),
       fetch('/api/categories').then(r => r.json()).catch(() => []),
-    ]).then(([products, cats]) => {
-      setAllProducts(Array.isArray(products) ? products : []);
+    ]).then(([productsData, cats]) => {
+      // API returns paginated envelope { products, hasMore, total } — unwrap it
+      const productList = Array.isArray(productsData)
+        ? productsData
+        : Array.isArray(productsData?.products)
+        ? productsData.products
+        : [];
+      setAllProducts(productList);
       setCategories(Array.isArray(cats) ? cats : []);
       setLoading(false);
     });
