@@ -1,17 +1,18 @@
-import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { useSearchParams, Link } from 'react-router-dom';
 import { useCart } from '../context/CartContext';
 import { ChevronRight, Check, SlidersHorizontal, X, ChevronDown, ChevronUp } from 'lucide-react';
 import { cn } from '../lib/utils';
 
-// ── Types ────────────────────────────────────────────────────
+const PAGE_SIZE = 20;
+
 interface FilterState {
   subcategory: string;
   priceMin: string;
   priceMax: string;
-  discount: string;   // '' | '5' | '10' | '20' | '30'
+  discount: string;
   inStock: boolean;
-  sort: string;       // 'newest' | 'price_asc' | 'price_desc' | 'discount'
+  sort: string;
 }
 
 const DEFAULT_FILTERS: FilterState = {
@@ -23,7 +24,6 @@ const DEFAULT_FILTERS: FilterState = {
   sort: 'newest',
 };
 
-// ── Small reusable filter section wrapper ────────────────────
 function FilterSection({ title, children, defaultOpen = true }: {
   title: string; children: React.ReactNode; defaultOpen?: boolean;
 }) {
@@ -41,23 +41,32 @@ function FilterSection({ title, children, defaultOpen = true }: {
   );
 }
 
-// ── Main Component ───────────────────────────────────────────
 export function Catalog() {
   const [searchParams, setSearchParams] = useSearchParams();
   const categoryFilter = searchParams.get('category');
   const searchQuery    = searchParams.get('search') || '';
 
   const { items, addItem } = useCart();
-  const [addedIds, setAddedIds]   = useState<Set<string>>(new Set());
-  const [products, setProducts]   = useState<any[]>([]);
-  const [loading, setLoading]     = useState(true);
-  const [error, setError]         = useState('');
-  const [categories, setCategories]       = useState<{ name: string; _id: string }[]>([]);
+  const [addedIds, setAddedIds] = useState<Set<string>>(new Set());
+
+  // ── Paginated product state ───────────────────────────────
+  const [products, setProducts]     = useState<any[]>([]);
+  const [page, setPage]             = useState(1);
+  const [hasMore, setHasMore]       = useState(false);
+  const [total, setTotal]           = useState(0);
+  const [loading, setLoading]       = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [error, setError]           = useState('');
+
+  const [categories, setCategories]             = useState<{ name: string; _id: string }[]>([]);
   const [allSubcategories, setAllSubcategories] = useState<{ name: string; parentId: string }[]>([]);
-  const [filters, setFilters]     = useState<FilterState>(DEFAULT_FILTERS);
+  const [filters, setFilters]       = useState<FilterState>(DEFAULT_FILTERS);
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
 
-  // ── Fetch categories ──────────────────────────────────────
+  // Track what was last fetched so we know when to reset
+  const lastFetchKey = useRef('');
+
+  // ── Fetch categories (once) ───────────────────────────────
   useEffect(() => {
     fetch('/api/categories')
       .then(r => r.json())
@@ -67,20 +76,63 @@ export function Catalog() {
           .filter(c => !c.parentId && c.name)
           .sort((a, b) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime());
         setCategories(mains);
-        const subs = data.filter(c => c.parentId && c.name);
-        setAllSubcategories(subs);
+        setAllSubcategories(data.filter(c => c.parentId && c.name));
       })
       .catch(() => {});
   }, []);
 
-  // ── Fetch products ────────────────────────────────────────
+  // ── Build API URL for a given page ───────────────────────
+  const buildUrl = useCallback((pageNum: number) => {
+    const params = new URLSearchParams();
+    params.set('withStock', 'true');
+    params.set('page', String(pageNum));
+    params.set('limit', String(PAGE_SIZE));
+    if (categoryFilter) params.set('category', categoryFilter);
+    if (searchQuery.trim()) params.set('search', searchQuery.trim());
+    return `/api/products?${params.toString()}`;
+  }, [categoryFilter, searchQuery]);
+
+  // ── Initial / reset fetch when category or search changes ─
   useEffect(() => {
-    fetch('/api/products?withStock=true')
+    const key = `${categoryFilter}||${searchQuery}`;
+    if (lastFetchKey.current === key) return;
+    lastFetchKey.current = key;
+
+    setLoading(true);
+    setProducts([]);
+    setPage(1);
+    setHasMore(false);
+    setError('');
+
+    fetch(buildUrl(1))
       .then(r => r.json())
-      .then(data => setProducts(Array.isArray(data) ? data : []))
+      .then(data => {
+        setProducts(data.products ?? []);
+        setHasMore(data.hasMore ?? false);
+        setTotal(data.total ?? 0);
+        setPage(1);
+      })
       .catch(() => setError('Failed to load products. Please refresh.'))
       .finally(() => setLoading(false));
-  }, []);
+  }, [categoryFilter, searchQuery, buildUrl]);
+
+  // ── Load more (append next page) ─────────────────────────
+  const loadMore = useCallback(() => {
+    if (loadingMore || !hasMore) return;
+    const nextPage = page + 1;
+    setLoadingMore(true);
+
+    fetch(buildUrl(nextPage))
+      .then(r => r.json())
+      .then(data => {
+        setProducts(prev => [...prev, ...(data.products ?? [])]);
+        setHasMore(data.hasMore ?? false);
+        setTotal(data.total ?? 0);
+        setPage(nextPage);
+      })
+      .catch(() => {})
+      .finally(() => setLoadingMore(false));
+  }, [loadingMore, hasMore, page, buildUrl]);
 
   // ── Reset subcategory filter when category changes ────────
   useEffect(() => {
@@ -98,72 +150,49 @@ export function Catalog() {
     return allSubcategories.filter(s => s.parentId === currentCatId);
   }, [currentCatId, allSubcategories]);
 
-  // ── Price range for current view ──────────────────────────
+  // ── Price range from loaded products ─────────────────────
   const priceRange = useMemo(() => {
     const prices = products
-      .filter(p => !categoryFilter || p.category === categoryFilter)
       .map(p => parseFloat(p.discountedPrice || p.originalPrice || p.price || 0))
       .filter(n => !isNaN(n) && n > 0);
     if (!prices.length) return { min: 0, max: 5000 };
     return { min: Math.floor(Math.min(...prices)), max: Math.ceil(Math.max(...prices)) };
-  }, [products, categoryFilter]);
+  }, [products]);
 
-  // ── Active filter count (for badge) ──────────────────────
+  // ── Active filter count ───────────────────────────────────
   const activeFilterCount = useMemo(() => {
     let count = 0;
-    if (filters.subcategory) count++;
-    if (filters.priceMin)    count++;
-    if (filters.priceMax)    count++;
-    if (filters.discount)    count++;
-    if (filters.inStock)     count++;
+    if (filters.subcategory)    count++;
+    if (filters.priceMin)       count++;
+    if (filters.priceMax)       count++;
+    if (filters.discount)       count++;
+    if (filters.inStock)        count++;
     if (filters.sort !== 'newest') count++;
     return count;
   }, [filters]);
 
-  // ── Filtered + sorted products ────────────────────────────
+  // ── Client-side filter + sort on loaded products ──────────
+  // (category + search are handled server-side; remaining filters apply locally)
   const filteredProducts = useMemo(() => {
     let result = [...products];
 
-    // category
-    if (categoryFilter) result = result.filter(p => p.category === categoryFilter);
-
-    // search
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase();
-      result = result.filter(p =>
-        p.name?.toLowerCase().includes(q) ||
-        p.description?.toLowerCase().includes(q) ||
-        p.category?.toLowerCase().includes(q) ||
-        p.subcategory?.toLowerCase().includes(q)
-      );
-    }
-
-    // subcategory
     if (filters.subcategory) {
       result = result.filter(p =>
         (p.subcategory || p.subCategory || '') === filters.subcategory
       );
     }
-
-    // price min
     if (filters.priceMin !== '') {
       const min = parseFloat(filters.priceMin);
-      result = result.filter(p => {
-        const price = parseFloat(p.discountedPrice || p.originalPrice || p.price || 0);
-        return price >= min;
-      });
+      result = result.filter(p =>
+        parseFloat(p.discountedPrice || p.originalPrice || p.price || 0) >= min
+      );
     }
-
-    // price max
     if (filters.priceMax !== '') {
       const max = parseFloat(filters.priceMax);
-      result = result.filter(p => {
-        const price = parseFloat(p.discountedPrice || p.originalPrice || p.price || 0);
-        return price <= max;
-      });
+      result = result.filter(p =>
+        parseFloat(p.discountedPrice || p.originalPrice || p.price || 0) <= max
+      );
     }
-
-    // discount
     if (filters.discount) {
       const minDisc = parseInt(filters.discount);
       result = result.filter(p => {
@@ -172,27 +201,22 @@ export function Catalog() {
         return disc >= minDisc;
       });
     }
-
-    // in stock only
     if (filters.inStock) {
       result = result.filter(p => !p.stock?.trackInventory || p.stock?.isInStock);
     }
 
-    // sort
     switch (filters.sort) {
       case 'price_asc':
-        result.sort((a, b) => {
-          const pa = parseFloat(a.discountedPrice || a.originalPrice || a.price || 0);
-          const pb = parseFloat(b.discountedPrice || b.originalPrice || b.price || 0);
-          return pa - pb;
-        });
+        result.sort((a, b) =>
+          parseFloat(a.discountedPrice || a.originalPrice || a.price || 0) -
+          parseFloat(b.discountedPrice || b.originalPrice || b.price || 0)
+        );
         break;
       case 'price_desc':
-        result.sort((a, b) => {
-          const pa = parseFloat(a.discountedPrice || a.originalPrice || a.price || 0);
-          const pb = parseFloat(b.discountedPrice || b.originalPrice || b.price || 0);
-          return pb - pa;
-        });
+        result.sort((a, b) =>
+          parseFloat(b.discountedPrice || b.originalPrice || b.price || 0) -
+          parseFloat(a.discountedPrice || a.originalPrice || a.price || 0)
+        );
         break;
       case 'discount':
         result.sort((a, b) => {
@@ -203,14 +227,14 @@ export function Catalog() {
           return db - da;
         });
         break;
-      case 'newest':
       default:
-        result.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
-        break;
+        result.sort((a, b) =>
+          new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()
+        );
     }
 
     return result;
-  }, [categoryFilter, searchQuery, products, filters]);
+  }, [products, filters]);
 
   // ── Handlers ──────────────────────────────────────────────
   const handleCategoryClick = (cat: string | null) => {
@@ -246,11 +270,10 @@ export function Catalog() {
     ? `Search: "${searchQuery}"`
     : categoryFilter || 'All Products';
 
-  // ── Filter Panel (shared between desktop sidebar & mobile drawer) ──
+  // ── Filter Panel ──────────────────────────────────────────
   const FilterPanel = () => (
     <div className="space-y-0">
 
-      {/* Sort */}
       <FilterSection title="Sort By">
         <div className="flex flex-col gap-1">
           {[
@@ -273,7 +296,6 @@ export function Catalog() {
         </div>
       </FilterSection>
 
-      {/* Subcategory — only when a main category is selected and has subs */}
       {subcategoriesForCurrent.length > 0 && (
         <FilterSection title="Subcategory">
           <div className="flex flex-col gap-1">
@@ -301,16 +323,14 @@ export function Catalog() {
         </FilterSection>
       )}
 
-      {/* Price Range */}
       <FilterSection title="Price Range">
-        {/* Quick price chips */}
         <div className="flex flex-wrap gap-1.5 mb-3">
           {[
-            { label: 'Under ₹100',    min: '',    max: '100' },
-            { label: '₹100–₹300',     min: '100', max: '300' },
-            { label: '₹300–₹600',     min: '300', max: '600' },
-            { label: '₹600–₹1000',    min: '600', max: '1000' },
-            { label: 'Above ₹1000',   min: '1000', max: '' },
+            { label: 'Under ₹100',  min: '',     max: '100'  },
+            { label: '₹100–₹300',   min: '100',  max: '300'  },
+            { label: '₹300–₹600',   min: '300',  max: '600'  },
+            { label: '₹600–₹1000',  min: '600',  max: '1000' },
+            { label: 'Above ₹1000', min: '1000', max: ''     },
           ].map(chip => {
             const active = filters.priceMin === chip.min && filters.priceMax === chip.max;
             return (
@@ -330,34 +350,32 @@ export function Catalog() {
             );
           })}
         </div>
-        {/* Custom range inputs */}
         <div className="flex items-center gap-2">
           <div className="flex-1">
             <label className="text-[9px] font-black uppercase tracking-widest text-gray-400 block mb-1">Min ₹</label>
             <input
               type="number"
               value={filters.priceMin}
+              placeholder={String(priceRange.min)}
               onChange={e => setFilter('priceMin', e.target.value)}
-              placeholder={priceRange.min.toString()}
-              className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-xs font-semibold outline-none focus:border-[#FA5600] transition-colors"
+              className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-xs font-bold outline-none focus:border-[#FA5600] transition-colors"
             />
           </div>
-          <span className="text-gray-300 mt-4 font-bold">—</span>
+          <div className="text-gray-300 font-bold text-sm mt-4">–</div>
           <div className="flex-1">
             <label className="text-[9px] font-black uppercase tracking-widest text-gray-400 block mb-1">Max ₹</label>
             <input
               type="number"
               value={filters.priceMax}
+              placeholder={String(priceRange.max)}
               onChange={e => setFilter('priceMax', e.target.value)}
-              placeholder={priceRange.max.toString()}
-              className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-xs font-semibold outline-none focus:border-[#FA5600] transition-colors"
+              className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-xs font-bold outline-none focus:border-[#FA5600] transition-colors"
             />
           </div>
         </div>
       </FilterSection>
 
-      {/* Discount */}
-      <FilterSection title="Discount">
+      <FilterSection title="Discount" defaultOpen={false}>
         <div className="flex flex-col gap-1">
           {[
             { value: '',   label: 'Any Discount' },
@@ -369,37 +387,34 @@ export function Catalog() {
             <button key={opt.value}
               onClick={() => setFilter('discount', opt.value)}
               className={cn(
-                'text-left text-xs font-semibold px-3 py-2 rounded-lg transition-colors flex items-center gap-2',
+                'text-left text-xs font-semibold px-3 py-2 rounded-lg transition-colors',
                 filters.discount === opt.value
                   ? 'bg-[#FA5600] text-white'
                   : 'text-gray-600 hover:bg-orange-50 hover:text-[#FA5600]'
               )}>
-              {opt.value && <span className="bg-[#E53935] text-white text-[9px] font-black px-1.5 py-0.5 rounded">−{opt.value}%+</span>}
               {opt.label}
             </button>
           ))}
         </div>
       </FilterSection>
 
-      {/* Availability */}
       <FilterSection title="Availability" defaultOpen={false}>
-        <label className="flex items-center gap-3 cursor-pointer group">
-          <div
-            onClick={() => setFilter('inStock', !filters.inStock)}
-            className={cn(
-              'w-10 h-5 rounded-full transition-colors relative flex-shrink-0',
-              filters.inStock ? 'bg-[#FA5600]' : 'bg-gray-200'
-            )}>
-            <div className={cn(
-              'w-4 h-4 bg-white rounded-full absolute top-0.5 transition-all shadow-sm',
-              filters.inStock ? 'left-5' : 'left-0.5'
-            )} />
-          </div>
-          <span className="text-xs font-semibold text-gray-700 group-hover:text-[#FA5600] transition-colors">In Stock Only</span>
-        </label>
+        <button
+          onClick={() => setFilter('inStock', !filters.inStock)}
+          className={cn(
+            'flex items-center gap-2 text-xs font-semibold px-3 py-2 rounded-lg w-full text-left transition-colors',
+            filters.inStock ? 'bg-[#FA5600] text-white' : 'text-gray-600 hover:bg-orange-50 hover:text-[#FA5600]'
+          )}>
+          <span className={cn(
+            'w-4 h-4 rounded border-2 flex items-center justify-center shrink-0 transition-colors',
+            filters.inStock ? 'bg-white border-white' : 'border-gray-300'
+          )}>
+            {filters.inStock && <Check className="w-2.5 h-2.5 text-[#FA5600]" />}
+          </span>
+          In Stock Only
+        </button>
       </FilterSection>
 
-      {/* Reset */}
       {activeFilterCount > 0 && (
         <button
           onClick={resetFilters}
@@ -417,8 +432,6 @@ export function Catalog() {
         {/* ── DESKTOP SIDEBAR ── */}
         <aside className="hidden lg:block w-52 shrink-0">
           <div className="sticky top-32 space-y-3">
-
-            {/* Categories box */}
             <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
               <h3 className="text-xs font-black uppercase tracking-widest mb-3 border-b border-gray-100 pb-2 text-gray-500">Categories</h3>
               <ul className="flex flex-col gap-1">
@@ -441,8 +454,6 @@ export function Catalog() {
                 ))}
               </ul>
             </div>
-
-            {/* Filters box */}
             <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
               <div className="flex items-center justify-between mb-3 border-b border-gray-100 pb-2">
                 <h3 className="text-xs font-black uppercase tracking-widest text-gray-500">Filters</h3>
@@ -460,7 +471,7 @@ export function Catalog() {
         {/* ── MAIN CONTENT ── */}
         <div className="flex-1 min-w-0">
 
-          {/* Top bar: title + sort + mobile filter button */}
+          {/* Top bar */}
           <div className="flex flex-wrap justify-between items-end gap-3 mb-4">
             <div>
               <h1 className="text-3xl md:text-4xl font-black text-gray-900 tracking-tighter leading-none">{pageTitle}</h1>
@@ -484,9 +495,11 @@ export function Catalog() {
               )}
             </div>
             <div className="flex items-center gap-2">
-              <span className="text-gray-400 font-bold text-xs tracking-widest">{filteredProducts.length} items</span>
+              {/* Show loaded count vs total */}
+              <span className="text-gray-400 font-bold text-xs tracking-widest">
+                {loading ? '...' : `${filteredProducts.length} of ${total}`}
+              </span>
 
-              {/* Mobile filter button */}
               <button
                 onClick={() => setMobileFiltersOpen(true)}
                 className="lg:hidden flex items-center gap-1.5 bg-white border border-gray-200 rounded-lg px-3 py-2 text-xs font-bold text-gray-700 hover:border-[#FA5600] hover:text-[#FA5600] transition-colors shadow-sm">
@@ -497,7 +510,6 @@ export function Catalog() {
                 )}
               </button>
 
-              {/* Desktop sort quick-select */}
               <div className="hidden lg:flex flex-col items-end gap-1">
                 <span className="text-[9px] font-black uppercase tracking-widest text-gray-400">Sort By</span>
                 <select
@@ -542,7 +554,7 @@ export function Catalog() {
               )}
               {filters.sort !== 'newest' && (
                 <span className="flex items-center gap-1 bg-orange-50 text-[#FA5600] border border-orange-200 text-[10px] font-bold px-2.5 py-1 rounded-full">
-                  {{price_asc:'Price ↑', price_desc:'Price ↓', discount:'Top Discount'}[filters.sort] || ''}
+                  {{ price_asc: 'Price ↑', price_desc: 'Price ↓', discount: 'Top Discount' }[filters.sort] || ''}
                   <button onClick={() => setFilter('sort', 'newest')} className="hover:text-red-500"><X className="w-3 h-3" /></button>
                 </span>
               )}
@@ -557,7 +569,7 @@ export function Catalog() {
           {searchQuery && (
             <div className="mb-4 flex items-center gap-3">
               <p className="text-sm text-gray-500">
-                <span className="font-bold text-gray-900">{filteredProducts.length}</span> results for{' '}
+                <span className="font-bold text-gray-900">{total}</span> results for{' '}
                 <span className="font-bold text-[#FA5600]">"{searchQuery}"</span>
               </p>
               <button onClick={() => setSearchParams({})}
@@ -609,95 +621,123 @@ export function Catalog() {
               </button>
             </div>
           ) : (
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
-              {filteredProducts.map(product => {
-                const id = product._id?.toString() || product.id;
-                const isRecentlyAdded = addedIds.has(id);
-                const quantityInCart  = getItemQuantity(id);
-                const hasDiscount     = product.discountedPrice && parseFloat(product.discountedPrice) > 0;
-                const displayPrice    = hasDiscount ? parseFloat(product.discountedPrice) : parseFloat(product.price || product.originalPrice || 0);
-                const originalPrice   = parseFloat(product.originalPrice || product.price || 0);
-                const discountPct     = hasDiscount ? Math.round((1 - displayPrice / originalPrice) * 100) : 0;
-                const isTracked       = product.stock?.trackInventory;
-                const isOutOfStock    = isTracked && !product.stock?.isInStock;
-                const isLowStock      = product.stock?.isLowStock;
-                const availableStock  = product.stock?.availableStock;
-                const productImage    = product.imageUrls?.[0] || product.imageUrl || product.image || null;
+            <>
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+                {filteredProducts.map(product => {
+                  const id = product._id?.toString() || product.id;
+                  const isRecentlyAdded = addedIds.has(id);
+                  const quantityInCart  = getItemQuantity(id);
+                  const hasDiscount     = product.discountedPrice && parseFloat(product.discountedPrice) > 0;
+                  const displayPrice    = hasDiscount ? parseFloat(product.discountedPrice) : parseFloat(product.price || product.originalPrice || 0);
+                  const originalPrice   = parseFloat(product.originalPrice || product.price || 0);
+                  const discountPct     = hasDiscount ? Math.round((1 - displayPrice / originalPrice) * 100) : 0;
+                  const isTracked       = product.stock?.trackInventory;
+                  const isOutOfStock    = isTracked && !product.stock?.isInStock;
+                  const isLowStock      = product.stock?.isLowStock;
+                  const availableStock  = product.stock?.availableStock;
+                  const productImage    = product.imageUrls?.[0] || product.imageUrl || product.image || null;
 
-                return (
-                  <div key={id}
-                    className={cn('bg-white rounded-xl shadow-sm hover:shadow-md transition-shadow duration-200 overflow-hidden group flex flex-col',
-                      isOutOfStock && 'opacity-80')}>
-                    <Link to={`/products/${id}`} className="block relative">
-                      <div className="aspect-square bg-gray-50 flex items-center justify-center overflow-hidden relative">
-                        {productImage ? (
-                          <img src={productImage} alt={product.name}
-                            className={cn('w-full h-full object-cover group-hover:scale-105 transition-transform duration-300',
-                              isOutOfStock && 'grayscale')} />
-                        ) : (
-                          <div className="text-5xl text-gray-200">📦</div>
-                        )}
-                        {isOutOfStock && (
-                          <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
-                            <span className="bg-white text-gray-900 text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded-full shadow">
-                              Out of Stock
-                            </span>
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Badges */}
-                      <div className="absolute top-2 left-2 flex flex-col gap-1">
-                        {hasDiscount && discountPct > 0 && !isOutOfStock && (
-                          <div className="bg-[#E53935] text-white text-[9px] font-black px-2 py-0.5 rounded">
-                            -{discountPct}%
-                          </div>
-                        )}
-                        {isLowStock && !isOutOfStock && (
-                          <div className="bg-yellow-400 text-yellow-900 text-[9px] font-black px-2 py-0.5 rounded">
-                            Only {availableStock} left!
-                          </div>
-                        )}
-                      </div>
-                      <div className="absolute top-2 right-2 bg-black/60 text-white text-[8px] font-bold px-2 py-0.5 rounded-full">
-                        {product.category}
-                      </div>
-                    </Link>
-
-                    <div className="p-3 flex flex-col flex-1">
-                      <h3 className="font-bold text-sm leading-tight mb-1 line-clamp-2 text-gray-900 group-hover:text-[#FA5600] transition-colors">
-                        {product.name}
-                      </h3>
-                      <p className="text-[10px] text-gray-400 line-clamp-1 mb-2">{product.description}</p>
-
-                      <div className="mt-auto">
-                        <div className="flex items-baseline gap-1 mb-2">
-                          <span className="text-lg font-black text-[#E53935]">₹{formatPrice(displayPrice)}</span>
-                          {hasDiscount && (
-                            <span className="text-xs text-gray-400 line-through">₹{formatPrice(originalPrice)}</span>
+                  return (
+                    <div key={id}
+                      className={cn('bg-white rounded-xl shadow-sm hover:shadow-md transition-shadow duration-200 overflow-hidden group flex flex-col',
+                        isOutOfStock && 'opacity-80')}>
+                      <Link to={`/products/${id}`} className="block relative">
+                        <div className="aspect-square bg-gray-50 flex items-center justify-center overflow-hidden relative">
+                          {productImage ? (
+                            <img src={productImage} alt={product.name}
+                              className={cn('w-full h-full object-cover group-hover:scale-105 transition-transform duration-300',
+                                isOutOfStock && 'grayscale')} />
+                          ) : (
+                            <div className="text-5xl text-gray-200">📦</div>
+                          )}
+                          {isOutOfStock && (
+                            <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
+                              <span className="bg-white text-gray-900 text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded-full shadow">
+                                Out of Stock
+                              </span>
+                            </div>
                           )}
                         </div>
-                        <button
-                          onClick={e => handleAddItem(e, { ...product, id })}
-                          disabled={isRecentlyAdded || isOutOfStock}
-                          className={cn(
-                            'w-full py-2 rounded-full text-xs font-bold uppercase tracking-widest transition-all',
-                            isOutOfStock   ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
-                            : isRecentlyAdded ? 'bg-green-500 text-white'
-                            : 'bg-[#FA5600] text-white hover:bg-[#E04A00]'
-                          )}>
-                          {isOutOfStock ? 'Out of Stock' : isRecentlyAdded ? (
-                            <span className="flex items-center justify-center gap-1"><Check className="w-3 h-3" /> Added</span>
-                          ) : (
-                            <span>+ Add {quantityInCart > 0 && `(${quantityInCart})`}</span>
+                        <div className="absolute top-2 left-2 flex flex-col gap-1">
+                          {hasDiscount && discountPct > 0 && !isOutOfStock && (
+                            <div className="bg-[#E53935] text-white text-[9px] font-black px-2 py-0.5 rounded">
+                              -{discountPct}%
+                            </div>
                           )}
-                        </button>
+                          {isLowStock && !isOutOfStock && (
+                            <div className="bg-yellow-400 text-yellow-900 text-[9px] font-black px-2 py-0.5 rounded">
+                              Only {availableStock} left!
+                            </div>
+                          )}
+                        </div>
+                        <div className="absolute top-2 right-2 bg-black/60 text-white text-[8px] font-bold px-2 py-0.5 rounded-full">
+                          {product.category}
+                        </div>
+                      </Link>
+
+                      <div className="p-3 flex flex-col flex-1">
+                        <h3 className="font-bold text-sm leading-tight mb-1 line-clamp-2 text-gray-900 group-hover:text-[#FA5600] transition-colors">
+                          {product.name}
+                        </h3>
+                        <p className="text-[10px] text-gray-400 line-clamp-1 mb-2">{product.description}</p>
+                        <div className="mt-auto">
+                          <div className="flex items-baseline gap-1 mb-2">
+                            <span className="text-lg font-black text-[#E53935]">₹{formatPrice(displayPrice)}</span>
+                            {hasDiscount && (
+                              <span className="text-xs text-gray-400 line-through">₹{formatPrice(originalPrice)}</span>
+                            )}
+                          </div>
+                          <button
+                            onClick={e => handleAddItem(e, { ...product, id })}
+                            disabled={isRecentlyAdded || isOutOfStock}
+                            className={cn(
+                              'w-full py-2 rounded-full text-xs font-bold uppercase tracking-widest transition-all',
+                              isOutOfStock    ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
+                              : isRecentlyAdded ? 'bg-green-500 text-white'
+                              : 'bg-[#FA5600] text-white hover:bg-[#E04A00]'
+                            )}>
+                            {isOutOfStock ? 'Out of Stock' : isRecentlyAdded ? (
+                              <span className="flex items-center justify-center gap-1"><Check className="w-3 h-3" /> Added</span>
+                            ) : (
+                              <span>+ Add {quantityInCart > 0 && `(${quantityInCart})`}</span>
+                            )}
+                          </button>
+                        </div>
                       </div>
                     </div>
-                  </div>
-                );
-              })}
-            </div>
+                  );
+                })}
+              </div>
+
+              {/* ── LOAD MORE ── */}
+              {hasMore && (
+                <div className="mt-10 flex flex-col items-center gap-2">
+                  <p className="text-xs text-gray-400 font-bold uppercase tracking-widest">
+                    Showing {products.length} of {total} products
+                  </p>
+                  <button
+                    onClick={loadMore}
+                    disabled={loadingMore}
+                    className="flex items-center gap-2 bg-[#FA5600] hover:bg-[#E04A00] disabled:bg-gray-300 text-white font-black uppercase text-sm tracking-widest py-3 px-10 rounded-full shadow-lg transition-all">
+                    {loadingMore ? (
+                      <>
+                        <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                        Loading...
+                      </>
+                    ) : (
+                      `Load More (${total - products.length} remaining)`
+                    )}
+                  </button>
+                </div>
+              )}
+
+              {/* End of results notice */}
+              {!hasMore && products.length > 0 && products.length >= PAGE_SIZE && (
+                <p className="mt-8 text-center text-xs text-gray-300 font-bold uppercase tracking-widest">
+                  — All {total} products loaded —
+                </p>
+              )}
+            </>
           )}
         </div>
       </div>
@@ -705,9 +745,7 @@ export function Catalog() {
       {/* ── MOBILE FILTER DRAWER ── */}
       {mobileFiltersOpen && (
         <div className="fixed inset-0 z-50 lg:hidden">
-          {/* Backdrop */}
           <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setMobileFiltersOpen(false)} />
-          {/* Drawer */}
           <div className="absolute bottom-0 left-0 right-0 bg-white rounded-t-2xl max-h-[85vh] flex flex-col shadow-2xl">
             <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 shrink-0">
               <div className="flex items-center gap-2">
