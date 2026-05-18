@@ -8,7 +8,7 @@ import {
   Save, Check, Trash2, Eye, Upload, BarChart2,
   LayoutDashboard, ShoppingBag, Menu, X,
   TrendingUp, TrendingDown, Users, AlertTriangle, DollarSign,
-  KeyRound, EyeOff,
+  KeyRound, EyeOff, MessageSquare, Pencil,
 } from 'lucide-react';
 
 const ADMIN_PASSWORD = import.meta.env.VITE_ADMIN_PASSWORD ?? '';
@@ -17,7 +17,7 @@ const VISIBILITY_KEY = 'tagsAdminVisibility';
 
 type Section =
   | 'dashboard' | 'promo' | 'banner' | 'category-images' | 'perks'
-  | 'products' | 'categories' | 'inventory' | 'business' | 'settings' | 'import';
+  | 'products' | 'categories' | 'inventory' | 'business' | 'settings' | 'import' | 'reviews';
 
 interface BannerSlide { image: string; text: string; description: string; }
 interface Perk        { icon: string; text: string; }
@@ -34,6 +34,7 @@ const ALL_MODULES: { id: Section; label: string; icon: any; desc: string }[] = [
   { id: 'promo',           label: 'Offer Bar',        icon: Megaphone,       desc: 'Scrolling announcements' },
   { id: 'perks',           label: 'Product Perks',    icon: Tag,             desc: 'Trust badges on product pages' },
   { id: 'import',          label: 'Import Products',  icon: Upload,          desc: 'Bulk import via CSV' },
+  { id: 'reviews',         label: 'Reviews',          icon: MessageSquare,   desc: 'Manage customer reviews' },
   { id: 'settings',        label: 'Settings',         icon: SettingsIcon,    desc: 'Module visibility' },
 ];
 
@@ -573,7 +574,7 @@ export function AdminPanel() {
               dashboard: 'Home', business: 'Biz', inventory: 'Stock',
               products: 'Items', categories: 'Cats', 'category-images': 'Imgs',
               banner: 'Banner', promo: 'Offer', perks: 'Perks',
-              import: 'Import', settings: 'Config',
+              import: 'Import', settings: 'Config', reviews: 'Revs',
             };
             return (
               <button key={item.id}
@@ -947,6 +948,9 @@ export function AdminPanel() {
           {activeSection === 'business'   && <div className="max-w-5xl mx-auto"><SectionHeader icon={BarChart2}  title="Business"   desc="Sales, PO, Cash Flow, Reports" /><BusinessEmbed /></div>}
           {activeSection === 'import'     && <div className="max-w-2xl mx-auto"><ImportProductsSection /></div>}
 
+          {/* ── REVIEWS ── */}
+          {activeSection === 'reviews' && <div className="max-w-4xl mx-auto"><ReviewsSection /></div>}
+
           {/* ── CATEGORY IMAGES ── */}
           {activeSection === 'category-images' && (
             <div className="max-w-2xl mx-auto space-y-4">
@@ -1047,6 +1051,188 @@ function SaveButton({ onClick, loading, saved }: { onClick: () => void; loading:
       className={`w-full py-3 rounded-xl font-black uppercase tracking-widest text-sm flex items-center justify-center gap-2 transition shadow-sm ${saved ? 'bg-green-500 text-white' : 'bg-[#FA5600] text-white hover:bg-[#E04A00]'} disabled:opacity-60`}>
       {saved ? <><Check className="w-4 h-4" /> Saved!</> : loading ? 'Saving...' : <><Save className="w-4 h-4" /> Save Changes</>}
     </button>
+  );
+}
+
+
+// ── Reviews Section ───────────────────────────────────────────────────────────
+function ReviewsSection() {
+  const [reviews,       setReviews]       = useState<any[]>([]);
+  const [loading,       setLoading]       = useState(true);
+  const [editingId,     setEditingId]     = useState<string | null>(null);
+  const [editName,      setEditName]      = useState('');
+  const [editRating,    setEditRating]    = useState(5);
+  const [editComment,   setEditComment]   = useState('');
+  const [saving,        setSaving]        = useState(false);
+  const [deletingId,    setDeletingId]    = useState<string | null>(null);
+  const [filterProduct, setFilterProduct] = useState('');
+
+  useEffect(() => {
+    setLoading(true);
+    fetch('/api/reviews?all=true')
+      .then(r => r.json())
+      .then(data => setReviews(Array.isArray(data) ? data : []))
+      .catch(() => setReviews([]))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const startEdit = (review: any) => {
+    setEditingId(review._id);
+    setEditName(review.name);
+    setEditRating(review.rating);
+    setEditComment(review.comment);
+  };
+
+  const cancelEdit = () => { setEditingId(null); };
+
+  const saveEdit = async (id: string) => {
+    setSaving(true);
+    try {
+      const res = await fetch('/api/reviews', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, name: editName, rating: editRating, comment: editComment }),
+      });
+      if (!res.ok) { alert('Failed to save.'); return; }
+      setReviews(prev => prev.map(r => r._id === id
+        ? { ...r, name: editName, rating: editRating, comment: editComment }
+        : r
+      ));
+      setEditingId(null);
+    } catch { alert('Network error.'); }
+    finally { setSaving(false); }
+  };
+
+  const deleteReview = async (id: string) => {
+    if (!confirm('Delete this review? This cannot be undone.')) return;
+    setDeletingId(id);
+    try {
+      await fetch(`/api/reviews?id=${id}`, { method: 'DELETE' });
+      setReviews(prev => prev.filter(r => r._id !== id));
+    } catch { alert('Failed to delete.'); }
+    finally { setDeletingId(null); }
+  };
+
+  const products = Array.from(new Set(reviews.map(r => r.productName).filter(Boolean)));
+  const filtered = filterProduct
+    ? reviews.filter(r => r.productName === filterProduct)
+    : reviews;
+
+  const inputCls = 'w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none transition bg-white';
+
+  return (
+    <div className="space-y-4">
+      <SectionHeader icon={MessageSquare} title="Reviews" desc="View, edit or delete customer reviews" />
+
+      {/* Filter bar */}
+      {products.length > 0 && (
+        <div className="bg-white rounded-2xl border border-gray-200 p-4 shadow-sm flex items-center gap-3 flex-wrap">
+          <span className="text-[10px] font-black uppercase tracking-widest text-gray-500">Filter by product:</span>
+          <button onClick={() => setFilterProduct('')}
+            className={`px-3 py-1.5 rounded-xl text-xs font-black transition ${!filterProduct ? 'bg-[#FA5600] text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
+            All ({reviews.length})
+          </button>
+          {products.map(p => (
+            <button key={p} onClick={() => setFilterProduct(p)}
+              className={`px-3 py-1.5 rounded-xl text-xs font-black transition truncate max-w-[180px] ${filterProduct === p ? 'bg-[#FA5600] text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
+              {p} ({reviews.filter(r => r.productName === p).length})
+            </button>
+          ))}
+        </div>
+      )}
+
+      {loading ? (
+        <div className="bg-white rounded-2xl border border-gray-200 p-12 text-center shadow-sm">
+          <div className="w-8 h-8 border-4 border-gray-200 border-t-[#FA5600] rounded-full animate-spin mx-auto" />
+        </div>
+      ) : filtered.length === 0 ? (
+        <div className="bg-white rounded-2xl border border-gray-200 p-12 text-center text-gray-400 text-sm shadow-sm">
+          No reviews yet.
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {filtered.map(review => (
+            <div key={review._id} className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+              {editingId === review._id ? (
+                /* ── Edit mode ── */
+                <div className="p-5 space-y-3">
+                  <p className="text-[10px] font-black uppercase tracking-widest text-[#FA5600]">Editing Review</p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-[10px] font-black uppercase tracking-widest text-gray-500 mb-1">Name</label>
+                      <input type="text" value={editName} onChange={e => setEditName(e.target.value)} className={inputCls} />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-black uppercase tracking-widest text-gray-500 mb-1">Rating</label>
+                      <select value={editRating} onChange={e => setEditRating(Number(e.target.value))} className={inputCls}>
+                        {[5,4,3,2,1].map(n => <option key={n} value={n}>{n} star{n !== 1 ? 's' : ''}</option>)}
+                      </select>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-black uppercase tracking-widest text-gray-500 mb-1">Comment</label>
+                    <textarea value={editComment} onChange={e => setEditComment(e.target.value)} rows={3}
+                      className={`${inputCls} resize-none`} />
+                  </div>
+                  <div className="flex gap-2 pt-1">
+                    <button onClick={cancelEdit}
+                      className="flex-1 border-2 border-gray-200 text-gray-500 hover:border-gray-400 font-black py-2.5 rounded-xl text-xs uppercase tracking-widest transition">
+                      Cancel
+                    </button>
+                    <button onClick={() => saveEdit(review._id)} disabled={saving}
+                      className="flex-1 bg-[#FA5600] text-white font-black py-2.5 rounded-xl text-xs uppercase tracking-widest hover:bg-[#E04A00] transition disabled:opacity-60 flex items-center justify-center gap-2">
+                      {saving ? 'Saving...' : <><Check className="w-3.5 h-3.5" /> Save</>}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                /* ── View mode ── */
+                <div className="p-5 flex gap-4 items-start">
+                  <div className="w-9 h-9 rounded-full bg-gradient-to-br from-orange-400 to-orange-600 flex items-center justify-center shrink-0 text-white text-xs font-black">
+                    {review.name?.charAt(0)?.toUpperCase()}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-start justify-between gap-2 flex-wrap">
+                      <div>
+                        <span className="text-sm font-black text-gray-900">{review.name}</span>
+                        {review.productName && (
+                          <span className="ml-2 text-[10px] bg-gray-100 text-gray-500 font-bold px-2 py-0.5 rounded-full">
+                            {review.productName}
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button onClick={() => startEdit(review)}
+                          className="w-8 h-8 flex items-center justify-center bg-gray-100 hover:bg-[#FA5600] hover:text-white text-gray-500 rounded-lg transition">
+                          <Pencil className="w-3.5 h-3.5" />
+                        </button>
+                        <button onClick={() => deleteReview(review._id)} disabled={deletingId === review._id}
+                          className="w-8 h-8 flex items-center justify-center bg-gray-100 hover:bg-red-500 hover:text-white text-gray-500 rounded-lg transition disabled:opacity-50">
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 mt-1">
+                      <div className="flex items-center gap-0.5">
+                        {[1,2,3,4,5].map(s => (
+                          <svg key={s} className={`w-3.5 h-3.5 ${s <= review.rating ? 'text-amber-400 fill-amber-400' : 'text-gray-200 fill-gray-200'}`} viewBox="0 0 24 24">
+                            <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
+                          </svg>
+                        ))}
+                      </div>
+                      <span className="text-[10px] text-gray-400">
+                        {new Date(review.createdAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+                      </span>
+                    </div>
+                    <p className="text-sm text-gray-600 mt-1.5 leading-relaxed">{review.comment}</p>
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
