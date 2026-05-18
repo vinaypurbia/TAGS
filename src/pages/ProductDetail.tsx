@@ -305,9 +305,9 @@ export function ProductDetail() {
             </div>
 
             {/* ── Perks Bar (Temu-style) ── */}
-            {/* To customise: edit the PERKS array at the top of this file */}
+            {/* Customise these in Admin → Product Perks */}
             <div className="border border-[#25D366]/30 rounded-xl bg-[#25D366]/5 divide-x divide-[#25D366]/20 flex overflow-hidden">
-              {PERKS.map((perk, i) => (
+              {perks.map((perk, i) => (
                 <div key={i} className="flex-1 flex flex-col items-center justify-center gap-1 py-3 px-2 text-center">
                   <span className="text-lg leading-none">{perk.icon}</span>
                   <span className="text-[10px] font-black text-[#1a9e4f] uppercase tracking-wide leading-tight">{perk.text}</span>
