@@ -425,7 +425,7 @@ export function AdminPanel() {
     setPromoLoading(true);
     try {
       const activeLines = promoLines.filter(l => l.text.trim());
-      await fetch('/api/banner', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ promoLines, promoText: activeLines[0]?.text || '', bannerSlides, bannerImage: bannerSlides[0]?.image || '', bannerText: bannerSlides[0]?.text || '' }) });
+      await fetch('/api/banner', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ promoLines, promoText: activeLines[0]?.text || '', bannerSlides, bannerImage: bannerSlides[0]?.image || '', bannerText: bannerSlides[0]?.text || '', perks }) });
       setPromoSaved(true); setTimeout(() => setPromoSaved(false), 2500);
     } catch { alert('Failed to save.'); } finally { setPromoLoading(false); }
   };
@@ -434,7 +434,7 @@ export function AdminPanel() {
     setBannerLoading(true);
     try {
       const activeLines = promoLines.filter(l => l.text.trim());
-      await fetch('/api/banner', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ promoLines, promoText: activeLines[0]?.text || '', bannerSlides, bannerImage: bannerSlides[0]?.image || '', bannerText: bannerSlides[0]?.text || '' }) });
+      await fetch('/api/banner', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ promoLines, promoText: activeLines[0]?.text || '', bannerSlides, bannerImage: bannerSlides[0]?.image || '', bannerText: bannerSlides[0]?.text || '', perks }) });
       setBannerSaved(true); setTimeout(() => setBannerSaved(false), 2500);
     } catch { alert('Failed to save.'); } finally { setBannerLoading(false); }
   };
