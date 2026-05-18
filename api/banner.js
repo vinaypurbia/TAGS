@@ -34,6 +34,7 @@ export default async function handler(req, res) {
         bannerSlides,   // array of { image, text, description }
         bannerImage,    // legacy fallback
         bannerText,     // legacy fallback
+        perks,          // array of { icon, text }
       } = req.body;
 
       // Only keep slides that have at least an image
@@ -55,6 +56,7 @@ export default async function handler(req, res) {
             bannerSlides: cleanedSlides,   // ✅ properly saved now
             bannerImage: bannerImage || '',
             bannerText: bannerText || '',
+            perks: Array.isArray(perks) ? perks : [],
             updatedAt: new Date(),
           }
         },
