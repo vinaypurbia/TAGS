@@ -16,12 +16,12 @@ const SESSION_KEY    = 'adminAuth';
 const VISIBILITY_KEY = 'tagsAdminVisibility';
 
 type Section =
-  | 'dashboard' | 'promo' | 'banner' | 'category-images'
-  | 'products' | 'categories' | 'inventory' | 'business' | 'settings' | 'import' | 'perks';
+  | 'dashboard' | 'promo' | 'banner' | 'category-images' | 'perks'
+  | 'products' | 'categories' | 'inventory' | 'business' | 'settings' | 'import';
 
 interface BannerSlide { image: string; text: string; description: string; }
-interface PromoLine   { text: string; }
 interface Perk        { icon: string; text: string; }
+interface PromoLine   { text: string; }
 
 const ALL_MODULES: { id: Section; label: string; icon: any; desc: string }[] = [
   { id: 'dashboard',       label: 'Dashboard',       icon: LayoutDashboard, desc: 'Overview & quick stats' },
@@ -32,7 +32,7 @@ const ALL_MODULES: { id: Section; label: string; icon: any; desc: string }[] = [
   { id: 'category-images', label: 'Category Images',  icon: Tag,             desc: 'Upload category covers' },
   { id: 'banner',          label: 'Hero Banners',     icon: Image,           desc: 'Homepage banners' },
   { id: 'promo',           label: 'Offer Bar',        icon: Megaphone,       desc: 'Scrolling announcements' },
-  { id: 'perks',           label: 'Product Perks',    icon: Tag,             desc: 'Free shipping, returns bar on product pages' },
+  { id: 'perks',           label: 'Product Perks',    icon: Tag,             desc: 'Trust badges on product pages' },
   { id: 'import',          label: 'Import Products',  icon: Upload,          desc: 'Bulk import via CSV' },
   { id: 'settings',        label: 'Settings',         icon: SettingsIcon,    desc: 'Module visibility' },
 ];
@@ -257,14 +257,14 @@ export function AdminPanel() {
   const [promoSaved,    setPromoSaved]    = useState(false);
   const [promoLoading,  setPromoLoading]  = useState(false);
 
-  const DEFAULT_PERKS: Perk[] = [
+  const DEFAULT_PERKS = [
     { icon: '🚚', text: 'Free Shipping' },
     { icon: '✅', text: 'Secure Payments' },
     { icon: '🔁', text: 'Easy Returns' },
   ];
-  const [perks,       setPerks]       = useState<Perk[]>(DEFAULT_PERKS);
-  const [perksSaved,  setPerksSaved]  = useState(false);
-  const [perksLoading,setPerksLoading]= useState(false);
+  const [perks,        setPerks]        = useState<Perk[]>(DEFAULT_PERKS);
+  const [perksSaved,   setPerksSaved]   = useState(false);
+  const [perksLoading, setPerksLoading] = useState(false);
 
   const [bannerSlides,  setBannerSlides]  = useState<BannerSlide[]>([
     { image: '', text: '', description: '' }, { image: '', text: '', description: '' },
@@ -551,7 +551,7 @@ export function AdminPanel() {
       )}
 
       {/* ── SIDEBAR ── */}
-      <aside className={`fixed top-0 left-0 h-full z-50 flex flex-col bg-[#1A1A1A] transition-all duration-300 ease-in-out ${sidebarOpen ? 'w-60' : 'w-0 lg:w-16'} overflow-hidden`}>
+      <aside className={`fixed top-0 left-0 h-full z-50 flex flex-col bg-[#1A1A1A] transition-all duration-300 ease-in-out ${sidebarOpen ? 'w-60' : 'w-0 lg:w-[72px]'} overflow-hidden`}>
         <div className="flex items-center gap-3 px-3 py-4 border-b border-white/10 shrink-0">
           <div className="w-10 h-10 bg-[#FA5600] rounded-xl flex items-center justify-center shrink-0 shadow-lg shadow-orange-500/20">
             <span className="text-white font-black text-lg">T</span>
@@ -564,49 +564,70 @@ export function AdminPanel() {
           )}
         </div>
 
-        <nav className="flex-1 py-3 space-y-1 px-2 overflow-y-auto">
+        <nav className="flex-1 py-2 space-y-0.5 px-1.5 overflow-y-auto">
           {visibleModules.map(item => {
-            const isActive        = activeSection === item.id;
-            const isPendingBadge  = item.id === 'business' && pendingOrders.length > 0;
+            const isActive       = activeSection === item.id;
+            const isPendingBadge = item.id === 'business' && pendingOrders.length > 0;
+            // Short 4-6 char label for collapsed mode
+            const shortLabel: Record<string, string> = {
+              dashboard: 'Home', business: 'Biz', inventory: 'Stock',
+              products: 'Items', categories: 'Cats', 'category-images': 'Imgs',
+              banner: 'Banner', promo: 'Offer', perks: 'Perks',
+              import: 'Import', settings: 'Config',
+            };
             return (
               <button key={item.id}
                 onClick={() => { setActiveSection(item.id); setSidebarOpen(false); }}
-                title={!sidebarOpen ? item.label : ''}
-                className={`w-full flex items-center gap-3 px-2.5 py-2.5 rounded-xl transition-all relative
+                className={`w-full rounded-xl transition-all relative
+                  ${sidebarOpen ? 'flex items-center gap-3 px-2.5 py-2.5' : 'flex flex-col items-center justify-center py-2 px-1'}
                   ${isActive ? 'bg-[#FA5600] text-white shadow-lg shadow-orange-500/20' : 'text-white/50 hover:bg-white/10 hover:text-white'}`}>
                 <div className="relative shrink-0">
-                  <item.icon className="w-5 h-5" />
-                  {isPendingBadge && !sidebarOpen && (
-                    <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-red-500 rounded-full border border-[#1A1A1A]" />
+                  <item.icon className={sidebarOpen ? 'w-5 h-5' : 'w-4 h-4'} />
+                  {isPendingBadge && (
+                    <span className="absolute -top-1 -right-1 w-2 h-2 bg-red-500 rounded-full border border-[#1A1A1A]" />
                   )}
                 </div>
-                {sidebarOpen && (
-                  <span className="text-xs font-black uppercase tracking-widest whitespace-nowrap flex-1 text-left">{item.label}</span>
-                )}
-                {sidebarOpen && isPendingBadge && (
-                  <span className="bg-red-500 text-white text-[9px] font-black px-1.5 py-0.5 rounded-full shrink-0">{pendingOrders.length}</span>
+                {sidebarOpen ? (
+                  <>
+                    <span className="text-xs font-black uppercase tracking-widest whitespace-nowrap flex-1 text-left">{item.label}</span>
+                    {isPendingBadge && (
+                      <span className="bg-red-500 text-white text-[9px] font-black px-1.5 py-0.5 rounded-full shrink-0">{pendingOrders.length}</span>
+                    )}
+                  </>
+                ) : (
+                  <span className="text-[8px] font-black uppercase tracking-wide leading-none mt-1 whitespace-nowrap">
+                    {shortLabel[item.id] || item.label.slice(0, 5)}
+                  </span>
                 )}
               </button>
             );
           })}
         </nav>
 
-        <div className="border-t border-white/10 p-2 space-y-1 shrink-0">
+        <div className="border-t border-white/10 p-1.5 space-y-0.5 shrink-0">
           <a href="/" target="_blank"
-            className="w-full flex items-center gap-3 px-2.5 py-2.5 rounded-xl text-white/50 hover:bg-white/10 hover:text-white transition-all">
-            <Eye className="w-5 h-5 shrink-0" />
-            {sidebarOpen && <span className="text-xs font-black uppercase tracking-widest whitespace-nowrap">View Site</span>}
+            className={`w-full rounded-xl text-white/50 hover:bg-white/10 hover:text-white transition-all
+              ${sidebarOpen ? 'flex items-center gap-3 px-2.5 py-2.5' : 'flex flex-col items-center justify-center py-2 px-1'}`}>
+            <Eye className={sidebarOpen ? 'w-5 h-5 shrink-0' : 'w-4 h-4'} />
+            {sidebarOpen
+              ? <span className="text-xs font-black uppercase tracking-widest whitespace-nowrap">View Site</span>
+              : <span className="text-[8px] font-black uppercase tracking-wide mt-1">Site</span>
+            }
           </a>
           <button onClick={handleLock}
-            className="w-full flex items-center gap-3 px-2.5 py-2.5 rounded-xl text-white/50 hover:bg-red-500/20 hover:text-red-400 transition-all">
-            <LogOut className="w-5 h-5 shrink-0" />
-            {sidebarOpen && <span className="text-xs font-black uppercase tracking-widest whitespace-nowrap">Lock</span>}
+            className={`w-full rounded-xl text-white/50 hover:bg-red-500/20 hover:text-red-400 transition-all
+              ${sidebarOpen ? 'flex items-center gap-3 px-2.5 py-2.5' : 'flex flex-col items-center justify-center py-2 px-1'}`}>
+            <LogOut className={sidebarOpen ? 'w-5 h-5 shrink-0' : 'w-4 h-4'} />
+            {sidebarOpen
+              ? <span className="text-xs font-black uppercase tracking-widest whitespace-nowrap">Lock</span>
+              : <span className="text-[8px] font-black uppercase tracking-wide mt-1">Lock</span>
+            }
           </button>
         </div>
       </aside>
 
       {/* ── MAIN CONTENT ── */}
-      <div className={`flex-1 flex flex-col transition-all duration-300 ${sidebarOpen ? 'lg:ml-60' : 'lg:ml-16'}`}>
+      <div className={`flex-1 flex flex-col transition-all duration-300 ${sidebarOpen ? 'lg:ml-60' : 'lg:ml-[72px]'}`}>
 
         <header className="bg-white border-b border-gray-200 px-4 py-3 flex items-center gap-4 sticky top-0 z-30 shadow-sm">
           <button onClick={() => setSidebarOpen(!sidebarOpen)}
@@ -884,34 +905,26 @@ export function AdminPanel() {
             <div className="max-w-2xl mx-auto space-y-4">
               <SectionHeader icon={Tag} title="Product Perks" desc="Edit the 3 trust badges shown on every product page" />
               <div className="bg-white rounded-2xl border border-gray-200 p-6 shadow-sm space-y-5">
-                <p className="text-xs text-gray-400 font-bold">These 3 items appear in the green strip on every product detail page. Use an emoji + short label.</p>
+                <p className="text-xs text-gray-400 font-bold">These 3 items appear on every product detail page. Use an emoji + short label.</p>
                 {perks.map((perk, i) => (
                   <div key={i} className="flex items-center gap-3">
                     <div className="shrink-0">
                       <label className="block text-[10px] font-black uppercase tracking-widest text-gray-500 mb-1">Icon</label>
-                      <input
-                        type="text"
-                        value={perk.icon}
+                      <input type="text" value={perk.icon}
                         onChange={e => setPerks(prev => { const n = [...prev]; n[i] = { ...n[i], icon: e.target.value }; return n; })}
                         maxLength={4}
                         className="w-16 text-center border-2 border-gray-200 rounded-xl p-2.5 text-xl font-bold focus:border-[#FA5600] outline-none transition"
-                        placeholder="🚚"
-                      />
+                        placeholder="🚚" />
                     </div>
                     <div className="flex-1">
                       <label className="block text-[10px] font-black uppercase tracking-widest text-gray-500 mb-1">Label</label>
-                      <input
-                        type="text"
-                        value={perk.text}
+                      <input type="text" value={perk.text}
                         onChange={e => setPerks(prev => { const n = [...prev]; n[i] = { ...n[i], text: e.target.value }; return n; })}
                         placeholder={['Free Shipping', 'Secure Payments', 'Easy Returns'][i]}
-                        className="w-full border-2 border-gray-200 rounded-xl p-2.5 text-sm font-bold focus:border-[#FA5600] outline-none transition"
-                      />
+                        className="w-full border-2 border-gray-200 rounded-xl p-2.5 text-sm font-bold focus:border-[#FA5600] outline-none transition" />
                     </div>
                   </div>
                 ))}
-
-                {/* Live Preview */}
                 <div>
                   <p className="text-[10px] font-black uppercase tracking-widest text-gray-500 mb-2">Live Preview</p>
                   <div className="border border-[#25D366]/30 rounded-xl bg-[#25D366]/5 divide-x divide-[#25D366]/20 flex overflow-hidden">
@@ -923,7 +936,6 @@ export function AdminPanel() {
                     ))}
                   </div>
                 </div>
-
                 <SaveButton onClick={handleSavePerks} loading={perksLoading} saved={perksSaved} />
               </div>
             </div>
