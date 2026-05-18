@@ -24,7 +24,7 @@ export function Layout({ children }: { children: ReactNode }) {
     if (!el || promoLines.length === 0) return;
     // ~80px per second; content is duplicated so use half the scrollWidth
     const contentWidth = el.scrollWidth / 2;
-    const duration = Math.max(12, contentWidth / 80);
+    const duration = Math.max(12, contentWidth / 48);
     el.style.animationDuration = `${duration}s`;
   }, [promoLines.length]);
 
