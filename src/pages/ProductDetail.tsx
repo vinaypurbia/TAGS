@@ -1,9 +1,62 @@
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { useCart } from '../context/CartContext';
-import { useState, useEffect } from 'react';
-import { ArrowLeft, ShoppingBag, Check } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { ArrowLeft, ShoppingBag, Check, Star, ChevronLeft, ChevronRight, ZoomIn } from 'lucide-react';
 import { cn } from '../lib/utils';
 
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+const getEmbedUrl = (url: string): string | null => {
+  if (!url) return null;
+  const yt = url.match(/youtube\.com\/watch\?v=([\w-]+)/)
+           || url.match(/youtu\.be\/([\w-]+)/)
+           || url.match(/youtube\.com\/shorts\/([\w-]+)/);
+  if (yt) return `https://www.youtube.com/embed/${yt[1]}?rel=0`;
+  if (url.includes('facebook.com') || url.includes('fb.watch'))
+    return `https://www.facebook.com/plugins/video.php?href=${encodeURIComponent(url)}&show_text=false&autoplay=false`;
+  const ig = url.match(/instagram\.com\/(reel|p)\/([\w-]+)/);
+  if (ig) return `https://www.instagram.com/${ig[1]}/${ig[2]}/embed`;
+  const tt = url.match(/tiktok\.com\/@[\w.]+\/video\/(\d+)/);
+  if (tt) return `https://www.tiktok.com/embed/${tt[1]}`;
+  return null;
+};
+
+// ─── Fake review generator (seeded by product id) ────────────────────────────
+function generateReviews(productId: string) {
+  const names = ['Rahul M.', 'Priya S.', 'Arun K.', 'Sneha R.', 'Vikram P.', 'Anita D.', 'Kiran B.', 'Meera T.'];
+  const comments = [
+    'Absolutely love this product! Exceeded my expectations.',
+    'Great quality for the price. Very happy with my purchase.',
+    'Delivered quickly and exactly as described. Recommended!',
+    'Good product overall, packaging was excellent.',
+    'My kids love it! Worth every rupee.',
+    'Solid build quality. Will buy again.',
+    'Fast delivery, product looks premium.',
+    'Exactly what I was looking for. Very satisfied.',
+  ];
+  const seed = productId?.split('').reduce((a, c) => a + c.charCodeAt(0), 0) || 42;
+  return Array.from({ length: 5 }, (_, i) => ({
+    id: i,
+    name: names[(seed + i * 3) % names.length],
+    rating: [4, 5, 5, 4, 5][(seed + i) % 5],
+    comment: comments[(seed + i * 2) % comments.length],
+    date: new Date(Date.now() - (i * 8 + (seed % 7)) * 86400000).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }),
+    verified: true,
+  }));
+}
+
+// ─── Stars ────────────────────────────────────────────────────────────────────
+function Stars({ rating, size = 'sm' }: { rating: number; size?: 'sm' | 'lg' }) {
+  const cls = size === 'lg' ? 'w-5 h-5' : 'w-3.5 h-3.5';
+  return (
+    <div className="flex items-center gap-0.5">
+      {[1, 2, 3, 4, 5].map(s => (
+        <Star key={s} className={cn(cls, s <= rating ? 'fill-amber-400 text-amber-400' : 'text-gray-200 fill-gray-200')} />
+      ))}
+    </div>
+  );
+}
+
+// ─── Main Component ───────────────────────────────────────────────────────────
 export function ProductDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -11,23 +64,27 @@ export function ProductDetail() {
   const [isRecentlyAdded, setIsRecentlyAdded] = useState(false);
   const [product, setProduct] = useState<any>(null);
   const [loading, setLoading] = useState(true);
-  const [selectedImage, setSelectedImage] = useState<string>('');
+  const [selectedIdx, setSelectedIdx] = useState(0);
+  const [zoomed, setZoomed] = useState(false);
+  const thumbsRef = useRef<HTMLDivElement>(null);
+  const [perks, setPerks] = useState<{ icon: string; text: string }[]>([
+    { icon: '🚚', text: 'Free Shipping' },
+    { icon: '✅', text: 'Secure Payments' },
+    { icon: '🔁', text: 'Easy Returns' },
+  ]);
+
+  useEffect(() => {
+    fetch('/api/banner')
+      .then(r => r.json())
+      .then(data => { if (data.perks && Array.isArray(data.perks) && data.perks.length === 3) setPerks(data.perks); })
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (!id) { setLoading(false); return; }
-    // Fetch single product by ID — fixes "Product Not Found" caused by
-    // paginated API envelope breaking the old array.find() approach
     fetch(`/api/products?id=${id}`)
       .then(res => { if (!res.ok) throw new Error('Not found'); return res.json(); })
-      .then(data => {
-        setProduct(data);
-        const imgs: string[] =
-          data.imageUrls?.length > 0 ? data.imageUrls
-          : data.imageUrl             ? [data.imageUrl]
-          : data.image                ? [data.image]
-          : [];
-        if (imgs.length > 0) setSelectedImage(imgs[0]);
-      })
+      .then(data => { setProduct(data); })
       .catch(() => setProduct(null))
       .finally(() => setLoading(false));
   }, [id]);
@@ -49,14 +106,27 @@ export function ProductDetail() {
         <div className="text-6xl mb-4">404</div>
         <h2 className="text-2xl font-black text-gray-900 mb-3">Product Not Found</h2>
         <p className="text-gray-500 mb-8 text-sm">We couldn't find the product you're looking for.</p>
-        <button
-          onClick={() => navigate('/products')}
-          className="inline-flex items-center gap-2 bg-[#25D366] text-white font-bold py-3 px-8 rounded-full shadow-md hover:bg-green-600 transition-colors">
+        <button onClick={() => navigate('/products')}
+          className="inline-flex items-center gap-2 bg-[#FA5600] text-white font-bold py-3 px-8 rounded-full shadow-md hover:bg-orange-600 transition-colors">
           <ArrowLeft className="w-4 h-4" /> Back to Catalog
         </button>
       </div>
     );
   }
+
+  const allImages: string[] =
+    product.imageUrls?.length > 0 ? product.imageUrls
+    : product.imageUrl             ? [product.imageUrl]
+    : product.image                ? [product.image]
+    : [];
+
+  const embedUrl = product.videoUrl ? getEmbedUrl(product.videoUrl) : null;
+
+  // Build the "slides": images + optional video at the end
+  const slides: { type: 'image' | 'video'; src: string }[] = [
+    ...allImages.map(src => ({ type: 'image' as const, src })),
+    ...(embedUrl ? [{ type: 'video' as const, src: embedUrl }] : []),
+  ];
 
   const handleAddItem = () => {
     addItem(product);
@@ -67,89 +137,135 @@ export function ProductDetail() {
   const quantityInCart = items.find(i => i.product.id === product._id?.toString())?.quantity || 0;
   const hasDiscount    = product.discountedPrice && product.originalPrice
                          && Number(product.discountedPrice) < Number(product.originalPrice);
-  const displayPrice   = hasDiscount
-                         ? product.discountedPrice
-                         : (product.originalPrice || product.price);
+  const displayPrice   = hasDiscount ? product.discountedPrice : (product.originalPrice || product.price);
   const discountPct    = hasDiscount
-                         ? Math.round((1 - Number(product.discountedPrice) / Number(product.originalPrice)) * 100)
-                         : 0;
+    ? Math.round((1 - Number(product.discountedPrice) / Number(product.originalPrice)) * 100) : 0;
 
-  const allImages: string[] =
-    product.imageUrls?.length > 0 ? product.imageUrls
-    : product.imageUrl             ? [product.imageUrl]
-    : product.image                ? [product.image]
-    : [];
+  const reviews = generateReviews(id || '');
+  const avgRating = (reviews.reduce((s, r) => s + r.rating, 0) / reviews.length).toFixed(1);
 
-  const getEmbedUrl = (url: string): string | null => {
-    if (!url) return null;
-    const yt = url.match(/youtube\.com\/watch\?v=([\w-]+)/)
-            || url.match(/youtu\.be\/([\w-]+)/)
-            || url.match(/youtube\.com\/shorts\/([\w-]+)/);
-    if (yt) return `https://www.youtube.com/embed/${yt[1]}?rel=0`;
-    if (url.includes('facebook.com') || url.includes('fb.watch'))
-      return `https://www.facebook.com/plugins/video.php?href=${encodeURIComponent(url)}&show_text=false&autoplay=false`;
-    const ig = url.match(/instagram\.com\/(reel|p)\/([\w-]+)/);
-    if (ig) return `https://www.instagram.com/${ig[1]}/${ig[2]}/embed`;
-    const tt = url.match(/tiktok\.com\/@[\w.]+\/video\/(\d+)/);
-    if (tt) return `https://www.tiktok.com/embed/${tt[1]}`;
-    return null;
-  };
-
-  const embedUrl = product.videoUrl ? getEmbedUrl(product.videoUrl) : null;
+  const prevSlide = () => setSelectedIdx(i => Math.max(0, i - 1));
+  const nextSlide = () => setSelectedIdx(i => Math.min(slides.length - 1, i + 1));
 
   return (
-    <div className="px-4 py-6 md:p-8 max-w-5xl mx-auto">
+    <div className="bg-gray-50 min-h-screen">
 
       {/* Back link */}
-      <Link
-        to="/products"
-        className="inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-widest text-slate-400 hover:text-[#FA5600] transition-colors mb-6 border-b-2 border-transparent hover:border-[#FA5600] pb-1">
-        <ArrowLeft className="w-4 h-4" /> Back to Catalog
-      </Link>
+      <div className="max-w-6xl mx-auto px-4 pt-5 pb-2">
+        <Link to="/products"
+          className="inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-widest text-slate-400 hover:text-[#FA5600] transition-colors">
+          <ArrowLeft className="w-4 h-4" /> Back to Catalog
+        </Link>
+      </div>
 
-      <div className="bg-white border-2 border-black shadow-[6px_6px_0px_0px_rgba(0,0,0,1)]">
+      <div className="max-w-6xl mx-auto px-4 pb-12">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 lg:gap-10 items-start">
 
-        {/* KEY FIX: md:items-start stops right column from stretching the image panel */}
-        <div className="grid grid-cols-1 md:grid-cols-2 md:items-start">
+          {/* ── LEFT: Temu-style image gallery ── */}
+          <div className="flex gap-3">
 
-          {/* ── LEFT: Image — strict aspect-square, never grows ── */}
-          <div className="bg-gray-50 border-b-2 md:border-b-0 md:border-r-2 border-black">
-            <div className="aspect-square w-full p-5 flex items-center justify-center">
-              {selectedImage ? (
-                <img
-                  src={selectedImage}
-                  alt={product.name}
-                  className="w-full h-full object-contain mix-blend-multiply"
-                />
-              ) : (
-                <span className="text-7xl">📦</span>
-              )}
-            </div>
-
-            {/* Thumbnails */}
-            {allImages.length > 1 && (
-              <div className="flex gap-2 p-3 border-t-2 border-black bg-white overflow-x-auto">
-                {allImages.map((img, i) => (
-                  <button
-                    key={i}
-                    onClick={() => setSelectedImage(img)}
+            {/* Vertical thumbnails — shown on md+ */}
+            {slides.length > 1 && (
+              <div ref={thumbsRef} className="hidden md:flex flex-col gap-2 w-16 shrink-0 max-h-[540px] overflow-y-auto pr-1 scrollbar-thin">
+                {slides.map((slide, i) => (
+                  <button key={i} onClick={() => setSelectedIdx(i)}
                     className={cn(
-                      'w-14 h-14 border-2 overflow-hidden shrink-0 transition-all',
-                      selectedImage === img ? 'border-black' : 'border-gray-200 hover:border-gray-500'
+                      'w-16 h-16 rounded-lg border-2 overflow-hidden shrink-0 transition-all',
+                      selectedIdx === i ? 'border-[#FA5600] shadow-sm' : 'border-gray-200 hover:border-gray-400'
                     )}>
-                    <img src={img} alt={`View ${i + 1}`} className="w-full h-full object-cover" />
+                    {slide.type === 'image'
+                      ? <img src={slide.src} alt={`View ${i + 1}`} className="w-full h-full object-cover" />
+                      : <div className="w-full h-full bg-gray-800 flex items-center justify-center">
+                          <span className="text-white text-xl">▶</span>
+                        </div>
+                    }
                   </button>
                 ))}
               </div>
             )}
+
+            {/* Main viewer */}
+            <div className="flex-1 min-w-0">
+              <div className="relative bg-white rounded-2xl border border-gray-200 overflow-hidden aspect-square shadow-sm group">
+
+                {slides.length === 0 && (
+                  <div className="w-full h-full flex items-center justify-center text-7xl">📦</div>
+                )}
+
+                {slides[selectedIdx]?.type === 'image' && (
+                  <>
+                    <img
+                      src={slides[selectedIdx].src}
+                      alt={product.name}
+                      className="w-full h-full object-contain p-4 cursor-zoom-in"
+                      onClick={() => setZoomed(true)}
+                    />
+                    {/* Zoom hint */}
+                    <div className="absolute bottom-3 right-3 bg-black/40 text-white rounded-full p-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <ZoomIn className="w-4 h-4" />
+                    </div>
+                  </>
+                )}
+
+                {slides[selectedIdx]?.type === 'video' && (
+                  <div className="relative w-full h-full">
+                    <iframe src={slides[selectedIdx].src} className="absolute inset-0 w-full h-full"
+                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                      allowFullScreen frameBorder="0" />
+                  </div>
+                )}
+
+                {/* Prev / Next arrows */}
+                {slides.length > 1 && (
+                  <>
+                    <button onClick={prevSlide} disabled={selectedIdx === 0}
+                      className="absolute left-2 top-1/2 -translate-y-1/2 w-8 h-8 bg-white/90 border border-gray-200 rounded-full flex items-center justify-center shadow hover:bg-white disabled:opacity-30 transition-all">
+                      <ChevronLeft className="w-4 h-4 text-gray-700" />
+                    </button>
+                    <button onClick={nextSlide} disabled={selectedIdx === slides.length - 1}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 w-8 h-8 bg-white/90 border border-gray-200 rounded-full flex items-center justify-center shadow hover:bg-white disabled:opacity-30 transition-all">
+                      <ChevronRight className="w-4 h-4 text-gray-700" />
+                    </button>
+                  </>
+                )}
+
+                {/* Dot indicators */}
+                {slides.length > 1 && (
+                  <div className="absolute bottom-3 left-1/2 -translate-x-1/2 flex gap-1.5">
+                    {slides.map((_, i) => (
+                      <button key={i} onClick={() => setSelectedIdx(i)}
+                        className={cn('rounded-full transition-all', selectedIdx === i ? 'w-4 h-1.5 bg-[#FA5600]' : 'w-1.5 h-1.5 bg-gray-300')} />
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Mobile horizontal thumbnails */}
+              {slides.length > 1 && (
+                <div className="flex md:hidden gap-2 mt-3 overflow-x-auto pb-1">
+                  {slides.map((slide, i) => (
+                    <button key={i} onClick={() => setSelectedIdx(i)}
+                      className={cn(
+                        'w-14 h-14 rounded-lg border-2 overflow-hidden shrink-0 transition-all',
+                        selectedIdx === i ? 'border-[#FA5600]' : 'border-gray-200'
+                      )}>
+                      {slide.type === 'image'
+                        ? <img src={slide.src} alt="" className="w-full h-full object-cover" />
+                        : <div className="w-full h-full bg-gray-800 flex items-center justify-center text-white text-lg">▶</div>
+                      }
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
 
           {/* ── RIGHT: Product info ── */}
-          <div className="p-6 lg:p-8 flex flex-col gap-4">
+          <div className="flex flex-col gap-4">
 
-            {/* Badges row */}
+            {/* Badges */}
             <div className="flex flex-wrap items-center gap-2">
-              <span className="bg-black text-white text-[10px] font-black uppercase tracking-widest px-3 py-1">
+              <span className="bg-black text-white text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded">
                 {product.category}
               </span>
               {product.subcategory && (
@@ -159,45 +275,63 @@ export function ProductDetail() {
               )}
             </div>
 
-            {/* Title — normal case, contained size, good line-height */}
+            {/* Title */}
             <h1 className="text-xl lg:text-2xl font-black text-gray-900 leading-snug">
               {product.name}
             </h1>
 
+            {/* Rating summary */}
+            <div className="flex items-center gap-2">
+              <Stars rating={Math.round(Number(avgRating))} />
+              <span className="text-sm font-bold text-gray-700">{avgRating}</span>
+              <span className="text-xs text-gray-400">({reviews.length} reviews)</span>
+            </div>
+
             {/* Price */}
-            <div className="flex items-center gap-3 flex-wrap pb-4 border-b border-gray-100">
-              <span className="text-2xl font-black text-gray-900">
+            <div className="flex items-center gap-3 flex-wrap">
+              <span className="text-3xl font-black text-gray-900">
                 &#8377;{Number(displayPrice).toLocaleString('en-IN')}
               </span>
               {hasDiscount && (
                 <>
-                  <span className="text-sm text-gray-400 line-through">
+                  <span className="text-base text-gray-400 line-through">
                     &#8377;{Number(product.originalPrice).toLocaleString('en-IN')}
                   </span>
-                  <span className="bg-red-100 text-red-600 text-xs font-black px-2 py-0.5 rounded-full">
+                  <span className="bg-[#FA5600] text-white text-xs font-black px-2.5 py-1 rounded-full">
                     -{discountPct}% OFF
                   </span>
                 </>
               )}
             </div>
 
-            {/* Description — sentence case, normal weight, readable */}
+            {/* ── Perks Bar (Temu-style) ── */}
+            {/* To customise: edit the PERKS array at the top of this file */}
+            <div className="border border-[#25D366]/30 rounded-xl bg-[#25D366]/5 divide-x divide-[#25D366]/20 flex overflow-hidden">
+              {PERKS.map((perk, i) => (
+                <div key={i} className="flex-1 flex flex-col items-center justify-center gap-1 py-3 px-2 text-center">
+                  <span className="text-lg leading-none">{perk.icon}</span>
+                  <span className="text-[10px] font-black text-[#1a9e4f] uppercase tracking-wide leading-tight">{perk.text}</span>
+                </div>
+              ))}
+            </div>
+
+            {/* Description */}
             {product.description && (
-              <p className="text-gray-600 text-sm leading-relaxed">
+              <p className="text-gray-600 text-sm leading-relaxed border-t border-gray-100 pt-4">
                 {product.description}
               </p>
             )}
 
             {/* CTA */}
-            <div className="flex flex-col gap-2 mt-2">
+            <div className="flex flex-col gap-2 pt-2">
               <button
                 onClick={handleAddItem}
                 disabled={isRecentlyAdded}
                 className={cn(
-                  'w-full py-4 px-6 font-black uppercase tracking-wide flex items-center justify-center gap-2 text-sm border-2 transition-all',
+                  'w-full py-4 px-6 font-black uppercase tracking-wide flex items-center justify-center gap-2 text-sm rounded-xl border-2 transition-all',
                   isRecentlyAdded
                     ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed'
-                    : 'bg-[var(--color-wa-green)] hover:bg-[#20bd5a] text-white border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:translate-y-0.5 hover:shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]'
+                    : 'bg-[#FA5600] hover:bg-orange-600 text-white border-[#FA5600] shadow-lg shadow-orange-100 hover:shadow-orange-200 active:scale-95'
                 )}>
                 {isRecentlyAdded
                   ? <><Check className="w-5 h-5" /> Added to List!</>
@@ -212,23 +346,63 @@ export function ProductDetail() {
           </div>
         </div>
 
-        {/* Video */}
-        {embedUrl && (
-          <div className="border-t-2 border-black p-6 md:p-8">
-            <h3 className="font-black uppercase tracking-widest text-sm text-gray-900 mb-4">Product Video</h3>
-            <div className="relative w-full" style={{ paddingTop: '56.25%' }}>
-              <iframe
-                src={embedUrl}
-                className="absolute inset-0 w-full h-full"
-                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                allowFullScreen
-                frameBorder="0"
-              />
+        {/* ── REVIEWS SECTION ── */}
+        <div className="mt-10 bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+          <div className="px-6 py-5 border-b border-gray-100 flex items-center justify-between flex-wrap gap-3">
+            <div>
+              <h2 className="text-lg font-black text-gray-900 uppercase tracking-wide">Customer Reviews</h2>
+              <p className="text-xs text-gray-400 font-bold mt-0.5">{reviews.length} verified reviews</p>
+            </div>
+            {/* Overall rating summary */}
+            <div className="flex items-center gap-3">
+              <span className="text-5xl font-black text-gray-900">{avgRating}</span>
+              <div className="flex flex-col gap-1">
+                <Stars rating={Math.round(Number(avgRating))} size="lg" />
+                <span className="text-xs text-gray-400 font-bold">out of 5</span>
+              </div>
             </div>
           </div>
-        )}
+
+          <div className="divide-y divide-gray-50">
+            {reviews.map(review => (
+              <div key={review.id} className="px-6 py-5 flex gap-4">
+                {/* Avatar */}
+                <div className="w-9 h-9 rounded-full bg-gradient-to-br from-orange-400 to-orange-600 flex items-center justify-center shrink-0 text-white text-xs font-black">
+                  {review.name.charAt(0)}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-sm font-black text-gray-900">{review.name}</span>
+                    {review.verified && (
+                      <span className="bg-green-50 text-green-600 text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full flex items-center gap-1">
+                        <Check className="w-2.5 h-2.5" /> Verified
+                      </span>
+                    )}
+                    <span className="text-[10px] text-gray-400 ml-auto">{review.date}</span>
+                  </div>
+                  <Stars rating={review.rating} />
+                  <p className="text-sm text-gray-600 mt-1.5 leading-relaxed">{review.comment}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
 
       </div>
+
+      {/* ── ZOOM LIGHTBOX ── */}
+      {zoomed && slides[selectedIdx]?.type === 'image' && (
+        <div className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4" onClick={() => setZoomed(false)}>
+          <img src={slides[selectedIdx].src} alt={product.name}
+            className="max-w-full max-h-full object-contain rounded-lg"
+            onClick={e => e.stopPropagation()} />
+          <button onClick={() => setZoomed(false)}
+            className="absolute top-4 right-4 w-10 h-10 bg-white/10 hover:bg-white/20 rounded-full flex items-center justify-center text-white transition">
+            ✕
+          </button>
+        </div>
+      )}
+
     </div>
   );
 }
