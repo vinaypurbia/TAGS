@@ -39,7 +39,6 @@ async function pushProductToMeta(product, metaId = null) {
   const price = parseFloat(product.discountedPrice || product.originalPrice || product.price || 0);
   const originalPrice = parseFloat(product.originalPrice || product.price || 0);
 
-  // Meta Catalog API expects price as integer (minor units) + separate currency
   const priceInPaise = Math.round(price * 100);
   const originalPriceInPaise = Math.round(originalPrice * 100);
 
@@ -151,8 +150,9 @@ export default async function handler(req, res) {
     const inventory = db.collection('inventory');
 
     if (req.method === 'GET') {
-      const { id, withStock, syncMeta, pushAll } = req.query;
+      const { id, withStock, syncMeta, pushAll, page, limit, category, search } = req.query;
 
+      // ── Special ops (unchanged) ──────────────────────────────
       if (syncMeta === 'true') {
         const result = await syncMetaToMongo(collection);
         return res.status(200).json({
@@ -197,14 +197,13 @@ export default async function handler(req, res) {
         return res.status(200).json({
           success: true,
           message: `Pushed ${pushed} of ${allProducts.length} products to Meta/WhatsApp catalog`,
-          pushed,
-          failed,
-          total: allProducts.length,
+          pushed, failed, total: allProducts.length,
           errors: errors.length > 0 ? errors : undefined,
           results,
         });
       }
 
+      // ── Single product by ID (unchanged) ────────────────────
       if (id) {
         const product = await collection.findOne({ _id: new ObjectId(id) });
         if (!product) return res.status(404).json({ error: 'Product not found' });
@@ -226,10 +225,42 @@ export default async function handler(req, res) {
         return res.status(200).json(product);
       }
 
-      const products = await collection.find({}).sort({ createdAt: -1 }).toArray();
+      // ── PAGINATED product list ───────────────────────────────
+      // Supports: ?page=1&limit=20&category=Toys&search=ball&withStock=true
+      const pageNum  = Math.max(1, parseInt(page  || '1',  10));
+      const pageSize = Math.min(100, Math.max(1, parseInt(limit || '20', 10)));
+      const skip     = (pageNum - 1) * pageSize;
 
+      // Build MongoDB query filter
+      const mongoFilter = {};
+      if (category && category !== '') {
+        mongoFilter.category = category;
+      }
+      if (search && search.trim() !== '') {
+        const q = search.trim();
+        mongoFilter.$or = [
+          { name:        { $regex: q, $options: 'i' } },
+          { description: { $regex: q, $options: 'i' } },
+          { category:    { $regex: q, $options: 'i' } },
+          { subcategory: { $regex: q, $options: 'i' } },
+        ];
+      }
+
+      // Count total matching (for hasMore calculation)
+      const total = await collection.countDocuments(mongoFilter);
+
+      // Fetch only this page
+      const products = await collection
+        .find(mongoFilter)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(pageSize)
+        .toArray();
+
+      // Optionally enrich with stock
+      let result = products;
       if (withStock === 'true') {
-        const enriched = await Promise.all(
+        result = await Promise.all(
           products.map(async (p) => {
             const pid = p._id.toString();
             const stock = await inventory.findOne({ productId: pid });
@@ -248,10 +279,16 @@ export default async function handler(req, res) {
             return p;
           })
         );
-        return res.status(200).json(enriched);
       }
 
-      return res.status(200).json(products);
+      // Return paginated envelope
+      return res.status(200).json({
+        products: result,
+        page: pageNum,
+        limit: pageSize,
+        total,
+        hasMore: skip + products.length < total,
+      });
     }
 
     if (req.method === 'POST') {
