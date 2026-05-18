@@ -529,6 +529,7 @@ export function ProductManagerEmbed() {
   const [filterCategory, setFilterCategory] = useState('');
   const [filterImage, setFilterImage] = useState<'all' | 'has' | 'none'>('all');
   const [filterDiscount, setFilterDiscount] = useState<'all' | 'yes' | 'no'>('all');
+  const [filterCatSet, setFilterCatSet] = useState<'all' | 'has' | 'none'>('all');
   const [priceMin, setPriceMin] = useState('');
   const [priceMax, setPriceMax] = useState('');
   const [showFilters, setShowFilters] = useState(false);
@@ -572,6 +573,8 @@ export function ProductManagerEmbed() {
     if (filterImage === 'none' && getImg(p)) return false;
     if (filterDiscount === 'yes' && !hasDiscount(p)) return false;
     if (filterDiscount === 'no' && hasDiscount(p)) return false;
+    if (filterCatSet === 'has' && !p.category?.trim()) return false;
+    if (filterCatSet === 'none' && p.category?.trim()) return false;
     const price = getOrigPrice(p);
     if (priceMin && price < Number(priceMin)) return false;
     if (priceMax && price > Number(priceMax)) return false;
@@ -609,6 +612,7 @@ export function ProductManagerEmbed() {
     filterDiscount !== 'all',
     priceMin !== '',
     priceMax !== '',
+    filterCatSet !== 'all',
   ].filter(Boolean).length;
 
   const resetFilters = () => {
@@ -618,6 +622,7 @@ export function ProductManagerEmbed() {
     setPriceMin('');
     setPriceMax('');
     setSearch('');
+    setFilterCatSet('all');
   };
 
   // ── Render ─────────────────────────────────────────────────────────────────
@@ -702,6 +707,16 @@ export function ProductManagerEmbed() {
                   <FilterPill label="All" active={filterDiscount === 'all'} onClick={() => setFilterDiscount('all')} />
                   <FilterPill label="On Sale" active={filterDiscount === 'yes'} onClick={() => setFilterDiscount('yes')} />
                   <FilterPill label="Full Price" active={filterDiscount === 'no'} onClick={() => setFilterDiscount('no')} />
+                </div>
+              </div>
+
+              {/* Category set filter */}
+              <div>
+                <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-2">Category Set</p>
+                <div className="flex gap-2">
+                  <FilterPill label="All" active={filterCatSet === 'all'} onClick={() => setFilterCatSet('all')} />
+                  <FilterPill label="Has Category" active={filterCatSet === 'has'} onClick={() => setFilterCatSet('has')} />
+                  <FilterPill label="No Category" active={filterCatSet === 'none'} onClick={() => setFilterCatSet('none')} />
                 </div>
               </div>
 
