@@ -89,14 +89,15 @@ export function OrderSummary() {
         // Silent fail — order still goes through WhatsApp
       }
 
-      // Open WhatsApp after short delay, then show thank you screen
-      setTimeout(() => {
-        const waLink = getWhatsAppLink('916350021226', orderId, formData.name);
-        window.open(waLink, '_blank');
-        setIsSending(false);
-        setOrderDone({ orderId, name: formData.name });
-        clearCart();
-      }, 800);
+      // Open WhatsApp IMMEDIATELY — must happen synchronously after user action
+      // to avoid browser popup blocker (setTimeout breaks this)
+      const waLink = getWhatsAppLink('916350021226', orderId, formData.name);
+      window.open(waLink, '_blank');
+
+      // Update UI state
+      setIsSending(false);
+      setOrderDone({ orderId, name: formData.name });
+      clearCart();
 
     } catch (err) {
       setIsSending(false);
