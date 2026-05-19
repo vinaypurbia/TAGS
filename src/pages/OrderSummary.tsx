@@ -20,6 +20,7 @@ export function OrderSummary() {
   const { items, updateQuantity, removeItem, clearCart } = useCart();
   const [formData, setFormData] = useState({ name: '', phone: '', email: '', address: '' });
   const [isSending, setIsSending] = useState(false);
+  const [orderDone, setOrderDone] = useState<{ orderId: string; name: string } | null>(null);
 
   const subtotal = items.reduce((sum, item) => sum + (resolvePrice(item.product) * item.quantity), 0);
 
@@ -88,11 +89,13 @@ export function OrderSummary() {
         // Silent fail — order still goes through WhatsApp
       }
 
-      // Open WhatsApp after short delay
+      // Open WhatsApp after short delay, then show thank you screen
       setTimeout(() => {
         const waLink = getWhatsAppLink('916350021226', orderId, formData.name);
         window.open(waLink, '_blank');
         setIsSending(false);
+        setOrderDone({ orderId, name: formData.name });
+        clearCart();
       }, 800);
 
     } catch (err) {
@@ -100,6 +103,48 @@ export function OrderSummary() {
       alert('Something went wrong. Please try again.');
     }
   };
+
+  // ── THANK YOU SCREEN ───────────────────────────────────────
+  if (orderDone) {
+    return (
+      <div className="max-w-2xl mx-auto px-4 py-20 text-center">
+        <div className="bg-white rounded-3xl shadow-xl border border-gray-100 p-12">
+          {/* Animated checkmark */}
+          <div className="w-24 h-24 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-6">
+            <svg className="w-12 h-12 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+            </svg>
+          </div>
+
+          <h2 className="text-3xl font-black text-gray-900 tracking-tighter uppercase mb-2">
+            Thank You, {orderDone.name.split(' ')[0]}! 🎉
+          </h2>
+          <p className="text-sm font-bold text-gray-400 uppercase tracking-widest mb-6">
+            Order ID: {orderDone.orderId}
+          </p>
+
+          <div className="bg-orange-50 border border-orange-200 rounded-2xl p-5 mb-6 text-left space-y-2">
+            <p className="text-sm font-black text-[#FA5600] uppercase tracking-widest mb-3">What happens next?</p>
+            <p className="text-sm font-bold text-gray-700">📄 Your order PDF has been downloaded automatically.</p>
+            <p className="text-sm font-bold text-gray-700">💬 WhatsApp has opened — please <span className="text-[#FA5600]">attach the PDF</span> and send the message.</p>
+            <p className="text-sm font-bold text-gray-700">✅ We will confirm your order and contact you shortly.</p>
+          </div>
+
+          <div className="bg-[#25D366]/10 border border-[#25D366]/30 rounded-2xl p-4 mb-8">
+            <p className="text-xs font-black text-[#25D366] uppercase tracking-widest">No payment needed now</p>
+            <p className="text-xs text-gray-500 mt-1">Payment details will be shared via WhatsApp after confirmation.</p>
+          </div>
+
+          <Link
+            to="/products"
+            className="inline-flex items-center justify-center bg-[#FA5600] text-white font-black py-3 px-8 rounded-full shadow-lg hover:bg-[#E04A00] transition-colors uppercase tracking-widest text-sm"
+          >
+            Continue Shopping
+          </Link>
+        </div>
+      </div>
+    );
+  }
 
   if (items.length === 0) {
     return (
