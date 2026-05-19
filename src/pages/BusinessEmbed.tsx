@@ -399,6 +399,7 @@ function OrdersModule({ showMsg }: any) {
   const [deliveryDates, setDeliveryDates] = useState<Record<string, string>>({});
   const [sorryMsgs, setSorryMsgs] = useState<Record<string, string>>({});
   const [paymentStatuses, setPaymentStatuses] = useState<Record<string, string>>({});
+  const [partialAmounts, setPartialAmounts] = useState<Record<string, string>>({});
   const [products, setProducts] = useState<any[]>([]);
 
   const fetchOrders = () => {
@@ -439,7 +440,13 @@ function OrdersModule({ showMsg }: any) {
     const paymentStatus = paymentStatuses[order._id] || 'pending';
     const dateFormatted = new Date(deliveryDate).toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
     const itemLines = (order.items || []).map((i: any) => `  - ${i.productName || i.name} x${i.quantity} = Rs. ${((i.price || 0) * i.quantity).toFixed(2)}`).join('\n');
-    const paymentLabel = paymentStatus === 'paid' ? 'PAID - Thank you!' : paymentStatus === 'partial' ? 'PARTIAL - Balance due on delivery' : 'PENDING - Pay on delivery/collection';
+    const partialAmt = parseFloat(partialAmounts[order._id] || '0');
+    const balance = Number(order.totalAmount) - partialAmt;
+    const paymentLabel = paymentStatus === 'paid'
+      ? 'PAID - Thank you!'
+      : paymentStatus === 'partial'
+      ? `PARTIAL - Rs. ${partialAmt.toFixed(2)} received, Rs. ${balance.toFixed(2)} due on delivery`
+      : 'PENDING - Pay on delivery/collection';
     const message = [
       `Hello ${order.customerName}!`,
       ``,
@@ -454,7 +461,7 @@ function OrdersModule({ showMsg }: any) {
       ``,
       `We will contact you before delivery. Thank you for shopping with TAGS!`,
     ].join('\n');
-    updateStatus(order, 'confirmed', { deliveryDate, paymentStatus });
+    updateStatus(order, 'confirmed', { deliveryDate, paymentStatus, partialAmount: partialAmt, balanceDue: paymentStatus === 'partial' ? balance : 0 });
     openWhatsApp(order.customerPhone, message);
   };
 
@@ -591,6 +598,26 @@ function OrdersModule({ showMsg }: any) {
                             </select>
                           </div>
                         </div>
+                        {(paymentStatuses[order._id] || 'pending') === 'partial' && (
+                          <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 space-y-1.5">
+                            <label className="block text-[10px] font-black uppercase tracking-widest text-yellow-700">Amount Already Paid (Rs.)</label>
+                            <input
+                              type="number"
+                              min="0"
+                              max={order.totalAmount}
+                              step="0.01"
+                              value={partialAmounts[order._id] || ''}
+                              onChange={e => setPartialAmounts(p => ({ ...p, [order._id]: e.target.value }))}
+                              placeholder="e.g. 200"
+                              className="w-full border-2 border-yellow-300 rounded-lg px-3 py-2 text-sm font-bold focus:border-yellow-500 outline-none bg-white"
+                            />
+                            {partialAmounts[order._id] && parseFloat(partialAmounts[order._id]) > 0 && (
+                              <p className="text-xs font-bold text-yellow-700">
+                                Balance due on delivery: Rs. {(Number(order.totalAmount) - parseFloat(partialAmounts[order._id])).toFixed(2)}
+                              </p>
+                            )}
+                          </div>
+                        )}
                         <button onClick={() => confirmOrder(order)}
                           className="w-full bg-green-500 hover:bg-green-600 text-white font-black text-xs uppercase tracking-widest py-2.5 rounded-lg transition flex items-center justify-center gap-2">
                           <Check className="w-4 h-4" /> Confirm Order & WhatsApp Customer
