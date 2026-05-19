@@ -29,9 +29,16 @@ interface CartContextType {
 const CartContext = createContext<CartContextType | undefined>(undefined);
 
 const STORAGE_KEY = 'playandgear_customer';
+const CART_KEY = 'tags_cart';
 
 export function CartProvider({ children }: { children: ReactNode }) {
-  const [items, setItems] = useState<CartItem[]>([]);
+  const [items, setItems] = useState<CartItem[]>(() => {
+    try {
+      const saved = localStorage.getItem(CART_KEY);
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return [];
+  });
   const [showRegistration, setShowRegistration] = useState(false);
   const [pendingProduct, setPendingProduct] = useState<Product | null>(null);
   const [customer, setCustomerState] = useState<CustomerDetails>({ name: '', phone: '' });
@@ -85,7 +92,15 @@ export function CartProvider({ children }: { children: ReactNode }) {
     );
   };
 
-  const clearCart = () => setItems([]);
+  // Persist cart to localStorage on every change
+  useEffect(() => {
+    try { localStorage.setItem(CART_KEY, JSON.stringify(items)); } catch {}
+  }, [items]);
+
+  const clearCart = () => {
+    setItems([]);
+    try { localStorage.removeItem(CART_KEY); } catch {}
+  };
   const totalItems = items.reduce((sum, item) => sum + item.quantity, 0);
 
   return (
