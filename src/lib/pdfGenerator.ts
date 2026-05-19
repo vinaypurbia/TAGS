@@ -65,6 +65,10 @@ const hRule = (
   doc.line(x1, y, x2, y);
 };
 
+// Strip emojis — jsPDF Helvetica cannot render them
+const stripEmoji = (str: string): string =>
+  str.replace(/[^\x00-\x7F\xA0-\xFF]/g, '').replace(/\s{2,}/g, ' ').trim();
+
 // ── MAIN GENERATOR ────────────────────────────────────────────────────────────
 export const generateOrderPDF = async (
   items: CartItem[],
@@ -346,7 +350,7 @@ export const generateOrderPDF = async (
   doc.setFont('helvetica', 'normal');
   doc.setTextColor(60, 60, 60);
   policyLines.forEach((line, i) =>
-    doc.text(`• ${line}`, 18, y + 12 + i * 6)
+    doc.text(`• ${stripEmoji(line)}`, 18, y + 12 + i * 6)
   );
   y += policyBoxH + 6;
 
