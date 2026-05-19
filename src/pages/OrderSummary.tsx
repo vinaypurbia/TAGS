@@ -181,14 +181,34 @@ export function OrderSummary() {
             </div>
 
             <ul className="divide-y divide-gray-100">
-              {items.map((item) => (
+              {items.map((item) => {
+                const productId = (item.product as any)._id || item.product.id;
+                const imgSrc =
+                  (item.product as any).imageUrls?.[0] ||
+                  (item.product as any).imageUrl ||
+                  item.product.image || '';
+                return (
                 <li key={item.product.id} className="py-5 first:pt-0 last:pb-0 flex flex-col sm:flex-row gap-4 items-center sm:items-start">
-                  <div className="w-20 h-20 shrink-0 bg-gray-50 rounded-lg overflow-hidden border border-gray-200">
-                    <img src={item.product.image} alt={item.product.name} className="w-full h-full object-cover" />
-                  </div>
+
+                  {/* Clickable thumbnail */}
+                  <Link
+                    to={`/products/${productId}`}
+                    className="w-20 h-20 shrink-0 bg-gray-50 rounded-lg overflow-hidden border border-gray-200 hover:border-[#FA5600] transition-colors group"
+                  >
+                    {imgSrc
+                      ? <img src={imgSrc} alt={item.product.name} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200" />
+                      : <div className="w-full h-full flex items-center justify-center text-2xl">📦</div>
+                    }
+                  </Link>
 
                   <div className="flex-1 text-center sm:text-left">
-                    <h3 className="font-black uppercase text-base leading-tight mb-1">{item.product.name}</h3>
+                    {/* Clickable product name */}
+                    <Link
+                      to={`/products/${productId}`}
+                      className="font-black uppercase text-base leading-tight mb-1 hover:text-[#FA5600] transition-colors block"
+                    >
+                      {item.product.name}
+                    </Link>
                     <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">{item.product.category}</p>
                     <div className="font-black text-lg mt-2 text-[#E53935]">₹{resolvePrice(item.product).toFixed(2)}</div>
                   </div>
@@ -211,7 +231,8 @@ export function OrderSummary() {
                     </button>
                   </div>
                 </li>
-              ))}
+                );
+              })}
             </ul>
 
             <div className="mt-6 p-4 bg-[#FA5600] text-white flex justify-between items-center rounded-xl">
