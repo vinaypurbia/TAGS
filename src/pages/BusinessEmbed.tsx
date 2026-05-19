@@ -5,7 +5,7 @@ import {
   Check, X, Search, Phone, Mail, MapPin, ChevronDown, ChevronUp
 } from 'lucide-react';
 
-type Module = 'dashboard' | 'sales' | 'purchase-orders' | 'cashflow' | 'expenses' | 'suppliers' | 'customers' | 'reports';
+type Module = 'dashboard' | 'orders' | 'sales' | 'purchase-orders' | 'cashflow' | 'expenses' | 'suppliers' | 'customers' | 'reports';
 type ReportType = 'stock-shortage' | 'low-performing' | 'best-selling' | 'profit-margin' | 'pnl' | 'stock-valuation';
 
 const fmt = (n: number) => `₹${Number(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -22,6 +22,7 @@ export function BusinessEmbed() {
 
   const tabs = [
     { id: 'dashboard', label: 'Dashboard', icon: BarChart2 },
+    { id: 'orders', label: 'Orders', icon: ShoppingCart },
     { id: 'sales', label: 'Sales', icon: ShoppingCart },
     { id: 'purchase-orders', label: 'Purchase Orders', icon: Package },
     { id: 'cashflow', label: 'Cash Flow', icon: DollarSign },
@@ -48,6 +49,7 @@ export function BusinessEmbed() {
       </div>
 
       {module === 'dashboard' && <DashboardModule showMsg={showMsg} />}
+      {module === 'orders' && <OrdersModule showMsg={showMsg} />}
       {module === 'sales' && <SalesModule showMsg={showMsg} />}
       {module === 'purchase-orders' && <PurchaseOrdersModule showMsg={showMsg} />}
       {module === 'cashflow' && <CashflowModule showMsg={showMsg} />}
@@ -376,6 +378,248 @@ function CustomersModule({ showMsg }: any) {
                       className="text-xs text-red-400 font-bold border border-red-200 px-3 py-1.5 rounded-full hover:bg-red-50 transition ml-auto">
                       Delete
                     </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+// ─── ORDERS MODULE ────────────────────────────────────────────────────────────
+function OrdersModule({ showMsg }: any) {
+  const [orders, setOrders] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [deliveryDates, setDeliveryDates] = useState<Record<string, string>>({});
+  const [sorryMsgs, setSorryMsgs] = useState<Record<string, string>>({});
+  const [products, setProducts] = useState<any[]>([]);
+
+  const fetchOrders = () => {
+    setLoading(true);
+    fetch('/api/customers?module=orders')
+      .then(r => r.json())
+      .then(data => setOrders(data.orders || []))
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    fetchOrders();
+    fetch('/api/products?limit=200').then(r => r.json()).then(d => setProducts(Array.isArray(d) ? d : (d.products || []))).catch(() => {});
+  }, []);
+
+  const filtered = statusFilter === 'all' ? orders : orders.filter(o => o.status === statusFilter);
+
+  const updateStatus = async (order: any, status: string, extra: any = {}) => {
+    await fetch('/api/customers?module=orders', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: order._id, status, ...extra }),
+    });
+    showMsg(`Order ${status}!`, 'success');
+    fetchOrders();
+  };
+
+  const openWhatsApp = (phone: string, message: string) => {
+    const clean = phone.replace(/[^0-9]/g, '');
+    const url = `https://wa.me/${clean.startsWith('91') ? clean : '91' + clean}?text=${encodeURIComponent(message)}`;
+    window.open(url, '_blank');
+  };
+
+  const confirmOrder = (order: any) => {
+    const deliveryDate = deliveryDates[order._id] || '';
+    if (!deliveryDate) { showMsg('Please select a delivery date first.', 'error'); return; }
+    const dateFormatted = new Date(deliveryDate).toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+    const itemLines = (order.items || []).map((i: any) => `  - ${i.productName || i.name} x${i.quantity}`).join('\n');
+    const message = [
+      `Hello ${order.customerName}! 🎉`,
+      ``,
+      `Your order *${order.orderId}* has been *CONFIRMED*!`,
+      ``,
+      `*Items:*`,
+      itemLines,
+      `*Total:* Rs. ${Number(order.totalAmount).toFixed(2)}`,
+      ``,
+      `*Estimated Delivery:* ${dateFormatted}`,
+      ``,
+      `We will contact you before delivery. Thank you for shopping with *TAGS*! 🧡`,
+    ].join('\n');
+    updateStatus(order, 'confirmed', { deliveryDate });
+    openWhatsApp(order.customerPhone, message);
+  };
+
+  const sendSorry = (order: any) => {
+    const customMsg = sorryMsgs[order._id] || '';
+    // Find similar products from catalog
+    const orderCategories = [...new Set((order.items || []).map((i: any) => i.category).filter(Boolean))];
+    const suggestions = products
+      .filter(p => orderCategories.includes(p.category) && p.name !== (order.items?.[0]?.productName))
+      .slice(0, 2)
+      .map(p => `  - ${p.name} (Rs. ${p.discountedPrice || p.price})`)
+      .join('\n');
+
+    const message = [
+      `Hello ${order.customerName}, 🙏`,
+      ``,
+      `We are sorry, your order *${order.orderId}* cannot be fulfilled at this time.`,
+      customMsg ? `\n${customMsg}` : '',
+      suggestions ? `\n*You might also like:*\n${suggestions}\nVisit: www.ta-gs.online` : '',
+      ``,
+      `We apologize for the inconvenience. Please contact us for more help.`,
+      `*TAGS Team* 🧡`,
+    ].filter(Boolean).join('\n');
+    updateStatus(order, 'cancelled');
+    openWhatsApp(order.customerPhone, message);
+  };
+
+  const counts = {
+    all: orders.length,
+    pending: orders.filter(o => o.status === 'pending').length,
+    confirmed: orders.filter(o => o.status === 'confirmed').length,
+    delivered: orders.filter(o => o.status === 'delivered').length,
+    cancelled: orders.filter(o => o.status === 'cancelled').length,
+  };
+
+  const statusColors: Record<string, string> = {
+    pending:   'bg-yellow-100 text-yellow-700',
+    confirmed: 'bg-blue-100 text-blue-700',
+    delivered: 'bg-green-100 text-green-700',
+    cancelled: 'bg-red-100 text-red-600',
+  };
+
+  return (
+    <div className="space-y-4">
+      {/* Summary pills */}
+      <div className="flex gap-2 flex-wrap">
+        {(['all', 'pending', 'confirmed', 'delivered', 'cancelled'] as const).map(s => (
+          <button key={s} onClick={() => setStatusFilter(s)}
+            className={`px-3 py-1.5 rounded-full text-xs font-black uppercase tracking-widest transition-all border-2 ${statusFilter === s ? 'bg-[#FA5600] text-white border-[#FA5600]' : 'bg-white text-gray-500 border-gray-200 hover:border-[#FA5600] hover:text-[#FA5600]'}`}>
+            {s} ({counts[s] ?? orders.length})
+          </button>
+        ))}
+      </div>
+
+      {loading ? <LoadingCards count={3} /> : filtered.length === 0 ? (
+        <EmptyState icon="📦" text={`No ${statusFilter === 'all' ? '' : statusFilter} orders yet`} />
+      ) : (
+        <div className="space-y-3">
+          {filtered.map(order => (
+            <div key={order._id} className={`bg-white rounded-xl border-2 transition-all ${expandedId === order._id ? 'border-[#FA5600]' : 'border-gray-200'}`}>
+              {/* Order header row */}
+              <div className="flex items-center gap-3 p-4 cursor-pointer" onClick={() => setExpandedId(expandedId === order._id ? null : order._id)}>
+                <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${order.status === 'pending' ? 'bg-yellow-400 animate-pulse' : order.status === 'confirmed' ? 'bg-blue-400' : order.status === 'delivered' ? 'bg-green-400' : 'bg-red-400'}`} />
+                <div className="flex-1 min-w-0">
+                  <p className="font-black text-sm text-gray-900">{order.customerName}</p>
+                  <p className="text-xs text-gray-400">{order.orderId} · {order.customerPhone}</p>
+                  <p className="text-xs text-gray-400">{new Date(order.createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</p>
+                </div>
+                <div className="text-right shrink-0">
+                  <p className="font-black text-base text-[#FA5600]">Rs. {Number(order.totalAmount).toFixed(2)}</p>
+                  <span className={`text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full ${statusColors[order.status] || 'bg-gray-100 text-gray-500'}`}>
+                    {order.status || 'pending'}
+                  </span>
+                </div>
+                {expandedId === order._id ? <ChevronUp className="w-4 h-4 text-gray-400 shrink-0" /> : <ChevronDown className="w-4 h-4 text-gray-400 shrink-0" />}
+              </div>
+
+              {/* Expanded order detail */}
+              {expandedId === order._id && (
+                <div className="border-t border-gray-100 p-4 space-y-4">
+
+                  {/* Items list */}
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-2">Items Ordered</p>
+                    <div className="space-y-1.5">
+                      {(order.items || []).map((item: any, i: number) => (
+                        <div key={i} className="flex items-center gap-2 bg-gray-50 rounded-lg px-3 py-2">
+                          <div className="flex-1 min-w-0">
+                            <p className="text-xs font-bold text-gray-800 truncate">{item.productName || item.name}</p>
+                            <p className="text-[10px] text-gray-400">{item.category}</p>
+                          </div>
+                          <span className="text-xs font-black text-gray-600 shrink-0">x{item.quantity}</span>
+                          <span className="text-xs font-black text-[#FA5600] shrink-0">Rs. {((item.price || 0) * item.quantity).toFixed(2)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Delivery address */}
+                  {order.deliveryAddress && (
+                    <div className="flex items-start gap-2 text-xs text-gray-500 bg-blue-50 rounded-lg px-3 py-2">
+                      <MapPin className="w-3.5 h-3.5 text-blue-400 shrink-0 mt-0.5" />
+                      <span>{order.deliveryAddress}</span>
+                    </div>
+                  )}
+
+                  {/* ── ACTION AREA ── */}
+                  {order.status === 'pending' && (
+                    <div className="space-y-3 border-t border-gray-100 pt-3">
+
+                      {/* CONFIRM with delivery date */}
+                      <div className="bg-green-50 border border-green-200 rounded-xl p-3 space-y-2">
+                        <p className="text-xs font-black uppercase tracking-widest text-green-700">Confirm & Set Delivery Date</p>
+                        <input
+                          type="date"
+                          value={deliveryDates[order._id] || ''}
+                          onChange={e => setDeliveryDates(d => ({ ...d, [order._id]: e.target.value }))}
+                          min={new Date().toISOString().split('T')[0]}
+                          className="w-full border-2 border-green-200 rounded-lg px-3 py-2 text-sm font-bold focus:border-green-500 outline-none bg-white"
+                        />
+                        <button onClick={() => confirmOrder(order)}
+                          className="w-full bg-green-500 hover:bg-green-600 text-white font-black text-xs uppercase tracking-widest py-2.5 rounded-lg transition flex items-center justify-center gap-2">
+                          <Check className="w-4 h-4" /> Confirm Order & WhatsApp Customer
+                        </button>
+                      </div>
+
+                      {/* SORRY / UNAVAILABLE */}
+                      <div className="bg-red-50 border border-red-200 rounded-xl p-3 space-y-2">
+                        <p className="text-xs font-black uppercase tracking-widest text-red-600">Item Unavailable / Sorry Message</p>
+                        <textarea
+                          value={sorryMsgs[order._id] || ''}
+                          onChange={e => setSorryMsgs(m => ({ ...m, [order._id]: e.target.value }))}
+                          placeholder="Optional: add a custom note or alternative suggestion..."
+                          rows={2}
+                          className="w-full border-2 border-red-200 rounded-lg px-3 py-2 text-sm font-bold focus:border-red-400 outline-none bg-white resize-none"
+                        />
+                        <p className="text-[10px] text-red-400 font-bold">Similar products from your catalog will be auto-suggested in the message.</p>
+                        <button onClick={() => sendSorry(order)}
+                          className="w-full bg-red-500 hover:bg-red-600 text-white font-black text-xs uppercase tracking-widest py-2.5 rounded-lg transition flex items-center justify-center gap-2">
+                          <X className="w-4 h-4" /> Send Sorry & Suggestions via WhatsApp
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Already confirmed — show delivery date + mark delivered */}
+                  {order.status === 'confirmed' && (
+                    <div className="border-t border-gray-100 pt-3 space-y-2">
+                      {order.deliveryDate && (
+                        <p className="text-xs text-blue-600 font-bold bg-blue-50 rounded-lg px-3 py-2">
+                          📅 Delivery scheduled: {new Date(order.deliveryDate).toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' })}
+                        </p>
+                      )}
+                      <button onClick={() => updateStatus(order, 'delivered')}
+                        className="w-full bg-green-500 hover:bg-green-600 text-white font-black text-xs uppercase tracking-widest py-2.5 rounded-xl transition">
+                        Mark as Delivered ✓
+                      </button>
+                    </div>
+                  )}
+
+                  {/* WhatsApp direct link always visible */}
+                  <div className="flex gap-2 pt-2 border-t border-gray-100">
+                    <a href={`https://wa.me/${order.customerPhone?.replace(/[^0-9]/g, '')}`} target="_blank" rel="noopener noreferrer"
+                      className="flex items-center gap-1.5 bg-[#25D366] text-white text-xs font-black px-3 py-1.5 rounded-full hover:bg-[#20bd5a] transition">
+                      <Phone className="w-3 h-3" /> WhatsApp
+                    </a>
+                    <span className={`text-[10px] font-black uppercase tracking-widest px-2 py-1.5 rounded-full ${statusColors[order.status] || 'bg-gray-100 text-gray-500'}`}>
+                      {order.status}
+                    </span>
                   </div>
                 </div>
               )}
