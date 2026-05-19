@@ -1,30 +1,42 @@
 import jsPDF from 'jspdf';
-import autoTable from 'jspdf-autotable';
 import { CartItem } from '../context/CartContext';
 
 export interface UserDetails {
   name: string;
   phone: string;
   address: string;
+  email?: string;
 }
 
-// Helper: load an image URL as base64 for jsPDF
-// Uses a proxy to bypass CORS restrictions on Meta CDN images
-const loadImageAsBase64 = (url: string): Promise<string> => {
-  return new Promise((resolve) => {
-    if (!url) { resolve(''); return; }
+// ── Safe rupee formatter — avoids ₹ glyph which jsPDF cannot render ──────────
+const rs = (n: number) =>
+  'Rs. ' + n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
-    const tryLoad = (src: string) =>
+// ── Parse price from any format ───────────────────────────────────────────────
+const resolvePrice = (product: any): number => {
+  for (const v of [product.discountedPrice, product.price, product.originalPrice]) {
+    if (v === null || v === undefined) continue;
+    const n = typeof v === 'number' ? v : parseFloat(String(v).replace(/[^0-9.]/g, ''));
+    if (n > 0) return n;
+  }
+  return 0;
+};
+
+// ── Load image via canvas — tries direct URL then your API image proxy ────────
+const loadImage = (url: string): Promise<string> =>
+  new Promise((resolve) => {
+    if (!url) return resolve('');
+    const tryCanvas = (src: string) =>
       new Promise<string>((res) => {
         const img = new Image();
         img.crossOrigin = 'anonymous';
         img.onload = () => {
           try {
-            const canvas = document.createElement('canvas');
-            canvas.width  = img.naturalWidth  || img.width;
-            canvas.height = img.naturalHeight || img.height;
-            const ctx = canvas.getContext('2d');
-            if (ctx) { ctx.drawImage(img, 0, 0); res(canvas.toDataURL('image/jpeg', 0.8)); }
+            const c = document.createElement('canvas');
+            c.width = img.naturalWidth || 80;
+            c.height = img.naturalHeight || 80;
+            const ctx = c.getContext('2d');
+            if (ctx) { ctx.drawImage(img, 0, 0); res(c.toDataURL('image/jpeg', 0.85)); }
             else res('');
           } catch { res(''); }
         };
@@ -32,301 +44,335 @@ const loadImageAsBase64 = (url: string): Promise<string> => {
         img.src = src;
       });
 
-    // Try direct first; if it fails (CORS), try via a public CORS proxy
-    tryLoad(url).then(async (b64) => {
-      if (b64) { resolve(b64); return; }
-      // Fallback: route through a simple proxy endpoint you can add to your API
-      // or use the image URL directly without CORS
-      const proxyUrl = `/api/banner?proxy=${encodeURIComponent(url)}`;
-      const b64proxy = await tryLoad(proxyUrl);
-      resolve(b64proxy);
+    tryCanvas(url).then(async (b64) => {
+      if (b64) return resolve(b64);
+      // Fallback: your own proxy route to bypass Meta CDN CORS
+      const proxyUrl = `/api/imgproxy?url=${encodeURIComponent(url)}`;
+      resolve(await tryCanvas(proxyUrl));
     });
   });
+
+// ── Draw helpers ──────────────────────────────────────────────────────────────
+const hRule = (
+  doc: jsPDF,
+  y: number,
+  x1 = 14,
+  x2 = 196,
+  color: [number, number, number] = [220, 220, 220]
+) => {
+  doc.setDrawColor(...color);
+  doc.setLineWidth(0.3);
+  doc.line(x1, y, x2, y);
 };
 
-// Parse price from any format: number, "₹3,500.00", "3500 INR", etc.
-const parsePrice = (val: any): number => {
-  if (val === null || val === undefined) return 0;
-  if (typeof val === 'number') return isNaN(val) ? 0 : val;
-  const cleaned = String(val).replace(/[^0-9.]/g, '');
-  return parseFloat(cleaned) || 0;
-};
-
-// Resolve the best price from a product object (tries discountedPrice, price, originalPrice)
-const resolvePrice = (product: any): number => {
-  const candidates = [product.discountedPrice, product.price, product.originalPrice];
-  for (const v of candidates) {
-    const n = parsePrice(v);
-    if (n > 0) return n;
-  }
-  return 0;
-};
-
+// ── MAIN GENERATOR ────────────────────────────────────────────────────────────
 export const generateOrderPDF = async (
   items: CartItem[],
   userDetails: UserDetails
 ): Promise<{ orderId: string; pdfBlob: Blob }> => {
-  const doc = new jsPDF({ unit: 'mm', format: 'a4' });
-  const pageW = 210;
-  const orderId = `TAGSORD-${Math.random().toString(36).substr(2, 6).toUpperCase()}`;
-  const date = new Date().toLocaleDateString('en-IN', {
-    day: '2-digit', month: 'long', year: 'numeric'
-  });
 
-  // ─── HEADER BAND ────────────────────────────────────────────────────────────
-  // Orange top stripe
-  doc.setFillColor(250, 86, 0);
-  doc.rect(0, 0, pageW, 42, 'F');
-
-  // White accent line at bottom of header
-  doc.setFillColor(255, 255, 255);
-  doc.setFillColor(255, 200, 150);
-  doc.rect(0, 39, pageW, 1.2, 'F');
-
-  // ── Logo placeholder / brand name area (left side) ──
-  // Try to load the store logo; if unavailable, render text logo
-  // Place your logo at: /public/logo.png  (or update the path below)
-  const LOGO_URL = '/logo.png'; // ← update this path to match your actual logo
-  const logoBase64 = await loadImageAsBase64(LOGO_URL);
-
-  if (logoBase64) {
-    // Draw actual logo image (max 28mm tall, auto-width)
-    doc.addImage(logoBase64, 'PNG', 12, 6, 28, 28);
-  } else {
-    // Fallback: stylised text logo
-    doc.setFontSize(28);
-    doc.setTextColor(255, 255, 255);
-    doc.setFont('helvetica', 'bold');
-    doc.text('TAGS', 14, 22);
-
-    doc.setFontSize(8);
-    doc.setTextColor(255, 210, 170);
-    doc.setFont('helvetica', 'normal');
-    doc.text('Toys · Adventure · Gadgets · Sports', 14, 29);
-  }
-
-  // ── Store address block (right side of header) ──
-  doc.setFontSize(8.5);
-  doc.setTextColor(255, 255, 255);
-  doc.setFont('helvetica', 'bold');
-  doc.text('TAGS – Toys, Adventure, Gadgets & Sports', pageW - 14, 10, { align: 'right' });
-
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(7.5);
-  doc.setTextColor(255, 220, 190);
-  const storeLines = [
-    'Hathipole, Udaipur – 313001, Rajasthan, India',
-    'Phone: +91 63500 21226',
-    'Email: tags.udr@gmail.com',
-    'GSTIN: XXXXXXXXXXXXXXX',  // ← fill in real GST number
-  ];
-  storeLines.forEach((line, i) => {
-    doc.text(line, pageW - 14, 17 + i * 5, { align: 'right' });
-  });
-
-  // ─── INVOICE META BAR (light grey) ──────────────────────────────────────────
-  doc.setFillColor(245, 245, 245);
-  doc.rect(0, 42, pageW, 14, 'F');
-  doc.setDrawColor(230, 230, 230);
-  doc.rect(0, 42, pageW, 14, 'S');
-
-  doc.setFontSize(8);
-  doc.setTextColor(120, 120, 120);
-  doc.setFont('helvetica', 'normal');
-  doc.text('ORDER ID', 14, 48);
-  doc.text('DATE', 80, 48);
-  doc.text('STATUS', 145, 48);
-
-  doc.setFontSize(9.5);
-  doc.setTextColor(30, 30, 30);
-  doc.setFont('helvetica', 'bold');
-  doc.text(orderId, 14, 53.5);
-  doc.text(date, 80, 53.5);
-
-  doc.setTextColor(250, 86, 0);
-  doc.text('PENDING CONFIRMATION', 145, 53.5);
-
-  // ─── CUSTOMER DETAILS BOX ────────────────────────────────────────────────────
-  const custY = 62;
-  doc.setFillColor(255, 248, 240);
-  doc.setDrawColor(250, 200, 160);
-  doc.roundedRect(14, custY, 88, 28, 2, 2, 'FD');
-
-  doc.setFontSize(7.5);
-  doc.setTextColor(180, 80, 0);
-  doc.setFont('helvetica', 'bold');
-  doc.text('CUSTOMER DETAILS', 18, custY + 6);
-
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(9);
-  doc.setTextColor(40, 40, 40);
-  doc.text(`${userDetails.name}`, 18, custY + 12);
-  doc.text(`Tel: ${userDetails.phone}`, 18, custY + 18);
-  if (userDetails.address) {
-    const addrLines = doc.splitTextToSize(`Addr: ${userDetails.address}`, 78);
-    doc.text(addrLines, 18, custY + 24);
-  }
-
-  // ─── PAYMENT NOTE BOX (right side, beside customer) ──────────────────────────
-  doc.setFillColor(240, 253, 244);
-  doc.setDrawColor(180, 230, 195);
-  doc.roundedRect(108, custY, 88, 28, 2, 2, 'FD');
-
-  doc.setFontSize(7.5);
-  doc.setTextColor(20, 130, 60);
-  doc.setFont('helvetica', 'bold');
-  doc.text('PAYMENT INFO', 112, custY + 6);
-
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(8.5);
-  doc.setTextColor(40, 40, 40);
-  doc.text('Pay after WhatsApp confirmation', 112, custY + 13);
-  doc.text('All prices include GST (where applicable)', 112, custY + 19);
-  doc.text('No online payment required at this step', 112, custY + 25);
-
-  // ─── NORMALISE PRICES (guard against undefined/string prices) ────────────────
-  const safeItems = items.map((item) => ({
+  // Resolve prices & normalise
+  const safeItems = items.map(item => ({
     ...item,
-    product: {
-      ...item.product,
-      price: resolvePrice(item.product),
-    },
+    product: { ...item.product, price: resolvePrice(item.product) },
     quantity: Number(item.quantity) || 1,
   }));
 
-  // ─── ITEMS TABLE WITH THUMBNAILS ─────────────────────────────────────────────
-  // Pre-load all product images
-  const imageCache: Record<string, string> = {};
-  await Promise.all(
-    safeItems.map(async (item) => {
-      if (item.product.image) {
-        const b64 = await loadImageAsBase64(item.product.image);
-        if (b64) imageCache[item.product.id] = b64;
-      }
-    })
-  );
+  // Pre-fetch all product images in parallel
+  const imgCache: Record<string, string> = {};
+  await Promise.all(safeItems.map(async (item) => {
+    const src =
+      (item.product as any).imageUrls?.[0] ||
+      (item.product as any).imageUrl ||
+      item.product.image || '';
+    if (src) {
+      const b64 = await loadImage(src);
+      if (b64) imgCache[item.product.id] = b64;
+    }
+  }));
 
-  const tableStartY = custY + 34;
+  // Fetch store perks/policy from banner API
+  let policyLines: string[] = [
+    'Cash on Delivery available — pay on WhatsApp confirmation',
+    'Check and Collect — inspect your order before accepting',
+    'No Return / No Refund once order is accepted',
+  ];
+  try {
+    const banner = await fetch('/api/banner').then(r => r.json());
+    if (Array.isArray(banner?.perks) && banner.perks.length > 0) {
+      policyLines = banner.perks.map((p: any) => `${p.icon || ''} ${p.text || ''}`.trim());
+    }
+  } catch { /* use defaults */ }
 
-  // Column headers
-  autoTable(doc, {
-    startY: tableStartY,
-    head: [['', 'Product', 'Category', 'Unit Price', 'Qty', 'Amount']],
-    body: safeItems.map((item) => [
-      '', // image cell — filled via didDrawCell
-      item.product.name,
-      item.product.category || '—',
-      `₹${item.product.price.toFixed(2)}`,
-      item.quantity.toString(),
-      `₹${(item.product.price * item.quantity).toFixed(2)}`,
-    ]),
-    theme: 'grid',
-    styles: {
-      fontSize: 9,
-      cellPadding: { top: 2, bottom: 2, left: 3, right: 3 },
-      valign: 'middle',
-      lineColor: [230, 230, 230],
-      lineWidth: 0.3,
-      textColor: [40, 40, 40],
-    },
-    headStyles: {
-      fillColor: [250, 86, 0],
-      textColor: [255, 255, 255],
-      fontStyle: 'bold',
-      fontSize: 8.5,
-    },
-    alternateRowStyles: { fillColor: [255, 248, 240] },
-    columnStyles: {
-      0: { cellWidth: 16, halign: 'center' }, // thumbnail
-      1: { cellWidth: 62, fontStyle: 'bold' },
-      2: { cellWidth: 30, textColor: [120, 120, 120] },
-      3: { cellWidth: 26, halign: 'right' },
-      4: { cellWidth: 14, halign: 'center' },
-      5: { cellWidth: 26, halign: 'right', fontStyle: 'bold' },
-    },
-    rowPageBreak: 'avoid',
-    // Increase row height for thumbnails
-    didParseCell: (data) => {
-      if (data.section === 'body' && data.column.index === 0) {
-        data.cell.styles.minCellHeight = 18;
-      }
-    },
-    // Draw product thumbnails in first column
-    didDrawCell: (data) => {
-      if (data.section === 'body' && data.column.index === 0) {
-        const item = safeItems[data.row.index];
-        const imgData = imageCache[item.product.id];
-        if (imgData) {
-          const cellX = data.cell.x + 1;
-          const cellY = data.cell.y + 1;
-          const size = Math.min(data.cell.width - 2, data.cell.height - 2);
-          try {
-            doc.addImage(imgData, 'JPEG', cellX, cellY, size, size);
-          } catch (_) {
-            // skip if image fails
-          }
-        }
-      }
-    },
+  const doc    = new jsPDF({ unit: 'mm', format: 'a4' });
+  const pageW  = 210;
+  const pageH  = 297;
+  const orderId = `TAGS-${Date.now().toString(36).toUpperCase().slice(-7)}`;
+  const dateStr = new Date().toLocaleDateString('en-IN', {
+    day: '2-digit', month: 'short', year: 'numeric',
   });
 
-  const afterTable = (doc as any).lastAutoTable.finalY || 140;
-
-  // ─── TOTALS SECTION ──────────────────────────────────────────────────────────
-  const subtotal = safeItems.reduce((s, i) => s + i.product.price * i.quantity, 0);
-
-  // Subtotal row
-  doc.setFontSize(9);
-  doc.setTextColor(80, 80, 80);
-  doc.setFont('helvetica', 'normal');
-  doc.text('Subtotal', 140, afterTable + 8, { align: 'right' });
-  doc.text(`₹${subtotal.toFixed(2)}`, pageW - 14, afterTable + 8, { align: 'right' });
-
-  doc.text('Shipping', 140, afterTable + 14, { align: 'right' });
-  doc.setTextColor(20, 140, 60);
-  doc.text('FREE', pageW - 14, afterTable + 14, { align: 'right' });
-
-  // Total band
+  // ── Orange left accent bar ────────────────────────────────────────────────
   doc.setFillColor(250, 86, 0);
-  doc.rect(100, afterTable + 18, pageW - 100, 14, 'F');
-  doc.setFontSize(11);
+  doc.rect(0, 0, 4, pageH, 'F');
+
+  // ── HEADER ───────────────────────────────────────────────────────────────
+  doc.setFillColor(250, 86, 0);
+  doc.rect(4, 0, pageW - 4, 44, 'F');
+
+  // Logo circle with T
+  doc.setFillColor(255, 255, 255);
+  doc.circle(22, 22, 11, 'F');
+  doc.setFontSize(17);
+  doc.setFont('helvetica', 'bold');
+  doc.setTextColor(250, 86, 0);
+  doc.text('T', 22, 26.5, { align: 'center' });
+
+  // Brand name + tagline
+  doc.setFontSize(26);
   doc.setTextColor(255, 255, 255);
   doc.setFont('helvetica', 'bold');
-  doc.text('TOTAL AMOUNT', 104, afterTable + 27);
-  doc.text(`₹${subtotal.toFixed(2)}`, pageW - 14, afterTable + 27, { align: 'right' });
-
-  // ─── FOOTER ──────────────────────────────────────────────────────────────────
-  const footerY = afterTable + 40;
-
-  doc.setDrawColor(220, 220, 220);
-  doc.setLineWidth(0.4);
-  doc.line(14, footerY, pageW - 14, footerY);
-
-  doc.setFontSize(7.5);
-  doc.setTextColor(160, 160, 160);
+  doc.text('TAGS', 38, 20);
+  doc.setFontSize(8);
   doc.setFont('helvetica', 'normal');
-  doc.text(
-    'Thank you for shopping with TAGS! This is a draft order. Final confirmation will be shared via WhatsApp.',
-    pageW / 2,
-    footerY + 6,
-    { align: 'center' }
-  );
-  doc.text(
-    'TAGS · Hathipole, Udaipur – 313001 · +91 63500 21226 · tags.udr@gmail.com',
-    pageW / 2,
-    footerY + 11,
-    { align: 'center' }
-  );
+  doc.setTextColor(255, 215, 180);
+  doc.text('Toys · Adventure · Gadgets · Sports', 38, 27);
+  doc.text('www.ta-gs.online', 38, 33);
 
-  // Page border accent (thin orange left bar)
+  // TAX INVOICE label (right)
+  doc.setFontSize(16);
+  doc.setFont('helvetica', 'bold');
+  doc.setTextColor(255, 255, 255);
+  doc.text('TAX INVOICE', pageW - 12, 14, { align: 'right' });
+
+  // Store details (right)
+  doc.setFontSize(7.5);
+  doc.setFont('helvetica', 'normal');
+  doc.setTextColor(255, 215, 180);
+  [
+    'Hathipole, Udaipur - 313001, Rajasthan, India',
+    'Ph: +91 63500 21226  |  tags.udr@gmail.com',
+    'GSTIN: XXXXXXXXXXXXXXX',
+  ].forEach((line, i) => doc.text(line, pageW - 12, 22 + i * 7, { align: 'right' }));
+
+  // ── ORDER META BAR ────────────────────────────────────────────────────────
+  doc.setFillColor(245, 245, 245);
+  doc.rect(4, 44, pageW - 4, 14, 'F');
+  doc.setFontSize(7);
+  doc.setFont('helvetica', 'normal');
+  doc.setTextColor(130, 130, 130);
+  doc.text('ORDER ID',  14,  50);
+  doc.text('DATE',      85,  50);
+  doc.text('STATUS',   150,  50);
+  doc.setFontSize(8.5);
+  doc.setFont('helvetica', 'bold');
+  doc.setTextColor(30, 30, 30);
+  doc.text(orderId, 14, 55.5);
+  doc.text(dateStr, 85, 55.5);
+  doc.setTextColor(250, 86, 0);
+  doc.text('PENDING CONFIRMATION', 150, 55.5);
+
+  // ── SOLD BY / SHIP TO ────────────────────────────────────────────────────
+  let y = 65;
+
+  // Left — Sold By
+  doc.setFillColor(255, 248, 240);
+  doc.roundedRect(14, y, 86, 32, 2, 2, 'F');
+  doc.setFontSize(7);
+  doc.setFont('helvetica', 'bold');
+  doc.setTextColor(250, 86, 0);
+  doc.text('SOLD BY', 18, y + 6);
+  doc.setFontSize(9);
+  doc.setTextColor(20, 20, 20);
+  doc.text('TAGS', 18, y + 12);
+  doc.setFontSize(7.5);
+  doc.setFont('helvetica', 'normal');
+  doc.setTextColor(90, 90, 90);
+  doc.text('Hathipole, Udaipur - 313001', 18, y + 18);
+  doc.text('Rajasthan, India', 18, y + 23);
+  doc.text('Ph: +91 63500 21226', 18, y + 28);
+
+  // Right — Ship To
+  doc.setFillColor(255, 248, 240);
+  doc.roundedRect(110, y, 86, 32, 2, 2, 'F');
+  doc.setFontSize(7);
+  doc.setFont('helvetica', 'bold');
+  doc.setTextColor(250, 86, 0);
+  doc.text('SHIP TO', 114, y + 6);
+  doc.setFontSize(9);
+  doc.setFont('helvetica', 'bold');
+  doc.setTextColor(20, 20, 20);
+  doc.text(userDetails.name || '—', 114, y + 12);
+  doc.setFontSize(7.5);
+  doc.setFont('helvetica', 'normal');
+  doc.setTextColor(90, 90, 90);
+  doc.text(`Ph: ${userDetails.phone || '—'}`, 114, y + 18);
+  if (userDetails.address) {
+    const addrLines = doc.splitTextToSize(userDetails.address, 78);
+    addrLines.slice(0, 3).forEach((line: string, i: number) =>
+      doc.text(line, 114, y + 23 + i * 5)
+    );
+  }
+
+  y += 38;
+  hRule(doc, y, 14, 196, [250, 86, 0]);
+  y += 5;
+
+  // ── ITEMS TABLE ───────────────────────────────────────────────────────────
+  // Columns: IMG(16) | PRODUCT(68) | CATEGORY(28) | UNIT PRICE(30) | QTY(12) | AMOUNT(28)
+  // X starts: 14
+  const C = {
+    img:  14,   // width 16 → ends 30
+    name: 31,   // width 68 → ends 99
+    cat:  100,  // width 28 → ends 128
+    unit: 129,  // width 30 → ends 159 (right-align to 159)
+    qty:  160,  // width 12 → ends 172 (centre at 166)
+    tot:  173,  // width 23 → ends 196 (right-align to 196)
+  };
+  const ROW_H = 20;
+
+  // Header
+  doc.setFillColor(30, 30, 30);
+  doc.rect(14, y, 182, 8, 'F');
+  doc.setFontSize(7.5);
+  doc.setFont('helvetica', 'bold');
+  doc.setTextColor(255, 255, 255);
+  doc.text('IMG',      C.img + 8,  y + 5.5, { align: 'center' });
+  doc.text('PRODUCT',  C.name,     y + 5.5);
+  doc.text('CATEGORY', C.cat,      y + 5.5);
+  doc.text('UNIT',     C.unit + 28, y + 5.5, { align: 'right' });
+  doc.text('QTY',      C.qty + 6,  y + 5.5, { align: 'center' });
+  doc.text('AMOUNT',   C.tot + 23, y + 5.5, { align: 'right' });
+  y += 8;
+
+  const subtotal = safeItems.reduce((s, i) => s + i.product.price * i.quantity, 0);
+
+  safeItems.forEach((item, idx) => {
+    const rowY = y;
+    const even = idx % 2 === 0;
+
+    // Row background + border
+    doc.setFillColor(...(even ? [255, 255, 255] as [number,number,number] : [255, 248, 240] as [number,number,number]));
+    doc.rect(14, rowY, 182, ROW_H, 'F');
+    doc.setDrawColor(220, 220, 220);
+    doc.setLineWidth(0.2);
+    doc.rect(14, rowY, 182, ROW_H);
+
+    // Thumbnail
+    const imgData = imgCache[item.product.id];
+    if (imgData) {
+      try { doc.addImage(imgData, 'JPEG', C.img + 0.5, rowY + 2, 14, 14); }
+      catch { /* skip */ }
+    } else {
+      doc.setFillColor(235, 235, 235);
+      doc.rect(C.img + 0.5, rowY + 2, 14, 14, 'F');
+      doc.setFontSize(5);
+      doc.setTextColor(160, 160, 160);
+      doc.text('IMG', C.img + 7.5, rowY + 10.5, { align: 'center' });
+    }
+
+    // Product name (max 2 lines)
+    const nameLines = doc.splitTextToSize(item.product.name, 66);
+    doc.setFontSize(8);
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(20, 20, 20);
+    nameLines.slice(0, 2).forEach((line: string, li: number) =>
+      doc.text(line, C.name, rowY + 7 + li * 5)
+    );
+
+    // Category
+    doc.setFontSize(7);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(120, 120, 120);
+    doc.text(item.product.category || '—', C.cat, rowY + 11);
+
+    // Unit price — right-aligned to end of column
+    doc.setFontSize(8);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(40, 40, 40);
+    doc.text(rs(item.product.price), C.unit + 28, rowY + 11, { align: 'right' });
+
+    // Qty — centred
+    doc.setFont('helvetica', 'bold');
+    doc.text(String(item.quantity), C.qty + 6, rowY + 11, { align: 'center' });
+
+    // Line total — right-aligned
+    doc.setFontSize(8.5);
+    doc.setTextColor(20, 20, 20);
+    doc.text(rs(item.product.price * item.quantity), C.tot + 23, rowY + 11, { align: 'right' });
+
+    y += ROW_H;
+  });
+
+  y += 4;
+  hRule(doc, y, 14, 196, [200, 200, 200]);
+  y += 5;
+
+  // ── TOTALS ────────────────────────────────────────────────────────────────
+  const TX = 148; // label left
+  const VX = 195; // value right edge
+
+  doc.setFontSize(8);
+  doc.setFont('helvetica', 'normal');
+  doc.setTextColor(90, 90, 90);
+  doc.text('Subtotal:', TX, y);
+  doc.setTextColor(20, 20, 20);
+  doc.text(rs(subtotal), VX, y, { align: 'right' });
+  y += 6;
+
+  hRule(doc, y, TX - 2, VX + 2, [250, 86, 0]);
+  y += 2;
+
+  // Grand total bar
   doc.setFillColor(250, 86, 0);
-  doc.rect(0, 0, 3, 297, 'F');
+  doc.roundedRect(TX - 2, y, VX - TX + 4, 11, 1.5, 1.5, 'F');
+  doc.setFontSize(9);
+  doc.setFont('helvetica', 'bold');
+  doc.setTextColor(255, 255, 255);
+  doc.text('TOTAL', TX + 1, y + 7.5);
+  doc.setFontSize(10);
+  doc.text(rs(subtotal), VX - 1, y + 7.5, { align: 'right' });
+  y += 16;
+
+  // ── POLICY / TERMS BOX ───────────────────────────────────────────────────
+  const policyBoxH = 8 + policyLines.length * 6 + 2;
+  doc.setFillColor(255, 252, 245);
+  doc.setDrawColor(250, 200, 150);
+  doc.roundedRect(14, y, 182, policyBoxH, 2, 2, 'FD');
+  doc.setFontSize(7.5);
+  doc.setFont('helvetica', 'bold');
+  doc.setTextColor(250, 86, 0);
+  doc.text('ORDER TERMS & CONDITIONS', 18, y + 6);
+  doc.setFont('helvetica', 'normal');
+  doc.setTextColor(60, 60, 60);
+  policyLines.forEach((line, i) =>
+    doc.text(`• ${line}`, 18, y + 12 + i * 6)
+  );
+  y += policyBoxH + 6;
+
+  // ── FOOTER ────────────────────────────────────────────────────────────────
+  const footerY = Math.max(y + 4, pageH - 18);
+  doc.setFillColor(26, 26, 26);
+  doc.rect(4, footerY, pageW - 4, pageH - footerY, 'F');
+  doc.setFontSize(7.5);
+  doc.setFont('helvetica', 'bold');
+  doc.setTextColor(255, 255, 255);
+  doc.text('Thank you for shopping with TAGS!', 14, footerY + 7);
+  doc.setFont('helvetica', 'normal');
+  doc.setTextColor(160, 160, 160);
+  doc.text(
+    'TAGS · Hathipole, Udaipur - 313001 · +91 63500 21226 · tags.udr@gmail.com · www.ta-gs.online',
+    14, footerY + 13
+  );
+  doc.setTextColor(250, 86, 0);
+  doc.setFont('helvetica', 'bold');
+  doc.text('ta-gs.online', pageW - 12, footerY + 7, { align: 'right' });
 
   const pdfBlob = doc.output('blob');
   return { orderId, pdfBlob };
 };
 
 export const getWhatsAppLink = (phoneNumber: string, orderId: string, name: string) => {
-  const message = `Hello TAGS! 👋\n\nI would like to place an order.\nMy Order ID is: *${orderId}*\nName: ${name}\n\nI have generated the order PDF and will attach it to this chat now.\nPlease let me know the payment details and delivery confirmation.`;
+  const message = `Hello TAGS! 👋\n\nI would like to place an order.\nMy Order ID is: *${orderId}*\nName: ${name}\n\nI have generated the order PDF and will attach it to this chat now.\nPlease confirm payment details and delivery.`;
   return `https://wa.me/${phoneNumber.replace(/[^0-9]/g, '')}?text=${encodeURIComponent(message)}`;
 };
