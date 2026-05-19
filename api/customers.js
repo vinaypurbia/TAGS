@@ -20,6 +20,102 @@ export default async function handler(req, res) {
     const sales = db.collection('sales');
 
     // GET - list all customers or single customer with purchase history
+    // ── ORDERS MODULE — must check BEFORE generic GET handler ──
+    const { module } = req.query;
+    if (module === 'orders') {
+      const ordersCol = db.collection('orders');
+
+      if (req.method === 'GET') {
+        const { customerId, orderId: oid } = req.query;
+        const filter = {};
+        if (customerId) filter.customerId = customerId;
+        if (oid) filter.orderId = oid;
+        const allOrders = await ordersCol.find(filter).sort({ createdAt: -1 }).toArray();
+        return res.status(200).json({ orders: allOrders, total: allOrders.length });
+      }
+
+      if (req.method === 'POST') {
+        const { orderId, customerName, customerPhone, customerEmail, deliveryAddress, items, totalAmount, status } = req.body;
+        if (!customerPhone || !items?.length) return res.status(400).json({ error: 'Phone and items required' });
+
+        const cu = await customers.findOneAndUpdate(
+          { phone: customerPhone },
+          {
+            $set: { name: customerName, email: customerEmail || '', address: deliveryAddress || '', updatedAt: new Date() },
+            $setOnInsert: { phone: customerPhone, tags: [], createdAt: new Date() },
+          },
+          { upsert: true, returnDocument: 'after' }
+        );
+        const customerId = (cu._id || cu.value?._id)?.toString();
+
+        const result = await ordersCol.insertOne({
+          orderId: orderId || `TAGSORD-${Date.now()}`,
+          customerId, customerName, customerPhone,
+          customerEmail: customerEmail || '',
+          deliveryAddress: deliveryAddress || '',
+          items, totalAmount: Number(totalAmount) || 0,
+          status: status || 'pending',
+          createdAt: new Date(), updatedAt: new Date(),
+        });
+
+        // Also write to sales collection so Sales module stays in sync
+        await sales.insertOne({
+          saleNumber: orderId || `SALE-${Date.now().toString().slice(-6)}`,
+          orderId: orderId || result.insertedId.toString(),
+          customerId,
+          customerName, customerPhone,
+          customerEmail: customerEmail || '',
+          customerAddress: deliveryAddress || '',
+          items: items.map(i => ({
+            productId: i.productId || '',
+            productName: i.productName || i.name || '',
+            category: i.category || '',
+            quantity: Number(i.quantity) || 1,
+            price: Number(i.price) || 0,
+            totalPrice: (Number(i.quantity) || 1) * (Number(i.price) || 0),
+          })),
+          subtotal: Number(totalAmount) || 0,
+          discountAmount: 0, taxAmount: 0,
+          totalAmount: Number(totalAmount) || 0,
+          paymentMode: 'whatsapp',
+          status: 'pending',
+          notes: '',
+          date: new Date(), createdAt: new Date(), updatedAt: new Date(),
+        });
+
+        return res.status(201).json({ success: true, _id: result.insertedId, customerId });
+      }
+
+      if (req.method === 'PUT') {
+        const { id, status, notes, deliveryDate, whatsappMessage } = req.body;
+        if (!id) return res.status(400).json({ error: 'ID required' });
+        const updateFields = { updatedAt: new Date() };
+        if (status !== undefined) updateFields.status = status;
+        if (notes !== undefined) updateFields.notes = notes;
+        if (deliveryDate !== undefined) updateFields.deliveryDate = deliveryDate;
+        if (whatsappMessage !== undefined) updateFields.whatsappMessage = whatsappMessage;
+        await ordersCol.updateOne({ _id: new ObjectId(id) }, { $set: updateFields });
+        // Sync status to sales collection
+        if (status) {
+          const order = await ordersCol.findOne({ _id: new ObjectId(id) });
+          if (order?.orderId) {
+            await sales.updateOne({ orderId: order.orderId }, { $set: { status, updatedAt: new Date() } });
+          }
+        }
+        return res.status(200).json({ success: true });
+      }
+
+      if (req.method === 'DELETE') {
+        const { id } = req.body;
+        if (!id) return res.status(400).json({ error: 'ID required' });
+        await ordersCol.deleteOne({ _id: new ObjectId(id) });
+        return res.status(200).json({ success: true });
+      }
+
+      return res.status(405).json({ error: 'Method not allowed' });
+    }
+
+    // ── CUSTOMERS (non-orders) ────────────────────────────────
     if (req.method === 'GET') {
       const { id, phone } = req.query;
 
@@ -78,105 +174,6 @@ export default async function handler(req, res) {
         customers: enriched,
         summary: { totalCustomers, totalRevenue, repeatCustomers }
       });
-    }
-
-    // ── ORDERS MODULE (all methods) ────────────────────────────
-    const { module } = req.query;
-    if (module === 'orders') {
-      const ordersCol = db.collection('orders');
-
-      if (req.method === 'GET') {
-        const { customerId, orderId: oid } = req.query;
-        const filter = {};
-        if (customerId) filter.customerId = customerId;
-        if (oid) filter.orderId = oid;
-        const allOrders = await ordersCol.find(filter).sort({ createdAt: -1 }).toArray();
-        return res.status(200).json({ orders: allOrders, total: allOrders.length });
-      }
-
-      if (req.method === 'POST') {
-        const { orderId, customerName, customerPhone, customerEmail, deliveryAddress, items, totalAmount, status } = req.body;
-        if (!customerPhone || !items?.length) return res.status(400).json({ error: 'Phone and items required' });
-
-        // Upsert customer by phone
-        const cu = await customers.findOneAndUpdate(
-          { phone: customerPhone },
-          {
-            $set: { name: customerName, email: customerEmail || '', address: deliveryAddress || '', updatedAt: new Date() },
-            $setOnInsert: { phone: customerPhone, tags: [], createdAt: new Date() },
-          },
-          { upsert: true, returnDocument: 'after' }
-        );
-        const customerId = (cu._id || cu.value?._id)?.toString();
-
-        const result = await ordersCol.insertOne({
-          orderId: orderId || `TAGSORD-${Date.now()}`,
-          customerId, customerName, customerPhone,
-          customerEmail: customerEmail || '',
-          deliveryAddress: deliveryAddress || '',
-          items, totalAmount: Number(totalAmount) || 0,
-          status: status || 'pending',
-          createdAt: new Date(), updatedAt: new Date(),
-        });
-
-        // Also write to sales collection so Sales module stays in sync
-        await sales.insertOne({
-          saleNumber: orderId || `SALE-${Date.now().toString().slice(-6)}`,
-          orderId: orderId || result.insertedId.toString(),
-          customerId,
-          customerName, customerPhone,
-          customerEmail: customerEmail || '',
-          customerAddress: deliveryAddress || '',
-          items: items.map(i => ({
-            productId: i.productId || '',
-            productName: i.productName || i.name || '',
-            category: i.category || '',
-            quantity: Number(i.quantity) || 1,
-            price: Number(i.price) || 0,
-            totalPrice: (Number(i.quantity) || 1) * (Number(i.price) || 0),
-          })),
-          subtotal: Number(totalAmount) || 0,
-          discountAmount: 0, taxAmount: 0,
-          totalAmount: Number(totalAmount) || 0,
-          paymentMode: 'whatsapp',
-          status: 'pending',
-          notes: '',
-          date: new Date(), createdAt: new Date(), updatedAt: new Date(),
-        });
-
-        return res.status(201).json({ success: true, _id: result.insertedId, customerId });
-      }
-
-      if (req.method === 'PUT') {
-        const { id, status, notes, deliveryDate, whatsappMessage } = req.body;
-        if (!id) return res.status(400).json({ error: 'ID required' });
-        const updateFields = { updatedAt: new Date() };
-        if (status !== undefined) updateFields.status = status;
-        if (notes !== undefined) updateFields.notes = notes;
-        if (deliveryDate !== undefined) updateFields.deliveryDate = deliveryDate;
-        if (whatsappMessage !== undefined) updateFields.whatsappMessage = whatsappMessage;
-        await db.collection('orders').updateOne(
-          { _id: new ObjectId(id) },
-          { $set: updateFields }
-        );
-        // Keep sales collection in sync when status changes
-        if (status) {
-          await sales.updateOne(
-            { orderId: (await db.collection('orders').findOne({ _id: new ObjectId(id) }))?.orderId },
-            { $set: { status, updatedAt: new Date() } }
-          );
-        }
-        return res.status(200).json({ success: true });
-      }
-
-      if (req.method === 'DELETE') {
-        const { id } = req.body;
-        if (!id) return res.status(400).json({ error: 'ID required' });
-        await db.collection('orders').deleteOne({ _id: new ObjectId(id) });
-        return res.status(200).json({ success: true });
-      }
-
-      return res.status(405).json({ error: 'Method not allowed' });
     }
 
     // POST - create new customer (or upsert by phone)
