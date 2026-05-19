@@ -119,23 +119,53 @@ export default async function handler(req, res) {
           createdAt: new Date(), updatedAt: new Date(),
         });
 
+        // Also write to sales collection so Sales module stays in sync
         await sales.insertOne({
-          customerId, customerName, customerPhone,
+          saleNumber: orderId || `SALE-${Date.now().toString().slice(-6)}`,
           orderId: orderId || result.insertedId.toString(),
-          items, totalAmount: Number(totalAmount) || 0,
-          date: new Date(), createdAt: new Date(),
+          customerId,
+          customerName, customerPhone,
+          customerEmail: customerEmail || '',
+          customerAddress: deliveryAddress || '',
+          items: items.map(i => ({
+            productId: i.productId || '',
+            productName: i.productName || i.name || '',
+            category: i.category || '',
+            quantity: Number(i.quantity) || 1,
+            price: Number(i.price) || 0,
+            totalPrice: (Number(i.quantity) || 1) * (Number(i.price) || 0),
+          })),
+          subtotal: Number(totalAmount) || 0,
+          discountAmount: 0, taxAmount: 0,
+          totalAmount: Number(totalAmount) || 0,
+          paymentMode: 'whatsapp',
+          status: 'pending',
+          notes: '',
+          date: new Date(), createdAt: new Date(), updatedAt: new Date(),
         });
 
         return res.status(201).json({ success: true, _id: result.insertedId, customerId });
       }
 
       if (req.method === 'PUT') {
-        const { id, status, notes } = req.body;
+        const { id, status, notes, deliveryDate, whatsappMessage } = req.body;
         if (!id) return res.status(400).json({ error: 'ID required' });
+        const updateFields = { updatedAt: new Date() };
+        if (status !== undefined) updateFields.status = status;
+        if (notes !== undefined) updateFields.notes = notes;
+        if (deliveryDate !== undefined) updateFields.deliveryDate = deliveryDate;
+        if (whatsappMessage !== undefined) updateFields.whatsappMessage = whatsappMessage;
         await db.collection('orders').updateOne(
           { _id: new ObjectId(id) },
-          { $set: { status, notes: notes || '', updatedAt: new Date() } }
+          { $set: updateFields }
         );
+        // Keep sales collection in sync when status changes
+        if (status) {
+          await sales.updateOne(
+            { orderId: (await db.collection('orders').findOne({ _id: new ObjectId(id) }))?.orderId },
+            { $set: { status, updatedAt: new Date() } }
+          );
+        }
         return res.status(200).json({ success: true });
       }
 
