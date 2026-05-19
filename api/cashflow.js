@@ -31,7 +31,53 @@ export default async function handler(req, res) {
     // ?month=2026-05       → specific month
     // ─────────────────────────────────────────────
     if (req.method === 'GET') {
-      const { summary, type, category, from, to, month } = req.query;
+      const { summary, type, category, from, to, month, collectorBalances } = req.query;
+
+      // ── COLLECTOR BALANCES ──────────────────────────────────────
+      // Returns current cash-in-hand per collector (collections minus handovers)
+      if (collectorBalances === 'true') {
+        // All delivery collections
+        const collections = await cashFlow
+          .find({ category: 'delivery_collection' })
+          .toArray();
+
+        // All handovers (debits against collectors)
+        const handovers = await cashFlow
+          .find({ category: 'cash_handover' })
+          .toArray();
+
+        // Group collections by collector key
+        const balanceMap: Record<string, any> = {};
+        collections.forEach((e: any) => {
+          const key = `${e.collectedBy}::${e.collectorName || ''}`;
+          if (!balanceMap[key]) {
+            balanceMap[key] = {
+              collectedBy: e.collectedBy,
+              collectorName: e.collectorName || null,
+              balance: 0,
+              collected: 0,
+              handedOver: 0,
+              count: 0,
+            };
+          }
+          balanceMap[key].balance += e.amount;
+          balanceMap[key].collected += e.amount;
+          balanceMap[key].count += 1;
+        });
+
+        // Subtract handovers
+        handovers.forEach((e: any) => {
+          const key = `${e.collectedBy}::${e.collectorName || ''}`;
+          if (balanceMap[key]) {
+            balanceMap[key].balance -= e.amount;
+            balanceMap[key].handedOver += e.amount;
+          }
+        });
+
+        // Return only those with a positive balance
+        const result = Object.values(balanceMap).filter((c: any) => c.balance > 0);
+        return res.status(200).json(result);
+      }
 
       // Build date filter
       const filter = {};
@@ -114,10 +160,16 @@ export default async function handler(req, res) {
         description = '',
         date,
         referenceId = null,
+        referenceType = null,
+        paymentMode = null,
+        collectedBy = null,
+        collectorName = null,
+        orderId = null,
+        handoverTo = null,
       } = req.body;
 
-      if (!type || !['income', 'expense'].includes(type)) {
-        return res.status(400).json({ error: 'type must be "income" or "expense"' });
+      if (!type || !['income', 'expense', 'transfer'].includes(type)) {
+        return res.status(400).json({ error: 'type must be "income", "expense", or "transfer"' });
       }
       if (!amount || isNaN(Number(amount)) || Number(amount) <= 0) {
         return res.status(400).json({ error: 'amount must be a positive number' });
@@ -129,6 +181,12 @@ export default async function handler(req, res) {
         amount: Number(amount),
         description,
         referenceId,
+        referenceType,
+        paymentMode,
+        collectedBy,
+        collectorName,
+        orderId,
+        handoverTo,
         date: date ? new Date(date) : new Date(),
         createdAt: new Date(),
       };
