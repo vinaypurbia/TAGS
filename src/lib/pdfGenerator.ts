@@ -376,7 +376,28 @@ export const generateOrderPDF = async (
   return { orderId, pdfBlob };
 };
 
-export const getWhatsAppLink = (phoneNumber: string, orderId: string, name: string) => {
-  const message = `Hello TAGS! 👋\n\nI would like to place an order.\nMy Order ID is: *${orderId}*\nName: ${name}\n\nI have generated the order PDF and will attach it to this chat now.\nPlease confirm payment details and delivery.`;
+export const getWhatsAppLink = (
+  phoneNumber: string,
+  orderId: string,
+  name: string,
+  items?: { name: string; quantity: number; price: number }[],
+  total?: number
+) => {
+  const itemLines = items && items.length > 0
+    ? items.map(i => `  - ${i.name} x${i.quantity} = Rs. ${(i.price * i.quantity).toFixed(2)}`).join('\n')
+    : '';
+
+  const message = [
+    `Hello TAGS! I would like to place an order.`,
+    ``,
+    `*Order ID:* ${orderId}`,
+    `*Name:* ${name}`,
+    `*Status:* PENDING CONFIRMATION`,
+    total ? `*Total:* Rs. ${total.toFixed(2)}` : '',
+    itemLines ? `\n*Items Ordered:*\n${itemLines}` : '',
+    ``,
+    `I have attached the order PDF. Please confirm payment details and delivery date.`,
+  ].filter(Boolean).join('\n');
+
   return `https://wa.me/${phoneNumber.replace(/[^0-9]/g, '')}?text=${encodeURIComponent(message)}`;
 };
