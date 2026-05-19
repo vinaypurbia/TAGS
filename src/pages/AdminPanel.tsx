@@ -337,7 +337,8 @@ export function AdminPanel() {
       fetch('/api/customers').then(r => r.json()).catch(() => ({})),
       fetch('/api/inventory').then(r => r.json()).catch(() => []),
       fetch('/api/sales?status=pending').then(r => r.json()).catch(() => ({})),
-    ]).then(([sales, cash, stockShortage, customers, inventory, pendingSales]) => {
+      fetch('/api/customers?module=orders').then(r => r.json()).catch(() => ({})),
+    ]).then(([sales, cash, stockShortage, customers, inventory, pendingSales, ordersData]) => {
       const invArr = Array.isArray(inventory) ? inventory : [];
       setDashStats({
         revenue:       sales?.summary?.totalRevenue  || 0,
@@ -350,7 +351,25 @@ export function AdminPanel() {
         outOfStock:    invArr.filter((p: any) =>  p.stock?.trackInventory && !p.stock?.isInStock).length,
       });
       setShortage(Array.isArray(stockShortage) ? stockShortage.slice(0, 5) : []);
-      const pending = Array.isArray(pendingSales?.sales) ? pendingSales.sales : [];
+      // Pending sales (not yet confirmed) + confirmed orders (confirmed but not delivered)
+      const pendingSalesArr = Array.isArray(pendingSales?.sales) ? pendingSales.sales : [];
+      const confirmedOrders = (ordersData?.orders || [])
+        .filter((o: any) => o.status === 'confirmed')
+        .map((o: any) => ({
+          _id: o._id,
+          customerName: o.customerName,
+          customerPhone: o.customerPhone,
+          orderId: o.orderId,
+          totalAmount: o.totalAmount,
+          date: o.createdAt,
+          status: o.status,
+          deliveryDate: o.deliveryDate,
+          items: o.items,
+          saleNumber: o.orderId,
+          paymentStatus: o.paymentStatus,
+        }));
+      // Merge: confirmed orders first (they need delivery), then pending sales
+      const pending = [...confirmedOrders, ...pendingSalesArr];
       setPendingOrders(pending.slice(0, 15));
     }).finally(() => setDashLoading(false));
   }, [isAuthenticated]);
@@ -739,11 +758,19 @@ export function AdminPanel() {
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2 flex-wrap">
                             <p className="text-sm font-black text-gray-900">{order.customerName || 'Walk-in Customer'}</p>
-                            <span className="text-[9px] bg-yellow-100 text-yellow-700 font-black uppercase px-1.5 py-0.5 rounded-full">Pending</span>
+                            {order.status === 'confirmed'
+                              ? <span className="text-[9px] bg-blue-100 text-blue-700 font-black uppercase px-1.5 py-0.5 rounded-full">Confirmed</span>
+                              : <span className="text-[9px] bg-yellow-100 text-yellow-700 font-black uppercase px-1.5 py-0.5 rounded-full">Pending</span>
+                            }
                           </div>
                           <p className="text-[10px] text-gray-400 mt-0.5">
                             {order.saleNumber} · {order.customerPhone || 'No phone'} · {new Date(order.date).toLocaleDateString('en-IN')}
                           </p>
+                          {order.deliveryDate && (
+                            <p className="text-[10px] text-blue-500 font-bold mt-0.5">
+                              Delivery: {new Date(order.deliveryDate).toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' })}
+                            </p>
+                          )}
                           <div className="flex flex-wrap gap-1 mt-1">
                             {order.items?.slice(0, 3).map((item: any, i: number) => (
                               <span key={i} className="text-[9px] bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded-full">
