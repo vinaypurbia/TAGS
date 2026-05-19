@@ -18,10 +18,22 @@ export default async function handler(req, res) {
     const db = dbClient.db('tagsdb');
     const customers = db.collection('customers');
     const sales = db.collection('sales');
+    const orders = db.collection('orders');
+    const { module } = req.query;
 
     // GET - list all customers or single customer with purchase history
     if (req.method === 'GET') {
       const { id, phone } = req.query;
+
+      // ── ORDERS MODULE (?module=orders) ──────────────────────
+      if (module === 'orders') {
+        const { customerId, orderId: oid } = req.query;
+        const filter = {};
+        if (customerId) filter.customerId = customerId;
+        if (oid) filter.orderId = oid;
+        const allOrders = await orders.find(filter).sort({ createdAt: -1 }).toArray();
+        return res.status(200).json({ orders: allOrders, total: allOrders.length });
+      }
 
       // Single customer by ID with full purchase history
       if (id) {
@@ -125,6 +137,69 @@ export default async function handler(req, res) {
       if (!id) return res.status(400).json({ error: 'ID required' });
       await customers.deleteOne({ _id: new ObjectId(id) });
       return res.status(200).json({ success: true });
+    }
+
+    // ── ORDERS MODULE — POST/PUT/DELETE (?module=orders) ──────
+    if (module === 'orders') {
+      if (req.method === 'POST') {
+        const {
+          orderId, customerName, customerPhone, customerEmail,
+          deliveryAddress, items, totalAmount, status,
+        } = req.body;
+        if (!customerPhone || !items?.length)
+          return res.status(400).json({ error: 'Phone and items required' });
+
+        // Upsert customer by phone
+        const cu = await customers.findOneAndUpdate(
+          { phone: customerPhone },
+          {
+            $set: { name: customerName, email: customerEmail || '', address: deliveryAddress || '', updatedAt: new Date() },
+            $setOnInsert: { phone: customerPhone, tags: [], createdAt: new Date() },
+          },
+          { upsert: true, returnDocument: 'after' }
+        );
+        const customerId = (cu._id || cu.value?._id)?.toString();
+
+        // Save order
+        const result = await orders.insertOne({
+          orderId: orderId || `TAGSORD-${Date.now()}`,
+          customerId,
+          customerName, customerPhone,
+          customerEmail: customerEmail || '',
+          deliveryAddress: deliveryAddress || '',
+          items,
+          totalAmount: Number(totalAmount) || 0,
+          status: status || 'pending',
+          createdAt: new Date(), updatedAt: new Date(),
+        });
+
+        // Mirror to sales for business reports
+        await sales.insertOne({
+          customerId, customerName, customerPhone,
+          orderId: orderId || result.insertedId.toString(),
+          items, totalAmount: Number(totalAmount) || 0,
+          date: new Date(), createdAt: new Date(),
+        });
+
+        return res.status(201).json({ success: true, _id: result.insertedId, customerId });
+      }
+
+      if (req.method === 'PUT') {
+        const { id, status, notes } = req.body;
+        if (!id) return res.status(400).json({ error: 'ID required' });
+        await orders.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: { status, notes: notes || '', updatedAt: new Date() } }
+        );
+        return res.status(200).json({ success: true });
+      }
+
+      if (req.method === 'DELETE') {
+        const { id } = req.body;
+        if (!id) return res.status(400).json({ error: 'ID required' });
+        await orders.deleteOne({ _id: new ObjectId(id) });
+        return res.status(200).json({ success: true });
+      }
     }
 
     return res.status(405).json({ error: 'Method not allowed' });
