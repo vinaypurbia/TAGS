@@ -87,19 +87,36 @@ export default async function handler(req, res) {
       }
 
       if (req.method === 'PUT') {
-        const { id, status, notes, deliveryDate, whatsappMessage } = req.body;
+        const { id, status, notes, deliveryDate, whatsappMessage, paymentMode, amountCollected, collectedBy, collectorName } = req.body;
         if (!id) return res.status(400).json({ error: 'ID required' });
         const updateFields = { updatedAt: new Date() };
         if (status !== undefined) updateFields.status = status;
         if (notes !== undefined) updateFields.notes = notes;
         if (deliveryDate !== undefined) updateFields.deliveryDate = deliveryDate;
         if (whatsappMessage !== undefined) updateFields.whatsappMessage = whatsappMessage;
+
+        // Payment collection fields (set when marking delivered)
+        if (status === 'delivered') {
+          updateFields.deliveredAt = new Date();
+          if (paymentMode !== undefined) updateFields.paymentMode = paymentMode;
+          if (amountCollected !== undefined) updateFields.amountCollected = Number(amountCollected) || 0;
+          if (collectedBy !== undefined) updateFields.collectedBy = collectedBy;
+          if (collectorName !== undefined) updateFields.collectorName = collectorName || null;
+          updateFields.paymentStatus = paymentMode === 'already_paid' ? 'paid' : 'collected';
+        }
+
         await ordersCol.updateOne({ _id: new ObjectId(id) }, { $set: updateFields });
+
         // Sync status to sales collection
         if (status) {
           const order = await ordersCol.findOne({ _id: new ObjectId(id) });
           if (order?.orderId) {
-            await sales.updateOne({ orderId: order.orderId }, { $set: { status, updatedAt: new Date() } });
+            const salesSync = { status, updatedAt: new Date() };
+            if (status === 'delivered' && paymentMode) {
+              salesSync.paymentMode = paymentMode === 'already_paid' ? 'online' : paymentMode;
+              salesSync.paymentStatus = paymentMode === 'already_paid' ? 'paid' : 'collected';
+            }
+            await sales.updateOne({ orderId: order.orderId }, { $set: salesSync });
           }
         }
         return res.status(200).json({ success: true });
