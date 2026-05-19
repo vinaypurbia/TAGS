@@ -398,6 +398,7 @@ function OrdersModule({ showMsg }: any) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [deliveryDates, setDeliveryDates] = useState<Record<string, string>>({});
   const [sorryMsgs, setSorryMsgs] = useState<Record<string, string>>({});
+  const [paymentStatuses, setPaymentStatuses] = useState<Record<string, string>>({});
   const [products, setProducts] = useState<any[]>([]);
 
   const fetchOrders = () => {
@@ -435,22 +436,25 @@ function OrdersModule({ showMsg }: any) {
   const confirmOrder = (order: any) => {
     const deliveryDate = deliveryDates[order._id] || '';
     if (!deliveryDate) { showMsg('Please select a delivery date first.', 'error'); return; }
+    const paymentStatus = paymentStatuses[order._id] || 'pending';
     const dateFormatted = new Date(deliveryDate).toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
-    const itemLines = (order.items || []).map((i: any) => `  - ${i.productName || i.name} x${i.quantity}`).join('\n');
+    const itemLines = (order.items || []).map((i: any) => `  - ${i.productName || i.name} x${i.quantity} = Rs. ${((i.price || 0) * i.quantity).toFixed(2)}`).join('\n');
+    const paymentLabel = paymentStatus === 'paid' ? 'PAID - Thank you!' : paymentStatus === 'partial' ? 'PARTIAL - Balance due on delivery' : 'PENDING - Pay on delivery/collection';
     const message = [
-      `Hello ${order.customerName}! 🎉`,
+      `Hello ${order.customerName}!`,
       ``,
-      `Your order *${order.orderId}* has been *CONFIRMED*!`,
+      `Your order *${order.orderId}* has been *CONFIRMED*.`,
       ``,
-      `*Items:*`,
+      `*Items Ordered:*`,
       itemLines,
-      `*Total:* Rs. ${Number(order.totalAmount).toFixed(2)}`,
+      `*Order Total:* Rs. ${Number(order.totalAmount).toFixed(2)}`,
+      `*Payment Status:* ${paymentLabel}`,
       ``,
       `*Estimated Delivery:* ${dateFormatted}`,
       ``,
-      `We will contact you before delivery. Thank you for shopping with *TAGS*! 🧡`,
+      `We will contact you before delivery. Thank you for shopping with TAGS!`,
     ].join('\n');
-    updateStatus(order, 'confirmed', { deliveryDate });
+    updateStatus(order, 'confirmed', { deliveryDate, paymentStatus });
     openWhatsApp(order.customerPhone, message);
   };
 
@@ -564,13 +568,29 @@ function OrdersModule({ showMsg }: any) {
                       {/* CONFIRM with delivery date */}
                       <div className="bg-green-50 border border-green-200 rounded-xl p-3 space-y-2">
                         <p className="text-xs font-black uppercase tracking-widest text-green-700">Confirm & Set Delivery Date</p>
-                        <input
-                          type="date"
-                          value={deliveryDates[order._id] || ''}
-                          onChange={e => setDeliveryDates(d => ({ ...d, [order._id]: e.target.value }))}
-                          min={new Date().toISOString().split('T')[0]}
-                          className="w-full border-2 border-green-200 rounded-lg px-3 py-2 text-sm font-bold focus:border-green-500 outline-none bg-white"
-                        />
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label className="block text-[10px] font-black uppercase tracking-widest text-green-600 mb-1">Delivery Date</label>
+                            <input
+                              type="date"
+                              value={deliveryDates[order._id] || ''}
+                              onChange={e => setDeliveryDates(d => ({ ...d, [order._id]: e.target.value }))}
+                              min={new Date().toISOString().split('T')[0]}
+                              className="w-full border-2 border-green-200 rounded-lg px-3 py-2 text-sm font-bold focus:border-green-500 outline-none bg-white"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[10px] font-black uppercase tracking-widest text-green-600 mb-1">Payment Status</label>
+                            <select
+                              value={paymentStatuses[order._id] || 'pending'}
+                              onChange={e => setPaymentStatuses(p => ({ ...p, [order._id]: e.target.value }))}
+                              className="w-full border-2 border-green-200 rounded-lg px-3 py-2 text-sm font-bold focus:border-green-500 outline-none bg-white">
+                              <option value="pending">Pending (COD)</option>
+                              <option value="partial">Partial Paid</option>
+                              <option value="paid">Fully Paid</option>
+                            </select>
+                          </div>
+                        </div>
                         <button onClick={() => confirmOrder(order)}
                           className="w-full bg-green-500 hover:bg-green-600 text-white font-black text-xs uppercase tracking-widest py-2.5 rounded-lg transition flex items-center justify-center gap-2">
                           <Check className="w-4 h-4" /> Confirm Order & WhatsApp Customer
