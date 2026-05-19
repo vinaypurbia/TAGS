@@ -18,7 +18,7 @@ const resolvePrice = (product: any): number => {
 
 export function OrderSummary() {
   const { items, updateQuantity, removeItem, clearCart } = useCart();
-  const [formData, setFormData] = useState({ name: '', phone: '', address: '' });
+  const [formData, setFormData] = useState({ name: '', phone: '', email: '', address: '' });
   const [isSending, setIsSending] = useState(false);
 
   const subtotal = items.reduce((sum, item) => sum + (resolvePrice(item.product) * item.quantity), 0);
@@ -45,6 +45,48 @@ export function OrderSummary() {
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
+
+      // Auto-register customer + save order to DB (fire and forget)
+      try {
+        // Upsert customer by phone
+        await fetch('/api/customers', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: formData.name,
+            phone: formData.phone,
+            email: formData.email || '',
+            address: formData.address || '',
+          }),
+        });
+
+        // Save order under customer
+        await fetch('/api/customers?module=orders', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            orderId,
+            customerName: formData.name,
+            customerPhone: formData.phone,
+            customerEmail: formData.email || '',
+            deliveryAddress: formData.address || '',
+            items: items.map(i => ({
+              productId: i.product.id,
+              productName: i.product.name,
+              category: i.product.category,
+              image: i.product.image,
+              price: resolvePrice(i.product),
+              quantity: i.quantity,
+              subtotal: resolvePrice(i.product) * i.quantity,
+            })),
+            totalAmount: items.reduce((s, i) => s + resolvePrice(i.product) * i.quantity, 0),
+            status: 'pending',
+            createdAt: new Date().toISOString(),
+          }),
+        });
+      } catch (_) {
+        // Silent fail — order still goes through WhatsApp
+      }
 
       // Open WhatsApp after short delay
       setTimeout(() => {
@@ -167,6 +209,15 @@ export function OrderSummary() {
                 </label>
                 <input type="tel" name="phone" required value={formData.phone} onChange={handleInputChange}
                   placeholder="+91 00000 00000"
+                  className="w-full p-3 bg-gray-50 border border-gray-300 rounded-lg font-bold text-sm outline-none focus:border-[#FA5600] transition-colors" />
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-black tracking-widest uppercase mb-2">
+                  Email Address <span className="text-gray-400 font-normal">(Optional)</span>
+                </label>
+                <input type="email" name="email" value={formData.email} onChange={handleInputChange}
+                  placeholder="you@example.com"
                   className="w-full p-3 bg-gray-50 border border-gray-300 rounded-lg font-bold text-sm outline-none focus:border-[#FA5600] transition-colors" />
               </div>
 
