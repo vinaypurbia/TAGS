@@ -294,6 +294,33 @@ export function AdminPanel() {
   const [shortage,      setShortage]      = useState<any[]>([]);
   const [pendingOrders, setPendingOrders] = useState<any[]>([]);
 
+  // Collector cash balances
+  const [collectorBalances, setCollectorBalances] = useState<any[]>([]);
+
+  // Cash handover modal
+  const [handoverModal, setHandoverModal] = useState<{
+    open: boolean;
+    collector: any | null;
+    amount: string;
+    submitting: boolean;
+  }>({ open: false, collector: null, amount: '', submitting: false });
+
+  // Payment collection modal
+  const [payModal, setPayModal] = useState<{
+    open: boolean;
+    order: any | null;
+    paymentMode: 'cash' | 'upi' | 'already_paid';
+    amountCollected: string;
+    collectedBy: 'owner' | 'delivery_boy' | 'third_party';
+    collectorName: string;
+    submitting: boolean;
+  }>({
+    open: false, order: null,
+    paymentMode: 'cash', amountCollected: '',
+    collectedBy: 'owner', collectorName: '',
+    submitting: false,
+  });
+
   useEffect(() => {
     if (sessionStorage.getItem(SESSION_KEY) === 'true') setIsAuthenticated(true);
   }, []);
@@ -371,7 +398,10 @@ export function AdminPanel() {
       // Merge: confirmed orders first (they need delivery), then pending sales
       const pending = [...confirmedOrders, ...pendingSalesArr];
       setPendingOrders(pending.slice(0, 15));
-    }).finally(() => setDashLoading(false));
+    }).finally(() => {
+      setDashLoading(false);
+      fetchCollectorBalances();
+    });
   }, [isAuthenticated]);
 
   const toggleVisibility = (id: string) => {
@@ -468,9 +498,107 @@ export function AdminPanel() {
     } catch { alert('Failed to save.'); } finally { setCatSaving(null); }
   };
 
-  const confirmOrder = async (id: string) => {
-    await fetch('/api/sales', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id, status: 'confirmed' }) });
-    setPendingOrders(prev => prev.filter(o => o._id !== id));
+  const fetchCollectorBalances = async () => {
+    try {
+      const data = await fetch('/api/cashflow?collectorBalances=true').then(r => r.json());
+      setCollectorBalances(Array.isArray(data) ? data : []);
+    } catch {}
+  };
+
+  const openPayModal = (order: any) => {
+    setPayModal({
+      open: true, order,
+      paymentMode: order.paymentStatus === 'paid' ? 'already_paid' : 'cash',
+      amountCollected: String(order.balanceDue > 0 ? order.balanceDue : order.totalAmount || ''),
+      collectedBy: 'owner', collectorName: '',
+      submitting: false,
+    });
+  };
+
+  const handleDelivered = async () => {
+    const { order, paymentMode, amountCollected, collectedBy, collectorName } = payModal;
+    if (!order) return;
+    if (paymentMode !== 'already_paid' && (!amountCollected || isNaN(Number(amountCollected)) || Number(amountCollected) <= 0)) {
+      alert('Please enter a valid amount collected.'); return;
+    }
+    if ((collectedBy === 'delivery_boy' || collectedBy === 'third_party') && !collectorName.trim()) {
+      alert('Please enter the collector\'s name.'); return;
+    }
+    setPayModal(p => ({ ...p, submitting: true }));
+    try {
+      // 1. Mark order as delivered
+      await fetch('/api/customers?module=orders', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: order._id, status: 'delivered',
+          paymentMode, amountCollected: Number(amountCollected) || 0,
+          collectedBy, collectorName,
+        }),
+      });
+
+      // 2. Post to cashflow if money was collected now
+      if (paymentMode !== 'already_paid') {
+        await fetch('/api/cashflow', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: 'income',
+            category: 'delivery_collection',
+            amount: Number(amountCollected),
+            description: `COD collected – ${order.customerName} (${order.orderId || order.saleNumber})`,
+            paymentMode,
+            referenceId: order._id,
+            referenceType: 'order',
+            collectedBy,
+            collectorName: collectorName || null,
+            orderId: order.orderId || order.saleNumber,
+            date: new Date().toISOString(),
+          }),
+        });
+      }
+
+      setPendingOrders(prev => prev.filter(o => o._id !== order._id));
+      setPayModal(p => ({ ...p, open: false, order: null, submitting: false }));
+      fetchCollectorBalances();
+    } catch {
+      setPayModal(p => ({ ...p, submitting: false }));
+      alert('Something went wrong. Please try again.');
+    }
+  };
+
+  const handleHandover = async () => {
+    const { collector, amount } = handoverModal;
+    if (!collector) return;
+    if (!amount || isNaN(Number(amount)) || Number(amount) <= 0) {
+      alert('Please enter a valid amount.'); return;
+    }
+    if (Number(amount) > collector.balance) {
+      alert(`Cannot hand over more than the balance of ₹${collector.balance.toLocaleString('en-IN')}.`); return;
+    }
+    setHandoverModal(p => ({ ...p, submitting: true }));
+    try {
+      await fetch('/api/cashflow', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'transfer',
+          category: 'cash_handover',
+          amount: Number(amount),
+          description: `Cash handover – ${collector.collectorName || collector.collectedBy} → Owner`,
+          paymentMode: 'cash',
+          collectedBy: collector.collectedBy,
+          collectorName: collector.collectorName || null,
+          handoverTo: 'owner',
+          date: new Date().toISOString(),
+        }),
+      });
+      setHandoverModal({ open: false, collector: null, amount: '', submitting: false });
+      fetchCollectorBalances();
+    } catch {
+      setHandoverModal(p => ({ ...p, submitting: false }));
+      alert('Something went wrong. Please try again.');
+    }
   };
 
   // ── PASSWORD SCREEN ───────────────────────────────────────────────────────
@@ -786,11 +914,14 @@ export function AdminPanel() {
                           <p className="font-black text-sm text-[#FA5600]">₹{Number(order.totalAmount || 0).toLocaleString('en-IN')}</p>
                           <div className="flex gap-1.5 justify-end">
                             {order.customerPhone && (
-                              <a href={`https://wa.me/${order.customerPhone.replace(/[^0-9]/g, '')}`}
+                              <a
+                                href={`https://wa.me/${order.customerPhone.replace(/[^0-9]/g, '')}?text=${encodeURIComponent(
+                                  `Hello ${order.customerName}! 👋\n\nYour order *${order.orderId || order.saleNumber}* is out for delivery and will reach you shortly.\n\n*Amount to collect:* ₹${Number(order.balanceDue > 0 ? order.balanceDue : order.totalAmount || 0).toLocaleString('en-IN')}\n\nPlease keep the amount ready. Thank you for shopping with TAGS! 🙏`
+                                )}`}
                                 target="_blank" rel="noopener noreferrer"
                                 className="text-[10px] bg-[#25D366] text-white font-black px-2 py-0.5 rounded-full hover:bg-[#20bd5a] transition">WA</a>
                             )}
-                            <button onClick={() => confirmOrder(order._id)}
+                            <button onClick={() => openPayModal(order)}
                               className="text-[10px] bg-green-500 text-white font-black px-2 py-0.5 rounded-full hover:bg-green-600 transition">✓ Done</button>
                           </div>
                         </div>
@@ -807,6 +938,48 @@ export function AdminPanel() {
                   </div>
                 )}
               </div>
+
+              {/* ── CASH IN HAND ── */}
+              {collectorBalances.length > 0 && (
+                <div className="bg-white rounded-2xl border-2 border-green-200 shadow-sm overflow-hidden">
+                  <div className="flex items-center justify-between px-5 py-4 bg-green-50 border-b border-green-100">
+                    <div className="flex items-center gap-2">
+                      <span className="w-2.5 h-2.5 bg-green-500 rounded-full" />
+                      <h3 className="font-black text-sm uppercase tracking-widest text-gray-800">Cash in Hand</h3>
+                    </div>
+                    <span className="bg-green-500 text-white text-xs font-black px-2.5 py-0.5 rounded-full">
+                      ₹{collectorBalances.reduce((s, c) => s + c.balance, 0).toLocaleString('en-IN')} total
+                    </span>
+                  </div>
+                  <div className="divide-y divide-gray-100">
+                    {collectorBalances.map((c: any, i: number) => (
+                      <div key={i} className="flex items-center gap-3 px-5 py-3.5">
+                        <div className="w-9 h-9 bg-green-100 rounded-xl flex items-center justify-center shrink-0 font-black text-green-700 text-sm">
+                          {c.collectedBy === 'owner' ? '🏠' : c.collectedBy === 'delivery_boy' ? '🛵' : '📦'}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-black text-gray-900">
+                            {c.collectorName || (c.collectedBy === 'owner' ? 'Owner' : c.collectedBy === 'delivery_boy' ? 'Delivery Boy' : 'Third Party')}
+                          </p>
+                          <p className="text-[10px] text-gray-400 uppercase tracking-widest">
+                            {c.collectedBy.replace('_', ' ')} · {c.count} collection{c.count !== 1 ? 's' : ''}
+                          </p>
+                        </div>
+                        <div className="text-right shrink-0 flex items-center gap-2">
+                          <p className="font-black text-base text-green-600">₹{Number(c.balance).toLocaleString('en-IN')}</p>
+                          {c.collectedBy !== 'owner' && c.balance > 0 && (
+                            <button
+                              onClick={() => setHandoverModal({ open: true, collector: c, amount: String(c.balance), submitting: false })}
+                              className="text-[10px] bg-[#FA5600] text-white font-black px-2.5 py-1 rounded-full hover:bg-[#E04A00] transition whitespace-nowrap">
+                              Hand Over →
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               {shortage.length > 0 && (
                 <div className="bg-white rounded-2xl border border-yellow-200 p-5 shadow-sm">
@@ -1058,6 +1231,164 @@ export function AdminPanel() {
 
         </main>
       </div>
+
+      {/* ── CASH HANDOVER MODAL ──────────────────────────────────────────────── */}
+      {handoverModal.open && handoverModal.collector && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 space-y-5">
+            <div className="flex items-start justify-between">
+              <div>
+                <h3 className="font-black text-gray-900 text-base uppercase tracking-widest">Cash Handover</h3>
+                <p className="text-[11px] text-gray-400 mt-0.5">
+                  {handoverModal.collector.collectorName || handoverModal.collector.collectedBy.replace('_', ' ')} → Owner
+                </p>
+              </div>
+              <button onClick={() => setHandoverModal(p => ({ ...p, open: false }))} className="text-gray-400 hover:text-gray-600">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="bg-green-50 border border-green-200 rounded-xl px-4 py-3">
+              <p className="text-[10px] font-black uppercase tracking-widest text-green-600 mb-1">Current Balance</p>
+              <p className="text-2xl font-black text-green-700">₹{Number(handoverModal.collector.balance).toLocaleString('en-IN')}</p>
+              <p className="text-[10px] text-green-500 mt-0.5">from {handoverModal.collector.count} collection{handoverModal.collector.count !== 1 ? 's' : ''}</p>
+            </div>
+
+            <div className="space-y-1">
+              <p className="text-[10px] font-black uppercase tracking-widest text-gray-500">Amount Being Handed Over (₹)</p>
+              <input
+                type="number" min="0" max={handoverModal.collector.balance}
+                value={handoverModal.amount}
+                onChange={e => setHandoverModal(p => ({ ...p, amount: e.target.value }))}
+                className="w-full border-2 border-gray-200 rounded-xl px-4 py-2.5 text-sm font-bold focus:border-[#FA5600] outline-none"
+                placeholder="Enter amount"
+              />
+              <p className="text-[10px] text-gray-400">This will post a cash transfer entry and reduce their balance.</p>
+            </div>
+
+            <div className="flex gap-3 pt-1">
+              <button onClick={() => setHandoverModal(p => ({ ...p, open: false }))}
+                className="flex-1 py-2.5 rounded-xl border-2 border-gray-200 text-xs font-black text-gray-500 hover:border-gray-300 transition">
+                Cancel
+              </button>
+              <button onClick={handleHandover} disabled={handoverModal.submitting}
+                className="flex-1 py-2.5 rounded-xl bg-green-500 text-white text-xs font-black uppercase tracking-widest hover:bg-green-600 transition disabled:opacity-60">
+                {handoverModal.submitting ? 'Saving...' : '✓ Confirm Handover'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── PAYMENT COLLECTION MODAL ─────────────────────────────────────── */}
+      {payModal.open && payModal.order && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 space-y-5">
+
+            {/* Header */}
+            <div className="flex items-start justify-between">
+              <div>
+                <h3 className="font-black text-gray-900 text-base uppercase tracking-widest">Mark as Delivered</h3>
+                <p className="text-[11px] text-gray-400 mt-0.5">{payModal.order.customerName} · ₹{Number(payModal.order.totalAmount || 0).toLocaleString('en-IN')}</p>
+              </div>
+              <button onClick={() => setPayModal(p => ({ ...p, open: false }))} className="text-gray-400 hover:text-gray-600">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Payment mode */}
+            <div className="space-y-2">
+              <p className="text-[10px] font-black uppercase tracking-widest text-gray-500">Payment Mode</p>
+              <div className="grid grid-cols-3 gap-2">
+                {([
+                  { value: 'cash',         label: '💵 Cash' },
+                  { value: 'upi',          label: '📱 UPI' },
+                  { value: 'already_paid', label: '✅ Pre-paid' },
+                ] as const).map(opt => (
+                  <button key={opt.value}
+                    onClick={() => setPayModal(p => ({ ...p, paymentMode: opt.value }))}
+                    className={`py-2 px-3 rounded-xl text-xs font-black border-2 transition ${payModal.paymentMode === opt.value ? 'border-[#FA5600] bg-orange-50 text-[#FA5600]' : 'border-gray-200 text-gray-500 hover:border-gray-300'}`}>
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Amount — only if not already paid */}
+            {payModal.paymentMode !== 'already_paid' && (
+              <div className="space-y-1">
+                <p className="text-[10px] font-black uppercase tracking-widest text-gray-500">Amount Collected (₹)</p>
+                <input
+                  type="number" min="0"
+                  value={payModal.amountCollected}
+                  onChange={e => setPayModal(p => ({ ...p, amountCollected: e.target.value }))}
+                  className="w-full border-2 border-gray-200 rounded-xl px-4 py-2.5 text-sm font-bold focus:border-[#FA5600] outline-none"
+                  placeholder="Enter amount"
+                />
+              </div>
+            )}
+
+            {/* Collected by */}
+            {payModal.paymentMode !== 'already_paid' && (
+              <div className="space-y-2">
+                <p className="text-[10px] font-black uppercase tracking-widest text-gray-500">Collected By</p>
+                <div className="grid grid-cols-3 gap-2">
+                  {([
+                    { value: 'owner',         label: '🏠 Owner' },
+                    { value: 'delivery_boy',  label: '🛵 Delivery' },
+                    { value: 'third_party',   label: '📦 3rd Party' },
+                  ] as const).map(opt => (
+                    <button key={opt.value}
+                      onClick={() => setPayModal(p => ({ ...p, collectedBy: opt.value }))}
+                      className={`py-2 px-2 rounded-xl text-[11px] font-black border-2 transition ${payModal.collectedBy === opt.value ? 'border-[#FA5600] bg-orange-50 text-[#FA5600]' : 'border-gray-200 text-gray-500 hover:border-gray-300'}`}>
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Collector name — only if not owner */}
+                {(payModal.collectedBy === 'delivery_boy' || payModal.collectedBy === 'third_party') && (
+                  <input
+                    type="text"
+                    value={payModal.collectorName}
+                    onChange={e => setPayModal(p => ({ ...p, collectorName: e.target.value }))}
+                    className="w-full border-2 border-gray-200 rounded-xl px-4 py-2.5 text-sm font-bold focus:border-[#FA5600] outline-none mt-1"
+                    placeholder={payModal.collectedBy === 'delivery_boy' ? "Delivery boy's name" : "Third party name"}
+                  />
+                )}
+              </div>
+            )}
+
+            {/* Pre-paid note */}
+            {payModal.paymentMode === 'already_paid' && (
+              <div className="bg-green-50 border border-green-200 rounded-xl px-4 py-3 text-xs font-bold text-green-700">
+                ✅ This order was already paid online. No cash collection needed — will be marked delivered directly.
+              </div>
+            )}
+
+            {/* Summary line */}
+            {payModal.paymentMode !== 'already_paid' && payModal.amountCollected && (
+              <div className="bg-orange-50 border border-orange-100 rounded-xl px-4 py-2.5 text-xs font-black text-[#FA5600]">
+                ₹{Number(payModal.amountCollected).toLocaleString('en-IN')} via {payModal.paymentMode.toUpperCase()} collected by {payModal.collectedBy === 'owner' ? 'Owner' : payModal.collectorName || '—'} → will post to Cash Flow
+              </div>
+            )}
+
+            {/* Actions */}
+            <div className="flex gap-3 pt-1">
+              <button onClick={() => setPayModal(p => ({ ...p, open: false }))}
+                className="flex-1 py-2.5 rounded-xl border-2 border-gray-200 text-xs font-black text-gray-500 hover:border-gray-300 transition">
+                Cancel
+              </button>
+              <button onClick={handleDelivered} disabled={payModal.submitting}
+                className="flex-1 py-2.5 rounded-xl bg-[#FA5600] text-white text-xs font-black uppercase tracking-widest hover:bg-[#E04A00] transition disabled:opacity-60">
+                {payModal.submitting ? 'Saving...' : '✓ Confirm Delivery'}
+              </button>
+            </div>
+
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }
@@ -1487,139 +1818,4 @@ function CustomersSection() {
               <Users className="w-5 h-5" />
             </div>
             <div>
-              <p className="text-xl font-black text-gray-900">{c.value}</p>
-              <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">{c.label}</p>
-            </div>
-          </div>
-        ))}
-      </div>
-
-      {/* Search */}
-      <div className="relative">
-        <input
-          type="text"
-          value={search}
-          onChange={e => setSearch(e.target.value)}
-          placeholder="Search by name, phone or email..."
-          className="w-full border-2 border-gray-200 rounded-xl px-4 py-3 text-sm font-bold focus:border-[#FA5600] outline-none transition"
-        />
-      </div>
-
-      {/* Customer list */}
-      {loading ? (
-        <div className="space-y-3">{[...Array(4)].map((_, i) => <div key={i} className="h-20 bg-gray-100 rounded-2xl animate-pulse" />)}</div>
-      ) : filtered.length === 0 ? (
-        <div className="bg-white rounded-2xl border border-gray-200 p-12 text-center text-gray-400">
-          <Users className="w-10 h-10 mx-auto mb-3 opacity-30" />
-          <p className="font-black text-sm uppercase tracking-widest">No customers found</p>
-        </div>
-      ) : (
-        <div className="space-y-3">
-          {filtered.map((c: any) => {
-            const isExpanded = expanded === c._id;
-            const isRepeat   = c.totalOrders > 1;
-            return (
-              <div key={c._id} className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
-                {/* Customer row */}
-                <button
-                  onClick={() => toggleCustomer(c._id)}
-                  className="w-full flex items-center gap-4 px-5 py-4 hover:bg-orange-50/40 transition text-left"
-                >
-                  {/* Avatar */}
-                  <div className="w-11 h-11 rounded-xl bg-orange-100 flex items-center justify-center shrink-0 font-black text-[#FA5600] text-lg">
-                    {(c.name || 'C')[0].toUpperCase()}
-                  </div>
-
-                  {/* Info */}
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <p className="font-black text-sm text-gray-900">{c.name}</p>
-                      {isRepeat && (
-                        <span className="text-[9px] bg-green-100 text-green-700 font-black px-2 py-0.5 rounded-full uppercase tracking-wide">
-                          ⭐ Repeat Buyer
-                        </span>
-                      )}
-                    </div>
-                    <p className="text-xs text-gray-400 mt-0.5">
-                      📞 {c.phone}
-                      {c.email && <span className="ml-2">✉️ {c.email}</span>}
-                    </p>
-                    {c.address && <p className="text-[10px] text-gray-400 truncate mt-0.5">📍 {c.address}</p>}
-                  </div>
-
-                  {/* Stats */}
-                  <div className="text-right shrink-0 space-y-0.5">
-                    <p className="font-black text-sm text-[#FA5600]">₹{Number(c.totalSpend || 0).toLocaleString('en-IN')}</p>
-                    <p className="text-[10px] text-gray-400">{c.totalOrders} order{c.totalOrders !== 1 ? 's' : ''}</p>
-                    {c.lastOrderDate && (
-                      <p className="text-[9px] text-gray-300">Last: {new Date(c.lastOrderDate).toLocaleDateString('en-IN')}</p>
-                    )}
-                  </div>
-
-                  {/* Expand arrow */}
-                  <div className={`ml-2 text-gray-300 transition-transform ${isExpanded ? 'rotate-180' : ''}`}>▼</div>
-                </button>
-
-                {/* Order history (expanded) */}
-                {isExpanded && (
-                  <div className="border-t border-gray-100 bg-gray-50 px-5 py-4">
-                    <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-3">Order History</p>
-                    {loadingOrders === c._id ? (
-                      <div className="space-y-2">{[...Array(2)].map((_, i) => <div key={i} className="h-12 bg-gray-200 rounded-xl animate-pulse" />)}</div>
-                    ) : (orders[c._id] || []).length === 0 ? (
-                      <p className="text-xs text-gray-400 text-center py-4">No orders recorded yet</p>
-                    ) : (
-                      <div className="space-y-2">
-                        {(orders[c._id] || []).map((order: any) => (
-                          <div key={order._id} className="bg-white rounded-xl border border-gray-200 px-4 py-3">
-                            <div className="flex items-center justify-between mb-1">
-                              <div className="flex items-center gap-2">
-                                <span className="text-[10px] font-black text-gray-500 uppercase">{order.orderId}</span>
-                                <span className={`text-[9px] font-black px-1.5 py-0.5 rounded-full uppercase ${
-                                  order.status === 'confirmed' ? 'bg-green-100 text-green-700' :
-                                  order.status === 'cancelled' ? 'bg-red-100 text-red-600' :
-                                  'bg-yellow-100 text-yellow-700'
-                                }`}>{order.status || 'pending'}</span>
-                              </div>
-                              <div className="flex items-center gap-2">
-                                <span className="font-black text-sm text-[#FA5600]">₹{Number(order.totalAmount || 0).toLocaleString('en-IN')}</span>
-                                <span className="text-[9px] text-gray-300">{new Date(order.createdAt).toLocaleDateString('en-IN')}</span>
-                              </div>
-                            </div>
-                            <div className="flex flex-wrap gap-1">
-                              {(order.items || []).slice(0, 4).map((item: any, i: number) => (
-                                <span key={i} className="text-[9px] bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded-full">
-                                  {item.productName} ×{item.quantity}
-                                </span>
-                              ))}
-                              {order.items?.length > 4 && (
-                                <span className="text-[9px] text-gray-400">+{order.items.length - 4} more</span>
-                              )}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                    {/* WhatsApp quick link */}
-                    {c.phone && (
-                      <a
-                        href={`https://wa.me/${c.phone.replace(/[^0-9]/g, '')}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="mt-3 inline-flex items-center gap-1.5 text-xs font-black text-[#25D366] hover:underline"
-                      >
-                        💬 Message on WhatsApp
-                      </a>
-                    )}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
-
-export default AdminPanel;
+ 
