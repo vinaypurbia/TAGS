@@ -91,7 +91,13 @@ export function OrderSummary() {
 
       // Open WhatsApp IMMEDIATELY — must happen synchronously after user action
       // to avoid browser popup blocker (setTimeout breaks this)
-      const waLink = getWhatsAppLink('916350021226', orderId, formData.name);
+      const waItems = items.map(i => ({
+        name: i.product.name,
+        quantity: i.quantity,
+        price: resolvePrice(i.product),
+      }));
+      const waTotal = items.reduce((s, i) => s + resolvePrice(i.product) * i.quantity, 0);
+      const waLink = getWhatsAppLink('916350021226', orderId, formData.name, waItems, waTotal);
       window.open(waLink, '_blank');
 
       // Update UI state
