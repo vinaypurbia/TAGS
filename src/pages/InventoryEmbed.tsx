@@ -45,6 +45,7 @@ export function InventoryEmbed() {
   const [message, setMessage] = useState({ text: '', type: '' });
   const [bulkToggling, setBulkToggling] = useState(false);
   const [quickToggling, setQuickToggling] = useState<string | null>(null);
+  const [backfilling, setBackfilling] = useState(false);
 
   const fetchInventory = async () => {
     try {
@@ -190,6 +191,26 @@ export function InventoryEmbed() {
     }
   };
 
+  // Backfill inventory from past delivered orders
+  const backfillDelivered = async () => {
+    if (!confirm('This will deduct quantities from all past delivered orders that have not been deducted yet. Continue?')) return;
+    setBackfilling(true);
+    try {
+      const res = await fetch('/api/inventory?action=backfillDelivered');
+      const data = await res.json();
+      if (data.success) {
+        showMessage(`✅ ${data.message}`, 'success');
+        fetchInventory();
+      } else {
+        showMessage('Backfill failed.', 'error');
+      }
+    } catch {
+      showMessage('Backfill failed. Please try again.', 'error');
+    } finally {
+      setBackfilling(false);
+    }
+  };
+
   // Stats
   const stats = {
     total: products.length,
@@ -270,25 +291,31 @@ export function InventoryEmbed() {
       </div>
 
       {/* Bulk Tracking Actions */}
-      <div className="flex items-center gap-3 bg-gray-50 border-2 border-gray-200 rounded-xl px-4 py-3">
+      <div className="flex items-center gap-3 bg-gray-50 border-2 border-gray-200 rounded-xl px-4 py-3 flex-wrap">
         <div className="flex-1 min-w-0">
           <p className="text-xs font-black uppercase tracking-widest text-gray-600">
             Bulk Tracking — {filtered.length} product{filtered.length !== 1 ? 's' : ''} visible
             {filter !== 'all' && <span className="text-[#FA5600] ml-1">(filtered)</span>}
           </p>
-          <p className="text-[10px] text-gray-400 mt-0.5">Actions apply to currently visible products</p>
+          <p className="text-[10px] text-gray-400 mt-0.5">Enable/disable applies to visible products · Backfill deducts past delivered orders</p>
         </div>
         <button
           onClick={() => bulkToggleTracking(true)}
-          disabled={bulkToggling}
+          disabled={bulkToggling || backfilling}
           className="flex items-center gap-1.5 bg-[#FA5600] text-white text-xs font-black px-3 py-2 rounded-xl hover:bg-[#E04A00] transition disabled:opacity-50 whitespace-nowrap">
           {bulkToggling ? '...' : '✓ Enable All'}
         </button>
         <button
           onClick={() => bulkToggleTracking(false)}
-          disabled={bulkToggling}
+          disabled={bulkToggling || backfilling}
           className="flex items-center gap-1.5 bg-gray-200 text-gray-700 text-xs font-black px-3 py-2 rounded-xl hover:bg-gray-300 transition disabled:opacity-50 whitespace-nowrap">
           {bulkToggling ? '...' : '✕ Disable All'}
+        </button>
+        <button
+          onClick={backfillDelivered}
+          disabled={bulkToggling || backfilling}
+          className="flex items-center gap-1.5 bg-blue-500 text-white text-xs font-black px-3 py-2 rounded-xl hover:bg-blue-600 transition disabled:opacity-50 whitespace-nowrap">
+          {backfilling ? 'Backfilling...' : '↩ Sync Past Deliveries'}
         </button>
       </div>
 
