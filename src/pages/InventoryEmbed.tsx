@@ -43,6 +43,8 @@ export function InventoryEmbed() {
   const [adjustmentReasons, setAdjustmentReasons] = useState<Record<string, string>>({});
   const [adjusting, setAdjusting] = useState<string | null>(null);
   const [message, setMessage] = useState({ text: '', type: '' });
+  const [bulkToggling, setBulkToggling] = useState(false);
+  const [quickToggling, setQuickToggling] = useState<string | null>(null);
 
   const fetchInventory = async () => {
     try {
@@ -126,6 +128,68 @@ export function InventoryEmbed() {
     }
   };
 
+  // Bulk enable/disable tracking on currently filtered products
+  const bulkToggleTracking = async (enable: boolean) => {
+    const targets = filtered.filter(p => p.stock.trackInventory !== enable);
+    if (targets.length === 0) {
+      showMessage(`All visible products already have tracking ${enable ? 'enabled' : 'disabled'}.`, 'error');
+      return;
+    }
+    if (!confirm(`${enable ? 'Enable' : 'Disable'} tracking for ${targets.length} product(s)?`)) return;
+    setBulkToggling(true);
+    try {
+      await Promise.all(targets.map(p =>
+        fetch('/api/inventory', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            productId: p._id,
+            sku: p.stock.sku || '',
+            currentStock: p.stock.currentStock || 0,
+            reservedStock: p.stock.reservedStock || 0,
+            lowStockAlert: p.stock.lowStockAlert || 5,
+            costPrice: p.stock.costPrice || 0,
+            unit: p.stock.unit || 'pcs',
+            trackInventory: enable,
+          }),
+        })
+      ));
+      showMessage(`✅ Tracking ${enable ? 'enabled' : 'disabled'} for ${targets.length} product(s).`, 'success');
+      fetchInventory();
+    } catch {
+      showMessage('Bulk update failed. Please try again.', 'error');
+    } finally {
+      setBulkToggling(false);
+    }
+  };
+
+  // Quick toggle tracking for a single product from the row (no expand needed)
+  const quickToggleTracking = async (product: ProductInventory) => {
+    setQuickToggling(product._id);
+    try {
+      await fetch('/api/inventory', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          productId: product._id,
+          sku: product.stock.sku || '',
+          currentStock: product.stock.currentStock || 0,
+          reservedStock: product.stock.reservedStock || 0,
+          lowStockAlert: product.stock.lowStockAlert || 5,
+          costPrice: product.stock.costPrice || 0,
+          unit: product.stock.unit || 'pcs',
+          trackInventory: !product.stock.trackInventory,
+        }),
+      });
+      showMessage(`✅ Tracking ${!product.stock.trackInventory ? 'enabled' : 'disabled'} for ${product.name}.`, 'success');
+      fetchInventory();
+    } catch {
+      showMessage('Failed to toggle tracking.', 'error');
+    } finally {
+      setQuickToggling(null);
+    }
+  };
+
   // Stats
   const stats = {
     total: products.length,
@@ -205,6 +269,29 @@ export function InventoryEmbed() {
         </select>
       </div>
 
+      {/* Bulk Tracking Actions */}
+      <div className="flex items-center gap-3 bg-gray-50 border-2 border-gray-200 rounded-xl px-4 py-3">
+        <div className="flex-1 min-w-0">
+          <p className="text-xs font-black uppercase tracking-widest text-gray-600">
+            Bulk Tracking — {filtered.length} product{filtered.length !== 1 ? 's' : ''} visible
+            {filter !== 'all' && <span className="text-[#FA5600] ml-1">(filtered)</span>}
+          </p>
+          <p className="text-[10px] text-gray-400 mt-0.5">Actions apply to currently visible products</p>
+        </div>
+        <button
+          onClick={() => bulkToggleTracking(true)}
+          disabled={bulkToggling}
+          className="flex items-center gap-1.5 bg-[#FA5600] text-white text-xs font-black px-3 py-2 rounded-xl hover:bg-[#E04A00] transition disabled:opacity-50 whitespace-nowrap">
+          {bulkToggling ? '...' : '✓ Enable All'}
+        </button>
+        <button
+          onClick={() => bulkToggleTracking(false)}
+          disabled={bulkToggling}
+          className="flex items-center gap-1.5 bg-gray-200 text-gray-700 text-xs font-black px-3 py-2 rounded-xl hover:bg-gray-300 transition disabled:opacity-50 whitespace-nowrap">
+          {bulkToggling ? '...' : '✕ Disable All'}
+        </button>
+      </div>
+
       {/* Product List */}
       {loading ? (
         <div className="space-y-3">
@@ -267,6 +354,15 @@ export function InventoryEmbed() {
                       <p className="text-[9px] text-gray-400 font-bold uppercase">Total</p>
                     </div>
                   </div>
+
+                  {/* Quick track toggle */}
+                  <button
+                    onClick={e => { e.stopPropagation(); quickToggleTracking(product); }}
+                    disabled={quickToggling === product._id}
+                    title={product.stock.trackInventory ? 'Disable tracking' : 'Enable tracking'}
+                    className={`shrink-0 w-10 h-5 rounded-full transition-colors relative ${product.stock.trackInventory ? 'bg-[#FA5600]' : 'bg-gray-300'} ${quickToggling === product._id ? 'opacity-50' : ''}`}>
+                    <div className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-all ${product.stock.trackInventory ? 'left-5' : 'left-0.5'}`} />
+                  </button>
 
                   {isExpanded ? <ChevronUp className="w-4 h-4 text-gray-400 shrink-0" /> : <ChevronDown className="w-4 h-4 text-gray-400 shrink-0" />}
                 </div>
