@@ -39,7 +39,7 @@ export function BusinessEmbed() {
           {message.text}
         </div>
       )}
-      <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1">
+      <div className="flex flex-wrap gap-2 pb-1">
         {tabs.map(tab => (
           <button key={tab.id} onClick={() => setModule(tab.id as Module)}
             className={`flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-black uppercase tracking-widest whitespace-nowrap transition-all ${module === tab.id ? 'bg-[#FA5600] text-white shadow-md' : 'bg-white text-gray-600 border border-gray-200 hover:border-[#FA5600] hover:text-[#FA5600]'}`}>
@@ -402,6 +402,68 @@ function OrdersModule({ showMsg }: any) {
   const [partialAmounts, setPartialAmounts] = useState<Record<string, string>>({});
   const [products, setProducts] = useState<any[]>([]);
 
+  // Payment collection modal state
+  const [payModal, setPayModal] = useState<{
+    open: boolean; order: any | null;
+    paymentMode: 'cash' | 'upi' | 'already_paid';
+    amountCollected: string;
+    collectedBy: 'owner' | 'delivery_boy' | 'third_party';
+    collectorName: string;
+    submitting: boolean;
+  }>({ open: false, order: null, paymentMode: 'cash', amountCollected: '', collectedBy: 'owner', collectorName: '', submitting: false });
+
+  const openDeliverModal = (order: any) => {
+    setPayModal({
+      open: true, order,
+      paymentMode: order.paymentStatus === 'paid' ? 'already_paid' : 'cash',
+      amountCollected: String(order.balanceDue > 0 ? order.balanceDue : order.totalAmount || ''),
+      collectedBy: 'owner', collectorName: '', submitting: false,
+    });
+  };
+
+  const handleDelivered = async () => {
+    const { order, paymentMode, amountCollected, collectedBy, collectorName } = payModal;
+    if (!order) return;
+    if (paymentMode !== 'already_paid' && (!amountCollected || isNaN(Number(amountCollected)) || Number(amountCollected) <= 0)) {
+      alert('Please enter a valid amount collected.'); return;
+    }
+    if ((collectedBy === 'delivery_boy' || collectedBy === 'third_party') && !collectorName.trim()) {
+      alert("Please enter the collector's name."); return;
+    }
+    setPayModal(p => ({ ...p, submitting: true }));
+    try {
+      await fetch('/api/customers?module=orders', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: order._id, status: 'delivered',
+          paymentMode, amountCollected: Number(amountCollected) || 0,
+          collectedBy, collectorName,
+        }),
+      });
+      if (paymentMode !== 'already_paid') {
+        await fetch('/api/cashflow', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: 'income', category: 'delivery_collection',
+            amount: Number(amountCollected),
+            description: `COD collected – ${order.customerName} (${order.orderId})`,
+            paymentMode, referenceId: order._id, referenceType: 'order',
+            collectedBy, collectorName: collectorName || null,
+            orderId: order.orderId, date: new Date().toISOString(),
+          }),
+        });
+      }
+      showMsg('Order delivered & payment recorded!', 'success');
+      setPayModal(p => ({ ...p, open: false, order: null, submitting: false }));
+      fetchOrders();
+    } catch {
+      setPayModal(p => ({ ...p, submitting: false }));
+      showMsg('Something went wrong. Please try again.', 'error');
+    }
+  };
+
   const fetchOrders = () => {
     setLoading(true);
     fetch('/api/customers?module=orders')
@@ -651,7 +713,7 @@ function OrdersModule({ showMsg }: any) {
                           📅 Delivery scheduled: {new Date(order.deliveryDate).toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' })}
                         </p>
                       )}
-                      <button onClick={() => updateStatus(order, 'delivered')}
+                      <button onClick={() => openDeliverModal(order)}
                         className="w-full bg-green-500 hover:bg-green-600 text-white font-black text-xs uppercase tracking-widest py-2.5 rounded-xl transition">
                         Mark as Delivered ✓
                       </button>
@@ -674,11 +736,101 @@ function OrdersModule({ showMsg }: any) {
           ))}
         </div>
       )}
+
+      {/* ── PAYMENT COLLECTION MODAL ── */}
+      {payModal.open && payModal.order && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 space-y-5">
+            <div className="flex items-start justify-between">
+              <div>
+                <h3 className="font-black text-gray-900 text-base uppercase tracking-widest">Mark as Delivered</h3>
+                <p className="text-[11px] text-gray-400 mt-0.5">{payModal.order.customerName} · ₹{Number(payModal.order.totalAmount || 0).toLocaleString('en-IN')}</p>
+              </div>
+              <button onClick={() => setPayModal(p => ({ ...p, open: false }))} className="text-gray-400 hover:text-gray-600 text-xl font-black">✕</button>
+            </div>
+
+            <div className="space-y-2">
+              <p className="text-[10px] font-black uppercase tracking-widest text-gray-500">Payment Mode</p>
+              <div className="grid grid-cols-3 gap-2">
+                {([
+                  { value: 'cash',         label: '💵 Cash' },
+                  { value: 'upi',          label: '📱 UPI' },
+                  { value: 'already_paid', label: '✅ Pre-paid' },
+                ] as const).map(opt => (
+                  <button key={opt.value}
+                    onClick={() => setPayModal(p => ({ ...p, paymentMode: opt.value }))}
+                    className={`py-2 px-3 rounded-xl text-xs font-black border-2 transition ${payModal.paymentMode === opt.value ? 'border-[#FA5600] bg-orange-50 text-[#FA5600]' : 'border-gray-200 text-gray-500 hover:border-gray-300'}`}>
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {payModal.paymentMode !== 'already_paid' && (
+              <div className="space-y-1">
+                <p className="text-[10px] font-black uppercase tracking-widest text-gray-500">Amount Collected (₹)</p>
+                <input type="number" min="0"
+                  value={payModal.amountCollected}
+                  onChange={e => setPayModal(p => ({ ...p, amountCollected: e.target.value }))}
+                  className="w-full border-2 border-gray-200 rounded-xl px-4 py-2.5 text-sm font-bold focus:border-[#FA5600] outline-none"
+                  placeholder="Enter amount" />
+              </div>
+            )}
+
+            {payModal.paymentMode !== 'already_paid' && (
+              <div className="space-y-2">
+                <p className="text-[10px] font-black uppercase tracking-widest text-gray-500">Collected By</p>
+                <div className="grid grid-cols-3 gap-2">
+                  {([
+                    { value: 'owner',        label: '🏠 Owner' },
+                    { value: 'delivery_boy', label: '🛵 Delivery' },
+                    { value: 'third_party',  label: '📦 3rd Party' },
+                  ] as const).map(opt => (
+                    <button key={opt.value}
+                      onClick={() => setPayModal(p => ({ ...p, collectedBy: opt.value }))}
+                      className={`py-2 px-2 rounded-xl text-[11px] font-black border-2 transition ${payModal.collectedBy === opt.value ? 'border-[#FA5600] bg-orange-50 text-[#FA5600]' : 'border-gray-200 text-gray-500 hover:border-gray-300'}`}>
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+                {(payModal.collectedBy === 'delivery_boy' || payModal.collectedBy === 'third_party') && (
+                  <input type="text"
+                    value={payModal.collectorName}
+                    onChange={e => setPayModal(p => ({ ...p, collectorName: e.target.value }))}
+                    className="w-full border-2 border-gray-200 rounded-xl px-4 py-2.5 text-sm font-bold focus:border-[#FA5600] outline-none mt-1"
+                    placeholder={payModal.collectedBy === 'delivery_boy' ? "Delivery boy's name" : 'Third party name'} />
+                )}
+              </div>
+            )}
+
+            {payModal.paymentMode === 'already_paid' && (
+              <div className="bg-green-50 border border-green-200 rounded-xl px-4 py-3 text-xs font-bold text-green-700">
+                ✅ Already paid online — will be marked delivered directly.
+              </div>
+            )}
+
+            {payModal.paymentMode !== 'already_paid' && payModal.amountCollected && (
+              <div className="bg-orange-50 border border-orange-100 rounded-xl px-4 py-2.5 text-xs font-black text-[#FA5600]">
+                ₹{Number(payModal.amountCollected).toLocaleString('en-IN')} via {payModal.paymentMode.toUpperCase()} → will post to Cash Flow
+              </div>
+            )}
+
+            <div className="flex gap-3 pt-1">
+              <button onClick={() => setPayModal(p => ({ ...p, open: false }))}
+                className="flex-1 py-2.5 rounded-xl border-2 border-gray-200 text-xs font-black text-gray-500 hover:border-gray-300 transition">
+                Cancel
+              </button>
+              <button onClick={handleDelivered} disabled={payModal.submitting}
+                className="flex-1 py-2.5 rounded-xl bg-[#FA5600] text-white text-xs font-black uppercase tracking-widest hover:bg-[#E04A00] transition disabled:opacity-60">
+                {payModal.submitting ? 'Saving...' : '✓ Confirm Delivery'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
-
-// ─── SALES ───────────────────────────────────────────────────────────────────
 function SalesModule({ showMsg }: any) {
   const [sales, setSales] = useState<any[]>([]);
   const [summary, setSummary] = useState<any>({});
