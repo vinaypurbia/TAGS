@@ -103,6 +103,35 @@ export default async function handler(req, res) {
           if (collectedBy !== undefined) updateFields.collectedBy = collectedBy;
           if (collectorName !== undefined) updateFields.collectorName = collectorName || null;
           updateFields.paymentStatus = paymentMode === 'already_paid' ? 'paid' : 'collected';
+
+          // Decrement inventory for each item in the order
+          const deliveredOrder = await ordersCol.findOne({ _id: new ObjectId(id) });
+          if (deliveredOrder?.items?.length) {
+            const inventoryCol = db.collection('inventory');
+            for (const item of deliveredOrder.items) {
+              const pid = item.productId;
+              if (!pid) continue;
+              const inv = await inventoryCol.findOne({ productId: pid });
+              if (!inv || inv.trackInventory === false) continue; // skip untracked
+              const qty = Number(item.quantity) || 1;
+              const newStock = Math.max(0, (inv.currentStock || 0) - qty);
+              const available = Math.max(0, newStock - (inv.reservedStock || 0));
+              await inventoryCol.updateOne(
+                { productId: pid },
+                {
+                  $set: { currentStock: newStock, availableStock: available, updatedAt: new Date() },
+                  $push: {
+                    adjustmentLog: {
+                      adjustment: -qty,
+                      reason: `Sold – Order ${deliveredOrder.orderId || id} (${deliveredOrder.customerName})`,
+                      date: new Date(),
+                      stockAfter: newStock,
+                    }
+                  }
+                }
+              );
+            }
+          }
         }
 
         await ordersCol.updateOne({ _id: new ObjectId(id) }, { $set: updateFields });
