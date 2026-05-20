@@ -1818,4 +1818,139 @@ function CustomersSection() {
               <Users className="w-5 h-5" />
             </div>
             <div>
- 
+              <p className="text-xl font-black text-gray-900">{c.value}</p>
+              <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">{c.label}</p>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Search */}
+      <div className="relative">
+        <input
+          type="text"
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          placeholder="Search by name, phone or email..."
+          className="w-full border-2 border-gray-200 rounded-xl px-4 py-3 text-sm font-bold focus:border-[#FA5600] outline-none transition"
+        />
+      </div>
+
+      {/* Customer list */}
+      {loading ? (
+        <div className="space-y-3">{[...Array(4)].map((_, i) => <div key={i} className="h-20 bg-gray-100 rounded-2xl animate-pulse" />)}</div>
+      ) : filtered.length === 0 ? (
+        <div className="bg-white rounded-2xl border border-gray-200 p-12 text-center text-gray-400">
+          <Users className="w-10 h-10 mx-auto mb-3 opacity-30" />
+          <p className="font-black text-sm uppercase tracking-widest">No customers found</p>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {filtered.map((c: any) => {
+            const isExpanded = expanded === c._id;
+            const isRepeat   = c.totalOrders > 1;
+            return (
+              <div key={c._id} className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+                {/* Customer row */}
+                <button
+                  onClick={() => toggleCustomer(c._id)}
+                  className="w-full flex items-center gap-4 px-5 py-4 hover:bg-orange-50/40 transition text-left"
+                >
+                  {/* Avatar */}
+                  <div className="w-11 h-11 rounded-xl bg-orange-100 flex items-center justify-center shrink-0 font-black text-[#FA5600] text-lg">
+                    {(c.name || 'C')[0].toUpperCase()}
+                  </div>
+
+                  {/* Info */}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <p className="font-black text-sm text-gray-900">{c.name}</p>
+                      {isRepeat && (
+                        <span className="text-[9px] bg-green-100 text-green-700 font-black px-2 py-0.5 rounded-full uppercase tracking-wide">
+                          ⭐ Repeat Buyer
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-xs text-gray-400 mt-0.5">
+                      📞 {c.phone}
+                      {c.email && <span className="ml-2">✉️ {c.email}</span>}
+                    </p>
+                    {c.address && <p className="text-[10px] text-gray-400 truncate mt-0.5">📍 {c.address}</p>}
+                  </div>
+
+                  {/* Stats */}
+                  <div className="text-right shrink-0 space-y-0.5">
+                    <p className="font-black text-sm text-[#FA5600]">₹{Number(c.totalSpend || 0).toLocaleString('en-IN')}</p>
+                    <p className="text-[10px] text-gray-400">{c.totalOrders} order{c.totalOrders !== 1 ? 's' : ''}</p>
+                    {c.lastOrderDate && (
+                      <p className="text-[9px] text-gray-300">Last: {new Date(c.lastOrderDate).toLocaleDateString('en-IN')}</p>
+                    )}
+                  </div>
+
+                  {/* Expand arrow */}
+                  <div className={`ml-2 text-gray-300 transition-transform ${isExpanded ? 'rotate-180' : ''}`}>▼</div>
+                </button>
+
+                {/* Order history (expanded) */}
+                {isExpanded && (
+                  <div className="border-t border-gray-100 bg-gray-50 px-5 py-4">
+                    <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-3">Order History</p>
+                    {loadingOrders === c._id ? (
+                      <div className="space-y-2">{[...Array(2)].map((_, i) => <div key={i} className="h-12 bg-gray-200 rounded-xl animate-pulse" />)}</div>
+                    ) : (orders[c._id] || []).length === 0 ? (
+                      <p className="text-xs text-gray-400 text-center py-4">No orders recorded yet</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {(orders[c._id] || []).map((order: any) => (
+                          <div key={order._id} className="bg-white rounded-xl border border-gray-200 px-4 py-3">
+                            <div className="flex items-center justify-between mb-1">
+                              <div className="flex items-center gap-2">
+                                <span className="text-[10px] font-black text-gray-500 uppercase">{order.orderId}</span>
+                                <span className={`text-[9px] font-black px-1.5 py-0.5 rounded-full uppercase ${
+                                  order.status === 'confirmed' ? 'bg-green-100 text-green-700' :
+                                  order.status === 'cancelled' ? 'bg-red-100 text-red-600' :
+                                  'bg-yellow-100 text-yellow-700'
+                                }`}>{order.status || 'pending'}</span>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <span className="font-black text-sm text-[#FA5600]">₹{Number(order.totalAmount || 0).toLocaleString('en-IN')}</span>
+                                <span className="text-[9px] text-gray-300">{new Date(order.createdAt).toLocaleDateString('en-IN')}</span>
+                              </div>
+                            </div>
+                            <div className="flex flex-wrap gap-1">
+                              {(order.items || []).slice(0, 4).map((item: any, i: number) => (
+                                <span key={i} className="text-[9px] bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded-full">
+                                  {item.productName} ×{item.quantity}
+                                </span>
+                              ))}
+                              {order.items?.length > 4 && (
+                                <span className="text-[9px] text-gray-400">+{order.items.length - 4} more</span>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {/* WhatsApp quick link */}
+                    {c.phone && (
+                      <a
+                        href={`https://wa.me/${c.phone.replace(/[^0-9]/g, '')}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="mt-3 inline-flex items-center gap-1.5 text-xs font-black text-[#25D366] hover:underline"
+                      >
+                        💬 Message on WhatsApp
+                      </a>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default AdminPanel;
