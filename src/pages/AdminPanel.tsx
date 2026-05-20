@@ -17,7 +17,7 @@ const VISIBILITY_KEY = 'tagsAdminVisibility';
 
 type Section =
   | 'dashboard' | 'promo' | 'banner' | 'category-images' | 'perks'
-  | 'products' | 'categories' | 'inventory' | 'business' | 'settings' | 'import' | 'reviews' | 'customers';
+  | 'products' | 'categories' | 'inventory' | 'business' | 'settings' | 'import' | 'reviews';
 
 interface BannerSlide { image: string; text: string; description: string; }
 interface Perk        { icon: string; text: string; }
@@ -27,7 +27,6 @@ const ALL_MODULES: { id: Section; label: string; icon: any; desc: string }[] = [
   { id: 'dashboard',       label: 'Dashboard',       icon: LayoutDashboard, desc: 'Overview & quick stats' },
   { id: 'business',        label: 'Business',         icon: BarChart2,       desc: 'Sales, PO, Cash Flow, Reports' },
   { id: 'inventory',       label: 'Inventory',        icon: ShoppingBag,     desc: 'Stock management' },
-  { id: 'customers',       label: 'Customers',        icon: Users,           desc: 'Customer list & order history' },
   { id: 'products',        label: 'Products',         icon: Package,         desc: 'Add & edit products' },
   { id: 'categories',      label: 'Categories',       icon: FolderTree,      desc: 'Manage categories' },
   { id: 'category-images', label: 'Category Images',  icon: Tag,             desc: 'Upload category covers' },
@@ -1152,8 +1151,7 @@ export function AdminPanel() {
           {/* ── REVIEWS ── */}
           {activeSection === 'reviews' && <div className="max-w-4xl mx-auto"><ReviewsSection /></div>}
 
-          {/* ── CUSTOMERS ── */}
-          {activeSection === 'customers' && <div className="max-w-5xl mx-auto"><CustomersSection /></div>}
+          {/* ── removed: customers section now lives inside Business → Customers tab ── */}
 
           {/* ── CATEGORY IMAGES ── */}
           {activeSection === 'category-images' && (
