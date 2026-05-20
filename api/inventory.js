@@ -25,6 +25,118 @@ export default async function handler(req, res) {
 
     // GET - all products with their inventory
     if (req.method === 'GET') {
+      const { action } = req.query;
+
+      // ── BULK ENABLE TRACKING ──────────────────────────────────────────
+      // GET /api/inventory?action=enableAll
+      // Creates inventory records for all products and enables trackInventory
+      // ── BACKFILL FROM DELIVERED ORDERS ───────────────────────────────────
+      // GET /api/inventory?action=backfillDelivered
+      // Reads all delivered orders and deducts their quantities from inventory
+      // Only deducts if the order hasn't already been backfilled (checks adjustmentLog)
+      if (action === 'backfillDelivered') {
+        const ordersCol = db.collection('orders');
+        const deliveredOrders = await ordersCol.find({ status: 'delivered' }).toArray();
+
+        let totalDeducted = 0;
+        let skipped = 0;
+        const log = [];
+
+        for (const order of deliveredOrders) {
+          if (!order.items?.length) continue;
+          const orderRef = order.orderId || order._id.toString();
+
+          for (const item of order.items) {
+            const pid = item.productId;
+            if (!pid) continue;
+
+            const inv = await inventoryCol.findOne({ productId: pid });
+            if (!inv || inv.trackInventory === false) { skipped++; continue; }
+
+            // Check if this order was already deducted (avoid double deduction)
+            const alreadyDone = (inv.adjustmentLog || []).some(
+              (l) => l.reason && l.reason.includes(orderRef)
+            );
+            if (alreadyDone) { skipped++; continue; }
+
+            const qty = Number(item.quantity) || 1;
+            const newStock = Math.max(0, (inv.currentStock || 0) - qty);
+            const available = Math.max(0, newStock - (inv.reservedStock || 0));
+
+            await inventoryCol.updateOne(
+              { productId: pid },
+              {
+                $set: { currentStock: newStock, availableStock: available, updatedAt: new Date() },
+                $push: {
+                  adjustmentLog: {
+                    adjustment: -qty,
+                    reason: `Backfill – Order ${orderRef} (${order.customerName})`,
+                    date: order.deliveredAt || order.updatedAt || new Date(),
+                    stockAfter: newStock,
+                  }
+                }
+              }
+            );
+            totalDeducted++;
+            log.push({ order: orderRef, product: item.productName || pid, qty: -qty, stockAfter: newStock });
+          }
+        }
+
+        return res.status(200).json({
+          success: true,
+          message: `Backfill complete. ${totalDeducted} deduction(s) applied, ${skipped} skipped (already done or untracked).`,
+          totalDeducted,
+          skipped,
+          log,
+        });
+      }
+
+      if (action === 'enableAll') {
+        const allProducts = await productsCol.find({}).toArray();
+        let created = 0, updated = 0;
+
+        for (const p of allProducts) {
+          const pid = p._id.toString();
+          const existing = await inventoryCol.findOne({ productId: pid });
+
+          if (existing) {
+            // Already exists — just enable tracking if it was off
+            if (existing.trackInventory === false) {
+              await inventoryCol.updateOne(
+                { productId: pid },
+                { $set: { trackInventory: true, updatedAt: new Date() } }
+              );
+              updated++;
+            }
+          } else {
+            // No record yet — create one with tracking on, stock at 0
+            await inventoryCol.insertOne({
+              productId: pid,
+              sku: '',
+              currentStock: 0,
+              reservedStock: 0,
+              availableStock: 0,
+              lowStockAlert: 5,
+              costPrice: 0,
+              unit: 'pcs',
+              trackInventory: true,
+              adjustmentLog: [],
+              createdAt: new Date(),
+              updatedAt: new Date(),
+            });
+            created++;
+          }
+        }
+
+        return res.status(200).json({
+          success: true,
+          message: `Tracking enabled for all products. ${created} records created, ${updated} records updated.`,
+          created,
+          updated,
+          total: allProducts.length,
+        });
+      }
+
       const allProducts = await productsCol.find({}).sort({ createdAt: -1 }).toArray();
       const allInventory = await inventoryCol.find({}).toArray();
 
