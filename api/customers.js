@@ -19,11 +19,12 @@ export default async function handler(req, res) {
     const customers = db.collection('customers');
     const sales = db.collection('sales');
 
-    // GET - list all customers or single customer with purchase history
-    // ── ORDERS MODULE — must check BEFORE generic GET handler ──
+    // ── ORDERS MODULE ─────────────────────────────────────────────────────────
     const { module } = req.query;
     if (module === 'orders') {
       const ordersCol = db.collection('orders');
+      // FIX: unified collection name — cashFlow (camelCase) matches all other files
+      const cashFlow = db.collection('cashFlow');
 
       if (req.method === 'GET') {
         const { customerId, orderId: oid } = req.query;
@@ -35,8 +36,13 @@ export default async function handler(req, res) {
       }
 
       if (req.method === 'POST') {
-        const { orderId, customerName, customerPhone, customerEmail, deliveryAddress, items, totalAmount, status } = req.body;
-        if (!customerPhone || !items?.length) return res.status(400).json({ error: 'Phone and items required' });
+        const {
+          orderId, customerName, customerPhone, customerEmail,
+          deliveryAddress, items, totalAmount, status
+        } = req.body;
+        if (!customerPhone || !items?.length) {
+          return res.status(400).json({ error: 'Phone and items required' });
+        }
 
         const cu = await customers.findOneAndUpdate(
           { phone: customerPhone },
@@ -58,7 +64,9 @@ export default async function handler(req, res) {
           createdAt: new Date(), updatedAt: new Date(),
         });
 
-        // Also write to sales collection so Sales module stays in sync
+        // Sync to sales collection so Sales module stays in sync
+        // NOTE: stock is NOT deducted here — it is deducted when marked 'delivered'
+        // This is the correct flow for WhatsApp orders (confirm first, deduct on delivery)
         await sales.insertOne({
           saleNumber: orderId || `SALE-${Date.now().toString().slice(-6)}`,
           orderId: orderId || result.insertedId.toString(),
@@ -87,15 +95,19 @@ export default async function handler(req, res) {
       }
 
       if (req.method === 'PUT') {
-        const { id, status, notes, deliveryDate, whatsappMessage, paymentMode, amountCollected, collectedBy, collectorName } = req.body;
+        const {
+          id, status, notes, deliveryDate, whatsappMessage,
+          paymentMode, amountCollected, collectedBy, collectorName
+        } = req.body;
         if (!id) return res.status(400).json({ error: 'ID required' });
+
         const updateFields = { updatedAt: new Date() };
         if (status !== undefined) updateFields.status = status;
         if (notes !== undefined) updateFields.notes = notes;
         if (deliveryDate !== undefined) updateFields.deliveryDate = deliveryDate;
         if (whatsappMessage !== undefined) updateFields.whatsappMessage = whatsappMessage;
 
-        // Payment collection fields (set when marking delivered)
+        // ── DELIVERY: deduct stock + record cashFlow income ────────────────
         if (status === 'delivered') {
           updateFields.deliveredAt = new Date();
           if (paymentMode !== undefined) updateFields.paymentMode = paymentMode;
@@ -104,22 +116,35 @@ export default async function handler(req, res) {
           if (collectorName !== undefined) updateFields.collectorName = collectorName || null;
           updateFields.paymentStatus = paymentMode === 'already_paid' ? 'paid' : 'collected';
 
-          // Decrement inventory for each item in the order
           const deliveredOrder = await ordersCol.findOne({ _id: new ObjectId(id) });
           if (deliveredOrder?.items?.length) {
             const inventoryCol = db.collection('inventory');
+            let totalCOGS = 0;
+
             for (const item of deliveredOrder.items) {
               const pid = item.productId;
               if (!pid) continue;
               const inv = await inventoryCol.findOne({ productId: pid });
-              if (!inv || inv.trackInventory === false) continue; // skip untracked
+              if (!inv || inv.trackInventory === false) continue;
+
               const qty = Number(item.quantity) || 1;
               const newStock = Math.max(0, (inv.currentStock || 0) - qty);
               const available = Math.max(0, newStock - (inv.reservedStock || 0));
+
+              // FIX: compute and persist stockStatus after deduction
+              let stockStatus = 'in_stock';
+              if (available === 0) stockStatus = 'out_of_stock';
+              else if (available <= (inv.lowStockAlert || 10)) stockStatus = 'low_stock';
+
               await inventoryCol.updateOne(
                 { productId: pid },
                 {
-                  $set: { currentStock: newStock, availableStock: available, updatedAt: new Date() },
+                  $set: {
+                    currentStock: newStock,
+                    availableStock: available,
+                    stockStatus,   // FIX: persisted
+                    updatedAt: new Date()
+                  },
                   $push: {
                     adjustmentLog: {
                       adjustment: -qty,
@@ -130,6 +155,46 @@ export default async function handler(req, res) {
                   }
                 }
               );
+
+              // FIX: accumulate COGS
+              if (inv.costPrice && inv.costPrice > 0) {
+                totalCOGS += inv.costPrice * qty;
+              }
+            }
+
+            // FIX: record income in cashFlow when delivery is confirmed
+            // This is the income entry for WhatsApp orders (not done at order creation,
+            // done at delivery because that's when payment is actually collected)
+            const collectedAmount = Number(amountCollected) || deliveredOrder.totalAmount || 0;
+            if (collectedAmount > 0 && paymentMode !== 'already_paid') {
+              await cashFlow.insertOne({
+                type: 'income',
+                category: 'delivery_collection',
+                amount: collectedAmount,
+                description: `Delivery collected – Order ${deliveredOrder.orderId || id} (${deliveredOrder.customerName})`,
+                referenceId: id,
+                referenceType: 'order_delivery',
+                collectedBy: collectedBy || null,
+                collectorName: collectorName || null,
+                orderId: deliveredOrder.orderId || id,
+                paymentMode: paymentMode || 'cash',
+                date: new Date(),
+                createdAt: new Date(),
+              });
+            }
+
+            // FIX: record COGS as expense on delivery
+            if (totalCOGS > 0) {
+              await cashFlow.insertOne({
+                type: 'expense',
+                category: 'cogs',
+                amount: totalCOGS,
+                description: `Cost of goods – Order ${deliveredOrder.orderId || id}`,
+                referenceId: id,
+                referenceType: 'order_cogs',
+                date: new Date(),
+                createdAt: new Date(),
+              });
             }
           }
         }
@@ -148,6 +213,7 @@ export default async function handler(req, res) {
             await sales.updateOne({ orderId: order.orderId }, { $set: salesSync });
           }
         }
+
         return res.status(200).json({ success: true });
       }
 
@@ -161,28 +227,18 @@ export default async function handler(req, res) {
       return res.status(405).json({ error: 'Method not allowed' });
     }
 
-    // ── CUSTOMERS (non-orders) ────────────────────────────────
+    // ── CUSTOMERS (non-orders) ────────────────────────────────────────────────
     if (req.method === 'GET') {
       const { id, phone } = req.query;
 
-      // Single customer by ID with full purchase history
       if (id) {
         const customer = await customers.findOne({ _id: new ObjectId(id) });
         if (!customer) return res.status(404).json({ error: 'Customer not found' });
-
-        // Fetch all sales for this customer
-        const customerSales = await sales
-          .find({ customerId: id })
-          .sort({ date: -1 })
-          .toArray();
-
+        const customerSales = await sales.find({ customerId: id }).sort({ date: -1 }).toArray();
         const totalSpend = customerSales.reduce((s, sale) => s + (sale.totalAmount || 0), 0);
-        const totalOrders = customerSales.length;
-
-        return res.status(200).json({ ...customer, sales: customerSales, totalSpend, totalOrders });
+        return res.status(200).json({ ...customer, sales: customerSales, totalSpend, totalOrders: customerSales.length });
       }
 
-      // Find by phone number
       if (phone) {
         const customer = await customers.findOne({ phone });
         if (!customer) return res.status(404).json({ error: 'Customer not found' });
@@ -191,10 +247,8 @@ export default async function handler(req, res) {
         return res.status(200).json({ ...customer, sales: customerSales, totalSpend, totalOrders: customerSales.length });
       }
 
-      // All customers with summary stats
       const allCustomers = await customers.find({}).sort({ createdAt: -1 }).toArray();
 
-      // Enrich each customer with sales stats
       const enriched = await Promise.all(allCustomers.map(async (c) => {
         const cid = c._id.toString();
         const customerSales = await sales.find({ customerId: cid }).toArray();
@@ -209,7 +263,6 @@ export default async function handler(req, res) {
         };
       }));
 
-      // Sort by total spend descending
       enriched.sort((a, b) => b.totalSpend - a.totalSpend);
 
       const totalCustomers = enriched.length;
@@ -222,15 +275,12 @@ export default async function handler(req, res) {
       });
     }
 
-    // POST - create new customer (or upsert by phone)
     if (req.method === 'POST') {
       const { name, phone, email, address, notes } = req.body;
       if (!name || !phone) return res.status(400).json({ error: 'Name and phone are required' });
 
-      // Check if customer with this phone already exists
       const existing = await customers.findOne({ phone });
       if (existing) {
-        // Update existing customer
         await customers.updateOne(
           { phone },
           { $set: { name, email: email || existing.email, address: address || existing.address, notes: notes || existing.notes, updatedAt: new Date() } }
@@ -251,7 +301,6 @@ export default async function handler(req, res) {
       return res.status(201).json({ success: true, _id: result.insertedId, created: true });
     }
 
-    // PUT - update customer details
     if (req.method === 'PUT') {
       const { id, ...data } = req.body;
       if (!id) return res.status(400).json({ error: 'ID required' });
@@ -261,7 +310,6 @@ export default async function handler(req, res) {
       return res.status(200).json({ success: true });
     }
 
-    // DELETE - remove customer
     if (req.method === 'DELETE') {
       const { id } = req.body;
       if (!id) return res.status(400).json({ error: 'ID required' });
