@@ -19,7 +19,8 @@ export default async function handler(req, res) {
     const salesCol = db.collection('sales');
     const inventory = db.collection('inventory');
     const movements = db.collection('stockMovements');
-    const cashflow = db.collection('cashflow');
+    // FIX: unified collection name — was 'cashflow' (lowercase), now matches cashflow.js and purchase-orders.js
+    const cashFlow = db.collection('cashFlow');
     const customers = db.collection('customers');
 
     if (req.method === 'GET') {
@@ -114,16 +115,23 @@ export default async function handler(req, res) {
 
       const saleId = result.insertedId.toString();
 
-      // Deduct stock for each item
+      // Deduct stock for each item + record COGS
+      let totalCOGS = 0;
       for (const item of enrichedItems) {
         if (!item.productId) continue;
         const inv = await inventory.findOne({ productId: item.productId });
         if (inv) {
           const newStock = Math.max(0, (inv.currentStock || 0) - item.quantity);
           const available = Math.max(0, newStock - (inv.reservedStock || 0));
+
+          // FIX: auto-set stockStatus so visibility panel has a persisted queryable field
+          let stockStatus = 'in_stock';
+          if (available === 0) stockStatus = 'out_of_stock';
+          else if (inv.trackInventory && available <= (inv.lowStockAlert || 10)) stockStatus = 'low_stock';
+
           await inventory.updateOne(
             { productId: item.productId },
-            { $set: { currentStock: newStock, availableStock: available, updatedAt: new Date() } }
+            { $set: { currentStock: newStock, availableStock: available, stockStatus, updatedAt: new Date() } }
           );
           await movements.insertOne({
             productId: item.productId, type: 'out', quantity: item.quantity,
@@ -132,16 +140,32 @@ export default async function handler(req, res) {
             note: `Sale ${saleNumber} — ${customerName || 'Customer'}`,
             createdAt: new Date(),
           });
+
+          // FIX: accumulate COGS from costPrice
+          if (inv.costPrice && inv.costPrice > 0) {
+            totalCOGS += inv.costPrice * item.quantity;
+          }
         }
       }
 
-      // Add income to cashflow
-      await cashflow.insertOne({
+      // FIX: record income in cashFlow (correct collection name, was 'cashflow')
+      await cashFlow.insertOne({
         type: 'income', category: 'sales', amount: totalAmount,
         description: `Sale ${saleNumber} — ${customerName || 'Customer'}`,
         referenceId: saleId, referenceType: 'sale',
         date: new Date(), createdAt: new Date(),
       });
+
+      // FIX: record COGS as expense so P&L profit = income - expenses is accurate
+      if (totalCOGS > 0) {
+        await cashFlow.insertOne({
+          type: 'expense', category: 'cogs',
+          amount: totalCOGS,
+          description: `Cost of goods — Sale ${saleNumber}`,
+          referenceId: saleId, referenceType: 'sale_cogs',
+          date: new Date(), createdAt: new Date(),
+        });
+      }
 
       return res.status(201).json({ success: true, _id: result.insertedId, saleNumber, customerId });
     }
@@ -170,9 +194,15 @@ export default async function handler(req, res) {
         if (inv) {
           const newStock = (inv.currentStock || 0) + item.quantity;
           const available = Math.max(0, newStock - (inv.reservedStock || 0));
+
+          // Recompute stockStatus after restore
+          let stockStatus = 'in_stock';
+          if (available === 0) stockStatus = 'out_of_stock';
+          else if (inv.trackInventory && available <= (inv.lowStockAlert || 10)) stockStatus = 'low_stock';
+
           await inventory.updateOne(
             { productId: item.productId },
-            { $set: { currentStock: newStock, availableStock: available, updatedAt: new Date() } }
+            { $set: { currentStock: newStock, availableStock: available, stockStatus, updatedAt: new Date() } }
           );
           await movements.insertOne({
             productId: item.productId, type: 'in', quantity: item.quantity,
@@ -183,7 +213,11 @@ export default async function handler(req, res) {
         }
       }
 
-      await cashflow.deleteOne({ referenceId: id, referenceType: 'sale' });
+      // FIX: delete income + COGS cashflow entries on cancellation
+      await cashFlow.deleteMany({
+        referenceId: id,
+        referenceType: { $in: ['sale', 'sale_cogs'] }
+      });
       await salesCol.deleteOne({ _id: new ObjectId(id) });
       return res.status(200).json({ success: true });
     }
