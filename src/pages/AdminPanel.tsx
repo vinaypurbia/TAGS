@@ -1,3 +1,4 @@
+import { StockVisibilityPanel } from '../components/StockVisibilityPanel';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { ProductManagerEmbed } from './ProductManagerEmbed';
 import { ManageCategoriesEmbed } from './ManageCategoriesEmbed';
