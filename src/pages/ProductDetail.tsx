@@ -91,7 +91,7 @@ export function ProductDetail() {
 
   useEffect(() => {
     if (!id) { setLoading(false); return; }
-    fetch(`/api/products?id=${id}`)
+    fetch(`/api/products?id=${id}&withStock=true`)
       .then(res => { if (!res.ok) throw new Error('Not found'); return res.json(); })
       .then(data => { setProduct(data); })
       .catch(() => setProduct(null))
@@ -184,7 +184,12 @@ export function ProductDetail() {
     ...(embedUrl ? [{ type: 'video' as const, src: embedUrl }] : []),
   ];
 
+  const frontendStatus = product?.stock?.frontendStatus || 'normal';
+  const isOutOfStock   = frontendStatus === 'out_of_stock' || frontendStatus === 'hidden';
+  const isLowStock     = frontendStatus === 'low_stock';
+
   const handleAddItem = () => {
+    if (isOutOfStock) return;
     addItem(product);
     setIsRecentlyAdded(true);
     setTimeout(() => setIsRecentlyAdded(false), 1500);
@@ -369,16 +374,25 @@ export function ProductDetail() {
             )}
 
             <div className="flex flex-col gap-2 pt-2">
+              {isLowStock && (
+                <div className="flex items-center gap-2 px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg">
+                  <span className="text-amber-600 text-xs font-black">⚠️ Only {product.stock?.availableStock} left in stock!</span>
+                </div>
+              )}
               <button
                 onClick={handleAddItem}
-                disabled={isRecentlyAdded}
+                disabled={isRecentlyAdded || isOutOfStock}
                 className={cn(
                   'w-full py-4 px-6 font-black uppercase tracking-wide flex items-center justify-center gap-2 text-sm rounded-xl border-2 transition-all',
-                  isRecentlyAdded
+                  isOutOfStock
+                    ? 'bg-gray-200 text-gray-400 border-gray-200 cursor-not-allowed'
+                  : isRecentlyAdded
                     ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed'
                     : 'bg-[#FA5600] hover:bg-orange-600 text-white border-[#FA5600] shadow-lg shadow-orange-100 hover:shadow-orange-200 active:scale-95'
                 )}>
-                {isRecentlyAdded
+                {isOutOfStock
+                  ? <>Out of Stock</>
+                  : isRecentlyAdded
                   ? <><Check className="w-5 h-5" /> Added to List!</>
                   : <><ShoppingBag className="w-5 h-5" /> Add to Order List{quantityInCart > 0 ? ` (${quantityInCart})` : ''}</>
                 }
