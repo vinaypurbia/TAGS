@@ -13,7 +13,7 @@ async function getClient() {
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   if (req.method === 'OPTIONS') return res.status(200).end();
 
@@ -23,17 +23,11 @@ export default async function handler(req, res) {
     const inventoryCol = db.collection('inventory');
     const productsCol = db.collection('products');
 
-    // GET - all products with their inventory
+    // ── GET ───────────────────────────────────────────────────────────────────
     if (req.method === 'GET') {
       const { action } = req.query;
 
-      // ── BULK ENABLE TRACKING ──────────────────────────────────────────
-      // GET /api/inventory?action=enableAll
-      // Creates inventory records for all products and enables trackInventory
-      // ── BACKFILL FROM DELIVERED ORDERS ───────────────────────────────────
-      // GET /api/inventory?action=backfillDelivered
-      // Reads all delivered orders and deducts their quantities from inventory
-      // Only deducts if the order hasn't already been backfilled (checks adjustmentLog)
+      // ── BACKFILL DELIVERED ORDERS ─────────────────────────────────────────
       if (action === 'backfillDelivered') {
         const ordersCol = db.collection('orders');
         const deliveredOrders = await ordersCol.find({ status: 'delivered' }).toArray();
@@ -53,7 +47,6 @@ export default async function handler(req, res) {
             const inv = await inventoryCol.findOne({ productId: pid });
             if (!inv || inv.trackInventory === false) { skipped++; continue; }
 
-            // Check if this order was already deducted (avoid double deduction)
             const alreadyDone = (inv.adjustmentLog || []).some(
               (l) => l.reason && l.reason.includes(orderRef)
             );
@@ -63,10 +56,15 @@ export default async function handler(req, res) {
             const newStock = Math.max(0, (inv.currentStock || 0) - qty);
             const available = Math.max(0, newStock - (inv.reservedStock || 0));
 
+            // FIX: compute and persist stockStatus
+            let stockStatus = 'in_stock';
+            if (available === 0) stockStatus = 'out_of_stock';
+            else if (available <= (inv.lowStockAlert || 10)) stockStatus = 'low_stock';
+
             await inventoryCol.updateOne(
               { productId: pid },
               {
-                $set: { currentStock: newStock, availableStock: available, updatedAt: new Date() },
+                $set: { currentStock: newStock, availableStock: available, stockStatus, updatedAt: new Date() },
                 $push: {
                   adjustmentLog: {
                     adjustment: -qty,
@@ -84,13 +82,12 @@ export default async function handler(req, res) {
 
         return res.status(200).json({
           success: true,
-          message: `Backfill complete. ${totalDeducted} deduction(s) applied, ${skipped} skipped (already done or untracked).`,
-          totalDeducted,
-          skipped,
-          log,
+          message: `Backfill complete. ${totalDeducted} deduction(s) applied, ${skipped} skipped.`,
+          totalDeducted, skipped, log,
         });
       }
 
+      // ── ENABLE ALL TRACKING ───────────────────────────────────────────────
       if (action === 'enableAll') {
         const allProducts = await productsCol.find({}).toArray();
         let created = 0, updated = 0;
@@ -100,7 +97,6 @@ export default async function handler(req, res) {
           const existing = await inventoryCol.findOne({ productId: pid });
 
           if (existing) {
-            // Already exists — just enable tracking if it was off
             if (existing.trackInventory === false) {
               await inventoryCol.updateOne(
                 { productId: pid },
@@ -109,7 +105,7 @@ export default async function handler(req, res) {
               updated++;
             }
           } else {
-            // No record yet — create one with tracking on, stock at 0
+            // FIX: include frontendStatus and stockStatus in new records
             await inventoryCol.insertOne({
               productId: pid,
               sku: '',
@@ -120,6 +116,8 @@ export default async function handler(req, res) {
               costPrice: 0,
               unit: 'pcs',
               trackInventory: true,
+              stockStatus: 'out_of_stock',       // FIX: persisted stock state
+              frontendStatus: 'normal',           // FIX: admin-controlled visibility
               adjustmentLog: [],
               createdAt: new Date(),
               updatedAt: new Date(),
@@ -130,13 +128,41 @@ export default async function handler(req, res) {
 
         return res.status(200).json({
           success: true,
-          message: `Tracking enabled for all products. ${created} records created, ${updated} records updated.`,
-          created,
-          updated,
-          total: allProducts.length,
+          message: `Tracking enabled. ${created} records created, ${updated} records updated.`,
+          created, updated, total: allProducts.length,
         });
       }
 
+      // ── STOCK VISIBILITY PANEL: get low/out-of-stock for admin control ────
+      // GET /api/inventory?action=visibilityPanel
+      // Returns all products with stockStatus low_stock or out_of_stock
+      // along with their frontendStatus so admin can update display mode
+      if (action === 'visibilityPanel') {
+        const allInventory = await inventoryCol
+          .find({ stockStatus: { $in: ['low_stock', 'out_of_stock'] } })
+          .toArray();
+
+        const enriched = await Promise.all(allInventory.map(async (inv) => {
+          const product = await productsCol.findOne({ _id: new ObjectId(inv.productId) }).catch(() => null);
+          return {
+            productId: inv.productId,
+            inventoryId: inv._id.toString(),
+            productName: product?.name || 'Unknown',
+            category: product?.category || '-',
+            image: product?.image || '',
+            price: product?.price || 0,
+            currentStock: inv.currentStock || 0,
+            availableStock: inv.availableStock || 0,
+            lowStockAlert: inv.lowStockAlert || 5,
+            stockStatus: inv.stockStatus || 'in_stock',
+            frontendStatus: inv.frontendStatus || 'normal',
+          };
+        }));
+
+        return res.status(200).json(enriched);
+      }
+
+      // ── FULL INVENTORY LIST (default) ─────────────────────────────────────
       const allProducts = await productsCol.find({}).sort({ createdAt: -1 }).toArray();
       const allInventory = await inventoryCol.find({}).toArray();
 
@@ -167,6 +193,8 @@ export default async function handler(req, res) {
             trackInventory: stock.trackInventory !== false,
             isInStock: (stock.availableStock || 0) > 0,
             isLowStock: stock.trackInventory && (stock.availableStock || 0) <= (stock.lowStockAlert || 10) && (stock.availableStock || 0) > 0,
+            stockStatus: stock.stockStatus || 'in_stock',           // FIX: persisted
+            frontendStatus: stock.frontendStatus || 'normal',       // FIX: admin visibility
             adjustmentLog: stock.adjustmentLog || [],
             updatedAt: stock.updatedAt,
           } : {
@@ -180,6 +208,8 @@ export default async function handler(req, res) {
             trackInventory: false,
             isInStock: false,
             isLowStock: false,
+            stockStatus: 'out_of_stock',
+            frontendStatus: 'normal',
             adjustmentLog: [],
           }
         };
@@ -188,23 +218,32 @@ export default async function handler(req, res) {
       return res.status(200).json(result);
     }
 
-    // POST - create or update inventory for a product
+    // ── POST: create or update inventory for a product ────────────────────────
     if (req.method === 'POST') {
       const { productId, sku, currentStock, lowStockAlert, costPrice, unit, trackInventory, reservedStock } = req.body;
       if (!productId) return res.status(400).json({ error: 'productId is required' });
 
-      const available = Math.max(0, (Number(currentStock) || 0) - (Number(reservedStock) || 0));
+      const cs = Number(currentStock) || 0;
+      const rs = Number(reservedStock) || 0;
+      const available = Math.max(0, cs - rs);
+      const alert = Number(lowStockAlert) || 10;
       const existing = await inventoryCol.findOne({ productId });
+
+      // FIX: compute and persist stockStatus on create/update
+      let stockStatus = 'in_stock';
+      if (available === 0) stockStatus = 'out_of_stock';
+      else if (available <= alert) stockStatus = 'low_stock';
 
       const data = {
         sku: sku || '',
-        currentStock: Number(currentStock) || 0,
-        reservedStock: Number(reservedStock) || 0,
+        currentStock: cs,
+        reservedStock: rs,
         availableStock: available,
-        lowStockAlert: Number(lowStockAlert) || 10,
+        lowStockAlert: alert,
         costPrice: Number(costPrice) || 0,
         unit: unit || 'pcs',
         trackInventory: trackInventory !== false,
+        stockStatus,
         updatedAt: new Date(),
       };
 
@@ -212,12 +251,17 @@ export default async function handler(req, res) {
         await inventoryCol.updateOne({ productId }, { $set: data });
         return res.status(200).json({ success: true, updated: true });
       } else {
-        await inventoryCol.insertOne({ productId, ...data, adjustmentLog: [], createdAt: new Date() });
+        await inventoryCol.insertOne({
+          productId, ...data,
+          frontendStatus: 'normal',   // FIX: default visibility on first creation
+          adjustmentLog: [],
+          createdAt: new Date(),
+        });
         return res.status(201).json({ success: true, created: true });
       }
     }
 
-    // PUT - quick stock adjustment (+/-)
+    // ── PUT: quick stock adjustment (+/-) ─────────────────────────────────────
     if (req.method === 'PUT') {
       const { productId, adjustment, reason } = req.body;
       if (!productId) return res.status(400).json({ error: 'productId is required' });
@@ -228,10 +272,15 @@ export default async function handler(req, res) {
       const newStock = Math.max(0, (existing.currentStock || 0) + (Number(adjustment) || 0));
       const available = Math.max(0, newStock - (existing.reservedStock || 0));
 
+      // FIX: persist stockStatus on every adjustment
+      let stockStatus = 'in_stock';
+      if (available === 0) stockStatus = 'out_of_stock';
+      else if (existing.trackInventory && available <= (existing.lowStockAlert || 10)) stockStatus = 'low_stock';
+
       await inventoryCol.updateOne(
         { productId },
         {
-          $set: { currentStock: newStock, availableStock: available, updatedAt: new Date() },
+          $set: { currentStock: newStock, availableStock: available, stockStatus, updatedAt: new Date() },
           $push: {
             adjustmentLog: {
               adjustment: Number(adjustment),
@@ -243,10 +292,32 @@ export default async function handler(req, res) {
         }
       );
 
-      return res.status(200).json({ success: true, newStock, available });
+      return res.status(200).json({ success: true, newStock, available, stockStatus });
     }
 
-    // DELETE - remove inventory tracking
+    // ── PATCH: update frontendStatus only (Stock Visibility Control panel) ───
+    // Body: { productId, frontendStatus: 'normal' | 'low_stock' | 'out_of_stock' | 'hidden' }
+    if (req.method === 'PATCH') {
+      const { productId, frontendStatus } = req.body;
+      if (!productId) return res.status(400).json({ error: 'productId is required' });
+
+      const validStatuses = ['normal', 'low_stock', 'out_of_stock', 'hidden'];
+      if (!validStatuses.includes(frontendStatus)) {
+        return res.status(400).json({ error: `frontendStatus must be one of: ${validStatuses.join(', ')}` });
+      }
+
+      const existing = await inventoryCol.findOne({ productId });
+      if (!existing) return res.status(404).json({ error: 'Inventory record not found' });
+
+      await inventoryCol.updateOne(
+        { productId },
+        { $set: { frontendStatus, updatedAt: new Date() } }
+      );
+
+      return res.status(200).json({ success: true, productId, frontendStatus });
+    }
+
+    // ── DELETE: remove inventory tracking ─────────────────────────────────────
     if (req.method === 'DELETE') {
       const { productId } = req.body;
       if (!productId) return res.status(400).json({ error: 'productId is required' });
