@@ -107,7 +107,8 @@ export default async function handler(req, res) {
         if (deliveryDate !== undefined) updateFields.deliveryDate = deliveryDate;
         if (whatsappMessage !== undefined) updateFields.whatsappMessage = whatsappMessage;
 
-        // ── DELIVERY: deduct stock + record cashFlow income ────────────────
+        // ── DELIVERY: record payment in cashFlow only ─────────────────────
+        // Stock is NOT auto-deducted — only manual adjustment or PO receipt changes stock
         if (status === 'delivered') {
           updateFields.deliveredAt = new Date();
           if (paymentMode !== undefined) updateFields.paymentMode = paymentMode;
@@ -117,54 +118,8 @@ export default async function handler(req, res) {
           updateFields.paymentStatus = paymentMode === 'already_paid' ? 'paid' : 'collected';
 
           const deliveredOrder = await ordersCol.findOne({ _id: new ObjectId(id) });
-          if (deliveredOrder?.items?.length) {
-            const inventoryCol = db.collection('inventory');
-            let totalCOGS = 0;
-
-            for (const item of deliveredOrder.items) {
-              const pid = item.productId;
-              if (!pid) continue;
-              const inv = await inventoryCol.findOne({ productId: pid });
-              if (!inv || inv.trackInventory === false) continue;
-
-              const qty = Number(item.quantity) || 1;
-              const newStock = Math.max(0, (inv.currentStock || 0) - qty);
-              const available = Math.max(0, newStock - (inv.reservedStock || 0));
-
-              // FIX: compute and persist stockStatus after deduction
-              let stockStatus = 'in_stock';
-              if (available === 0) stockStatus = 'out_of_stock';
-              else if (available <= (inv.lowStockAlert || 10)) stockStatus = 'low_stock';
-
-              await inventoryCol.updateOne(
-                { productId: pid },
-                {
-                  $set: {
-                    currentStock: newStock,
-                    availableStock: available,
-                    stockStatus,   // FIX: persisted
-                    updatedAt: new Date()
-                  },
-                  $push: {
-                    adjustmentLog: {
-                      adjustment: -qty,
-                      reason: `Sold – Order ${deliveredOrder.orderId || id} (${deliveredOrder.customerName})`,
-                      date: new Date(),
-                      stockAfter: newStock,
-                    }
-                  }
-                }
-              );
-
-              // FIX: accumulate COGS
-              if (inv.costPrice && inv.costPrice > 0) {
-                totalCOGS += inv.costPrice * qty;
-              }
-            }
-
-            // FIX: record income in cashFlow when delivery is confirmed
-            // This is the income entry for WhatsApp orders (not done at order creation,
-            // done at delivery because that's when payment is actually collected)
+          if (deliveredOrder) {
+            // Record income in cashFlow when delivery is confirmed
             const collectedAmount = Number(amountCollected) || deliveredOrder.totalAmount || 0;
             if (collectedAmount > 0 && paymentMode !== 'already_paid') {
               await cashFlow.insertOne({
@@ -183,18 +138,29 @@ export default async function handler(req, res) {
               });
             }
 
-            // FIX: record COGS as expense on delivery
-            if (totalCOGS > 0) {
-              await cashFlow.insertOne({
-                type: 'expense',
-                category: 'cogs',
-                amount: totalCOGS,
-                description: `Cost of goods – Order ${deliveredOrder.orderId || id}`,
-                referenceId: id,
-                referenceType: 'order_cogs',
-                date: new Date(),
-                createdAt: new Date(),
-              });
+            // Record COGS as expense using costPrice from inventory
+            if (deliveredOrder.items?.length) {
+              const inventoryCol = db.collection('inventory');
+              let totalCOGS = 0;
+              for (const item of deliveredOrder.items) {
+                if (!item.productId) continue;
+                const inv = await inventoryCol.findOne({ productId: item.productId });
+                if (inv && inv.costPrice && inv.costPrice > 0) {
+                  totalCOGS += inv.costPrice * (Number(item.quantity) || 1);
+                }
+              }
+              if (totalCOGS > 0) {
+                await cashFlow.insertOne({
+                  type: 'expense',
+                  category: 'cogs',
+                  amount: totalCOGS,
+                  description: `Cost of goods – Order ${deliveredOrder.orderId || id}`,
+                  referenceId: id,
+                  referenceType: 'order_cogs',
+                  date: new Date(),
+                  createdAt: new Date(),
+                });
+              }
             }
           }
         }
