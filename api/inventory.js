@@ -295,19 +295,37 @@ export default async function handler(req, res) {
       return res.status(200).json({ success: true, newStock, available, stockStatus });
     }
 
-    // ── PATCH: update frontendStatus only (Stock Visibility Control panel) ───
-    // Body: { productId, frontendStatus: 'normal' | 'low_stock' | 'out_of_stock' | 'hidden' }
+    // ── PATCH: update frontendStatus OR delete a specific adjustmentLog entry ─
     if (req.method === 'PATCH') {
-      const { productId, frontendStatus } = req.body;
+      const { productId, frontendStatus, action, index } = req.body;
       if (!productId) return res.status(400).json({ error: 'productId is required' });
 
+      const existing = await inventoryCol.findOne({ productId });
+      if (!existing) return res.status(404).json({ error: 'Inventory record not found' });
+
+      // ── Delete a specific adjustment log entry by index ──────────────────
+      if (action === 'deleteAdjustment') {
+        const idx = Number(index);
+        if (isNaN(idx) || idx < 0) return res.status(400).json({ error: 'Valid index is required' });
+
+        const log = existing.adjustmentLog || [];
+        if (idx >= log.length) return res.status(400).json({ error: 'Index out of range' });
+
+        // Remove the entry at that index
+        log.splice(idx, 1);
+
+        await inventoryCol.updateOne(
+          { productId },
+          { $set: { adjustmentLog: log, updatedAt: new Date() } }
+        );
+        return res.status(200).json({ success: true });
+      }
+
+      // ── Update frontendStatus (Stock Visibility Control panel) ───────────
       const validStatuses = ['normal', 'low_stock', 'out_of_stock', 'hidden'];
       if (!validStatuses.includes(frontendStatus)) {
         return res.status(400).json({ error: `frontendStatus must be one of: ${validStatuses.join(', ')}` });
       }
-
-      const existing = await inventoryCol.findOne({ productId });
-      if (!existing) return res.status(404).json({ error: 'Inventory record not found' });
 
       await inventoryCol.updateOne(
         { productId },
