@@ -1144,7 +1144,7 @@ export function AdminPanel() {
 
           {activeSection === 'products'   && <div className="max-w-5xl mx-auto"><SectionHeader icon={Package}    title="Products"   desc="Browse, filter & edit all your products" /><ProductManagerEmbed /></div>}
           {activeSection === 'categories' && <div className="max-w-2xl mx-auto"><SectionHeader icon={FolderTree} title="Categories" desc="Add, edit or delete categories and subcategories" /><ManageCategoriesEmbed /></div>}
-          {activeSection === 'inventory'  && <div className="max-w-5xl mx-auto"><SectionHeader icon={ShoppingBag} title="Inventory" desc="Track stock levels" /><InventoryEmbed /></div>}
+         {activeSection === 'inventory' && <div className="max-w-5xl mx-auto"><SectionHeader icon={ShoppingBag} title="Inventory" desc="Track stock levels" /><InventoryEmbed /><StockVisibilityPanel /></div>}
           {activeSection === 'business'   && <div className="max-w-5xl mx-auto"><SectionHeader icon={BarChart2}  title="Business"   desc="Sales, PO, Cash Flow, Reports" /><BusinessEmbed /></div>}
           {activeSection === 'import'     && <div className="max-w-2xl mx-auto"><ImportProductsSection /></div>}
 
