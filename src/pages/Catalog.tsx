@@ -201,7 +201,7 @@ export function Catalog() {
       });
     }
     if (filters.inStock) {
-      result = result.filter(p => !p.stock?.trackInventory || p.stock?.isInStock);
+      result = result.filter(p => (p.stock?.frontendStatus || 'normal') !== 'out_of_stock' && (p.stock?.frontendStatus || 'normal') !== 'hidden');
     }
 
     switch (filters.sort) {
@@ -630,9 +630,9 @@ export function Catalog() {
                   const displayPrice    = hasDiscount ? parseFloat(product.discountedPrice) : parseFloat(product.price || product.originalPrice || 0);
                   const originalPrice   = parseFloat(product.originalPrice || product.price || 0);
                   const discountPct     = hasDiscount ? Math.round((1 - displayPrice / originalPrice) * 100) : 0;
-                  const isTracked       = product.stock?.trackInventory;
-                  const isOutOfStock    = isTracked && !product.stock?.isInStock;
-                  const isLowStock      = product.stock?.isLowStock;
+                  const frontendStatus  = product.stock?.frontendStatus || 'normal';
+                  const isOutOfStock    = frontendStatus === 'out_of_stock' || frontendStatus === 'hidden';
+                  const isLowStock      = frontendStatus === 'low_stock';
                   const availableStock  = product.stock?.availableStock;
                   const productImage    = product.imageUrls?.[0] || product.imageUrl || product.image || null;
 
