@@ -103,6 +103,25 @@ export function InventoryEmbed() {
     }
   };
 
+  const handleDeleteAdjustment = async (product: ProductInventory, logIndex: number) => {
+    if (!confirm('Delete this adjustment entry?')) return;
+    // logIndex is from the reversed display — convert back to original array index
+    const originalIndex = product.stock.adjustmentLog.length - 1 - logIndex;
+    try {
+      const res = await fetch('/api/inventory', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ productId: product._id, action: 'deleteAdjustment', index: originalIndex }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed');
+      showMessage('Adjustment entry deleted.', 'success');
+      fetchInventory();
+    } catch (err: any) {
+      showMessage(err.message || 'Failed to delete.', 'error');
+    }
+  };
+
   const handleAdjustment = async (product: ProductInventory, type: 'add' | 'subtract') => {
     const val = parseInt(adjustmentValues[product._id] || '0');
     if (!val || val <= 0) { showMessage('Enter a valid quantity.', 'error'); return; }
@@ -518,12 +537,17 @@ export function InventoryEmbed() {
                             <p className="text-xs font-black uppercase tracking-widest text-gray-500 mb-2">Recent Adjustments</p>
                             <div className="space-y-1 max-h-32 overflow-y-auto">
                               {[...product.stock.adjustmentLog].reverse().slice(0, 10).map((log, i) => (
-                                <div key={i} className="flex justify-between items-center text-xs px-3 py-1.5 bg-gray-50 rounded-lg">
-                                  <span className={`font-black ${log.adjustment > 0 ? 'text-green-600' : 'text-red-500'}`}>
+                                <div key={i} className="flex justify-between items-center text-xs px-3 py-1.5 bg-gray-50 rounded-lg group">
+                                  <span className={`font-black shrink-0 ${log.adjustment > 0 ? 'text-green-600' : 'text-red-500'}`}>
                                     {log.adjustment > 0 ? '+' : ''}{log.adjustment} {product.stock.unit}
                                   </span>
                                   <span className="text-gray-500 flex-1 mx-3 truncate">{log.reason}</span>
-                                  <span className="text-gray-400 shrink-0">{new Date(log.date).toLocaleDateString('en-IN')}</span>
+                                  <span className="text-gray-400 shrink-0 mr-2">{new Date(log.date).toLocaleDateString('en-IN')}</span>
+                                  <button
+                                    onClick={() => handleDeleteAdjustment(product, i)}
+                                    className="shrink-0 w-5 h-5 rounded-full bg-red-50 text-red-400 hover:bg-red-500 hover:text-white transition-all flex items-center justify-center opacity-0 group-hover:opacity-100 text-[10px] font-black"
+                                    title="Delete this entry"
+                                  >✕</button>
                                 </div>
                               ))}
                             </div>
