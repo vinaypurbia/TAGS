@@ -32,13 +32,11 @@ function getFbProductCategory(category) {
   return map[category] || '1';
 }
 
-// ── Push a product TO Meta catalog ────────────────────────────
 async function pushProductToMeta(product, metaId = null) {
   if (!META_ACCESS_TOKEN) return null;
 
   const price = parseFloat(product.discountedPrice || product.originalPrice || product.price || 0);
   const originalPrice = parseFloat(product.originalPrice || product.price || 0);
-
   const priceInPaise = Math.round(price * 100);
   const originalPriceInPaise = Math.round(originalPrice * 100);
 
@@ -82,7 +80,6 @@ async function pushProductToMeta(product, metaId = null) {
   return res.json();
 }
 
-// ── Delete a product FROM Meta catalog ────────────────────────
 async function deleteProductFromMeta(metaId) {
   if (!META_ACCESS_TOKEN || !metaId) return null;
   const res = await fetch(`https://graph.facebook.com/v25.0/${metaId}?access_token=${META_ACCESS_TOKEN}`, {
@@ -91,7 +88,6 @@ async function deleteProductFromMeta(metaId) {
   return res.json();
 }
 
-// ── Sync Meta → MongoDB (pull) ─────────────────────────────────
 async function syncMetaToMongo(collection) {
   if (!META_ACCESS_TOKEN) throw new Error('META_ACCESS_TOKEN is not set');
 
@@ -137,6 +133,36 @@ async function syncMetaToMongo(collection) {
   return { synced, total: allProducts.length };
 }
 
+// ── Helper: enrich a product with its stock data ──────────────────────────────
+// FIX: now returns frontendStatus and stockStatus so frontend can act on them
+async function enrichWithStock(p, inventory) {
+  const pid = p._id.toString();
+  const stock = await inventory.findOne({ productId: pid });
+  p.stock = stock
+    ? {
+        available: stock.availableStock,
+        total: stock.currentStock,
+        reserved: stock.reservedStock,
+        isInStock: stock.availableStock > 0,
+        isLowStock: stock.trackInventory && stock.availableStock <= stock.lowStockAlert && stock.availableStock > 0,
+        availableStock: stock.availableStock,
+        lowStockAlert: stock.lowStockAlert || 10,
+        trackInventory: stock.trackInventory,
+        sku: stock.sku,
+        costPrice: stock.costPrice || 0,
+        stockStatus: stock.stockStatus || 'in_stock',
+        frontendStatus: stock.frontendStatus || 'normal',  // FIX: returned to frontend
+      }
+    : {
+        available: null,
+        isInStock: true,
+        trackInventory: false,
+        stockStatus: 'in_stock',
+        frontendStatus: 'normal',
+      };
+  return p;
+}
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
@@ -150,9 +176,13 @@ export default async function handler(req, res) {
     const inventory = db.collection('inventory');
 
     if (req.method === 'GET') {
-      const { id, withStock, syncMeta, pushAll, page, limit, category, subcategory, search } = req.query;
+      const {
+        id, withStock, syncMeta, pushAll,
+        page, limit, category, subcategory, search,
+        adminView  // FIX: ?adminView=true skips hidden filter (for admin panel)
+      } = req.query;
 
-      // ── Special ops (unchanged) ──────────────────────────────
+      // ── Special ops ───────────────────────────────────────────
       if (syncMeta === 'true') {
         const result = await syncMetaToMongo(collection);
         return res.status(200).json({
@@ -173,9 +203,7 @@ export default async function handler(req, res) {
               { ...product, _id: pid },
               product.metaId || null
             );
-
             results.push({ name: product.name, metaResponse: metaResult });
-
             if (metaResult?.error) {
               failed++;
               errors.push({ name: product.name, error: metaResult.error.message });
@@ -203,39 +231,21 @@ export default async function handler(req, res) {
         });
       }
 
-      // ── Single product by ID (unchanged) ────────────────────
+      // ── Single product by ID ───────────────────────────────────
       if (id) {
         const product = await collection.findOne({ _id: new ObjectId(id) });
         if (!product) return res.status(404).json({ error: 'Product not found' });
-
-        const stock = await inventory.findOne({ productId: id });
-        product.stock = stock
-          ? {
-              available: stock.availableStock,
-              total: stock.currentStock,
-              reserved: stock.reservedStock,
-              isInStock: stock.availableStock > 0,
-              isLowStock: stock.trackInventory && stock.availableStock <= stock.lowStockAlert && stock.availableStock > 0,
-              availableStock: stock.availableStock,
-              trackInventory: stock.trackInventory,
-              sku: stock.sku,
-            }
-          : { available: null, isInStock: true, trackInventory: false };
-
+        await enrichWithStock(product, inventory);
         return res.status(200).json(product);
       }
 
-      // ── PAGINATED product list ───────────────────────────────
-      // Supports: ?page=1&limit=20&category=Toys&search=ball&withStock=true
+      // ── PAGINATED product list ─────────────────────────────────
       const pageNum  = Math.max(1, parseInt(page  || '1',  10));
       const pageSize = Math.min(100, Math.max(1, parseInt(limit || '20', 10)));
       const skip     = (pageNum - 1) * pageSize;
 
-      // Build MongoDB query filter
       const mongoFilter = {};
-      if (category && category !== '') {
-        mongoFilter.category = category;
-      }
+      if (category && category !== '') mongoFilter.category = category;
       if (subcategory && subcategory.trim() !== '') {
         mongoFilter.subcategory = { $regex: `^${subcategory.trim()}$`, $options: 'i' };
       }
@@ -249,10 +259,8 @@ export default async function handler(req, res) {
         ];
       }
 
-      // Count total matching (for hasMore calculation)
       const total = await collection.countDocuments(mongoFilter);
 
-      // Fetch only this page
       const products = await collection
         .find(mongoFilter)
         .sort({ createdAt: -1 })
@@ -260,31 +268,18 @@ export default async function handler(req, res) {
         .limit(pageSize)
         .toArray();
 
-      // Optionally enrich with stock
-      let result = products;
-      if (withStock === 'true') {
-        result = await Promise.all(
-          products.map(async (p) => {
-            const pid = p._id.toString();
-            const stock = await inventory.findOne({ productId: pid });
-            p.stock = stock
-              ? {
-                  available: stock.availableStock,
-                  total: stock.currentStock,
-                  reserved: stock.reservedStock,
-                  isInStock: stock.availableStock > 0,
-                  isLowStock: stock.trackInventory && stock.availableStock <= stock.lowStockAlert && stock.availableStock > 0,
-                  availableStock: stock.availableStock,
-                  trackInventory: stock.trackInventory,
-                  sku: stock.sku,
-                }
-              : { available: null, isInStock: true, trackInventory: false };
-            return p;
-          })
-        );
-      }
+      // FIX: Always enrich with stock now (needed to read frontendStatus for filtering)
+      // adminView=true skips the hidden filter so admin sees everything
+      const enriched = await Promise.all(
+        products.map(p => enrichWithStock(p, inventory))
+      );
 
-      // Return paginated envelope
+      // FIX: Filter out hidden products from customer-facing catalog
+      // adminView=true bypasses this so the admin panel always sees all products
+      const result = adminView === 'true'
+        ? enriched
+        : enriched.filter(p => p.stock?.frontendStatus !== 'hidden');
+
       return res.status(200).json({
         products: result,
         page: pageNum,
@@ -300,16 +295,22 @@ export default async function handler(req, res) {
       const insertedId = result.insertedId.toString();
 
       if (req.body.trackInventory) {
+        const cs = Number(req.body.currentStock) || 0;
+        // FIX: compute stockStatus on product creation
+        const stockStatus = cs === 0 ? 'out_of_stock' : 'in_stock';
         await inventory.insertOne({
           productId: insertedId,
           sku: req.body.sku || '',
-          currentStock: 0,
+          currentStock: cs,
           reservedStock: 0,
-          availableStock: 0,
+          availableStock: cs,
           lowStockAlert: 10,
           costPrice: Number(req.body.costPrice) || 0,
           unit: 'pcs',
           trackInventory: true,
+          stockStatus,
+          frontendStatus: 'normal',   // FIX: default visibility
+          adjustmentLog: [],
           createdAt: new Date(),
           updatedAt: new Date(),
         });
@@ -362,10 +363,11 @@ export default async function handler(req, res) {
       const result = await collection.deleteOne({ _id: new ObjectId(id) });
       if (result.deletedCount === 0) return res.status(404).json({ error: 'Product not found' });
 
+      // Also clean up inventory record
+      await inventory.deleteOne({ productId: id });
+
       try {
-        if (existing?.metaId) {
-          await deleteProductFromMeta(existing.metaId);
-        }
+        if (existing?.metaId) await deleteProductFromMeta(existing.metaId);
       } catch (metaErr) {
         console.error('Meta delete failed (DB deleted):', metaErr.message);
       }
