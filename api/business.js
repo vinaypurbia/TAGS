@@ -13,7 +13,7 @@ export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   if (req.method === 'OPTIONS') return res.status(200).end();
 
-  const { module } = req.query; // ?module=cashflow | suppliers | expenses | reports
+  const { module } = req.query;
 
   try {
     const dbClient = await getClient();
@@ -56,6 +56,8 @@ export default async function handler(req, res) {
     // ─── EXPENSES ────────────────────────────────────────────────
     if (module === 'expenses') {
       const col = db.collection('expenses');
+      // FIX: unified to 'cashFlow' — was 'cashflow' (lowercase), causing split collection
+      const cashFlow = db.collection('cashFlow');
 
       if (req.method === 'GET') {
         const { from, to } = req.query;
@@ -79,8 +81,8 @@ export default async function handler(req, res) {
           notes: notes || '',
           createdAt: new Date()
         });
-        // Auto-add to cashflow
-        await db.collection('cashflow').insertOne({
+        // FIX: Auto-add to cashFlow (correct collection)
+        await cashFlow.insertOne({
           type: 'expense', category,
           amount: Number(amount),
           description: description || category,
@@ -95,19 +97,20 @@ export default async function handler(req, res) {
         const { id } = req.body;
         if (!id) return res.status(400).json({ error: 'ID required' });
         await col.deleteOne({ _id: new ObjectId(id) });
-        await db.collection('cashflow').deleteOne({ referenceId: id, referenceType: 'expense' });
+        // FIX: delete from cashFlow (correct collection)
+        await cashFlow.deleteOne({ referenceId: id, referenceType: 'expense' });
         return res.status(200).json({ success: true });
       }
     }
 
     // ─── CASHFLOW ─────────────────────────────────────────────────
     if (module === 'cashflow') {
-      const col = db.collection('cashflow');
+      // FIX: unified to 'cashFlow' — was 'cashflow' (lowercase)
+      const col = db.collection('cashFlow');
 
       if (req.method === 'GET') {
         const { from, to, type, period } = req.query;
 
-        // Period shortcuts
         let fromDate, toDate;
         const now = new Date();
         if (period === 'today') {
@@ -137,7 +140,6 @@ export default async function handler(req, res) {
 
         const entries = await col.find(filter).sort({ date: -1 }).toArray();
 
-        // Compute summary
         const income = entries.filter(e => e.type === 'income').reduce((s, e) => s + e.amount, 0);
         const expense = entries.filter(e => e.type === 'expense').reduce((s, e) => s + e.amount, 0);
 
@@ -173,10 +175,10 @@ export default async function handler(req, res) {
         const { type } = req.query;
         const inventory = db.collection('inventory');
         const products = db.collection('products');
-        const cashflow = db.collection('cashflow');
+        // FIX: unified to 'cashFlow'
+        const cashFlow = db.collection('cashFlow');
         const movements = db.collection('stockMovements');
 
-        // Stock shortage report
         if (type === 'stock-shortage') {
           const allInventory = await inventory.find({ trackInventory: true }).toArray();
           const shortage = allInventory
@@ -196,12 +198,13 @@ export default async function handler(req, res) {
               lowStockAlert: inv.lowStockAlert,
               isOutOfStock: inv.availableStock === 0,
               reorderNeeded: inv.lowStockAlert - inv.availableStock,
+              // FIX: include frontendStatus so admin visibility panel can read it
+              frontendStatus: inv.frontendStatus || 'normal',
             };
           }));
           return res.status(200).json(enriched);
         }
 
-        // Low performing items (products with least sales)
         if (type === 'low-performing') {
           const salesData = await movements
             .find({ type: 'out', reason: { $in: ['sale', 'website_order'] } })
@@ -226,7 +229,6 @@ export default async function handler(req, res) {
           return res.status(200).json(withSales.slice(0, 20));
         }
 
-        // Best selling items
         if (type === 'best-selling') {
           const salesData = await movements.find({ type: 'out' }).toArray();
           const salesMap = {};
@@ -248,7 +250,6 @@ export default async function handler(req, res) {
           return res.status(200).json(withSales.slice(0, 20));
         }
 
-        // Profit margin per product
         if (type === 'profit-margin') {
           const allInventory = await inventory.find({}).toArray();
           const invMap = {};
@@ -277,7 +278,6 @@ export default async function handler(req, res) {
           return res.status(200).json(withMargin);
         }
 
-        // P&L Summary
         if (type === 'pnl') {
           const { from, to } = req.query;
           const filter = {};
@@ -287,13 +287,14 @@ export default async function handler(req, res) {
             if (to) filter.date.$lte = new Date(to);
           }
 
-          const allCashflow = await cashflow.find(filter).toArray();
-          const income = allCashflow.filter(e => e.type === 'income').reduce((s, e) => s + e.amount, 0);
-          const expenses = allCashflow.filter(e => e.type === 'expense').reduce((s, e) => s + e.amount, 0);
+          // FIX: reads from cashFlow (correct collection) — now includes sales income,
+          // COGS expenses, purchase expenses, delivery collections, and manual entries
+          const allCashFlow = await cashFlow.find(filter).toArray();
+          const income = allCashFlow.filter(e => e.type === 'income').reduce((s, e) => s + e.amount, 0);
+          const expenses = allCashFlow.filter(e => e.type === 'expense').reduce((s, e) => s + e.amount, 0);
 
-          // By category
           const byCategory = {};
-          allCashflow.forEach(e => {
+          allCashFlow.forEach(e => {
             const key = `${e.type}:${e.category || 'other'}`;
             if (!byCategory[key]) byCategory[key] = { type: e.type, category: e.category || 'other', total: 0, count: 0 };
             byCategory[key].total += e.amount;
@@ -308,7 +309,6 @@ export default async function handler(req, res) {
           });
         }
 
-        // Stock valuation
         if (type === 'stock-valuation') {
           const allInventory = await inventory.find({}).toArray();
           let totalValue = 0;
