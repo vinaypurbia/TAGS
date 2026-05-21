@@ -1022,9 +1022,15 @@ function PurchaseOrdersModule({ showMsg }: any) {
   const [showForm, setShowForm] = useState(false);
   const [products, setProducts] = useState<any[]>([]);
   const [form, setForm] = useState({ supplierName: '', supplierContact: '', notes: '', expectedDate: '', items: [{ productId: '', productName: '', sku: '', quantity: '1', costPrice: '' }] });
-
+const [suppliers, setSuppliers] = useState<any[]>([]);
+const [supplierSearch, setSupplierSearch] = useState('');
+const [showSupplierDropdown, setShowSupplierDropdown] = useState(false);
   const fetchPOs = () => { setLoading(true); fetch('/api/purchase-orders').then(r => r.json()).then(data => setPos(Array.isArray(data) ? data : [])).catch(() => {}).finally(() => setLoading(false)); };
-  useEffect(() => { fetchPOs(); fetch('/api/products').then(r => r.json()).then(data => setProducts(Array.isArray(data) ? data : [])).catch(() => {}); }, []);
+  useEffect(() => {
+  fetchPOs();
+  fetch('/api/products').then(r => r.json()).then(data => setProducts(Array.isArray(data) ? data : [])).catch(() => {});
+  fetch('/api/business?module=suppliers').then(r => r.json()).then(data => setSuppliers(Array.isArray(data) ? data : [])).catch(() => {});
+}, []);
 
   const addItem = () => setForm(f => ({ ...f, items: [...f.items, { productId: '', productName: '', sku: '', quantity: '1', costPrice: '' }] }));
   const removeItem = (i: number) => setForm(f => ({ ...f, items: f.items.filter((_, idx) => idx !== i) }));
@@ -1079,10 +1085,42 @@ function PurchaseOrdersModule({ showMsg }: any) {
         <div className="bg-white rounded-2xl border-2 border-[#FA5600] p-5 space-y-4">
           <h3 className="font-black text-sm uppercase tracking-widest text-gray-800">New Purchase Order</h3>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <div>
-              <label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">Supplier Name</label>
-              <input value={form.supplierName} onChange={e => setForm(f => ({ ...f, supplierName: e.target.value }))} placeholder="Supplier" className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none" />
-            </div>
+           <div className="relative">
+  <label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">Supplier Name</label>
+  <input
+    value={supplierSearch !== '' ? supplierSearch : form.supplierName}
+    onChange={e => {
+      setSupplierSearch(e.target.value);
+      setForm(f => ({ ...f, supplierName: e.target.value, supplierContact: '' }));
+      setShowSupplierDropdown(true);
+    }}
+    onFocus={() => setShowSupplierDropdown(true)}
+    onBlur={() => setTimeout(() => setShowSupplierDropdown(false), 150)}
+    placeholder="Search or type supplier..."
+    className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none"
+  />
+  {showSupplierDropdown && suppliers.filter(s =>
+    s.name.toLowerCase().includes((supplierSearch || form.supplierName).toLowerCase())
+  ).length > 0 && (
+    <div className="absolute z-20 left-0 right-0 bg-white border-2 border-[#FA5600] rounded-xl mt-1 shadow-lg max-h-40 overflow-y-auto">
+      {suppliers
+        .filter(s => s.name.toLowerCase().includes((supplierSearch || form.supplierName).toLowerCase()))
+        .map(s => (
+          <button key={s._id} type="button"
+            onMouseDown={() => {
+              setForm(f => ({ ...f, supplierName: s.name, supplierContact: s.phone || '' }));
+              setSupplierSearch('');
+              setShowSupplierDropdown(false);
+            }}
+            className="w-full text-left px-3 py-2 hover:bg-orange-50 text-sm font-bold text-gray-800 border-b border-gray-100 last:border-0">
+            <span className="text-[#FA5600] font-black mr-2">{s.name[0].toUpperCase()}</span>
+            {s.name}
+            {s.phone && <span className="text-xs text-gray-400 ml-2">{s.phone}</span>}
+          </button>
+        ))}
+    </div>
+  )}
+</div>
             <div>
               <label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">Contact</label>
               <input value={form.supplierContact} onChange={e => setForm(f => ({ ...f, supplierContact: e.target.value }))} placeholder="Phone" className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none" />
