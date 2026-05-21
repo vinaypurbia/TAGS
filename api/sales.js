@@ -115,40 +115,18 @@ export default async function handler(req, res) {
 
       const saleId = result.insertedId.toString();
 
-      // Deduct stock for each item + record COGS
+      // Stock is NOT auto-deducted on sale — only manual adjustment or PO receipt changes stock
+      // COGS is calculated from inventory costPrice for P&L accuracy
       let totalCOGS = 0;
       for (const item of enrichedItems) {
         if (!item.productId) continue;
         const inv = await inventory.findOne({ productId: item.productId });
-        if (inv) {
-          const newStock = Math.max(0, (inv.currentStock || 0) - item.quantity);
-          const available = Math.max(0, newStock - (inv.reservedStock || 0));
-
-          // FIX: auto-set stockStatus so visibility panel has a persisted queryable field
-          let stockStatus = 'in_stock';
-          if (available === 0) stockStatus = 'out_of_stock';
-          else if (inv.trackInventory && available <= (inv.lowStockAlert || 10)) stockStatus = 'low_stock';
-
-          await inventory.updateOne(
-            { productId: item.productId },
-            { $set: { currentStock: newStock, availableStock: available, stockStatus, updatedAt: new Date() } }
-          );
-          await movements.insertOne({
-            productId: item.productId, type: 'out', quantity: item.quantity,
-            reason: 'sale', referenceId: saleId,
-            balanceBefore: inv.currentStock, balanceAfter: newStock,
-            note: `Sale ${saleNumber} — ${customerName || 'Customer'}`,
-            createdAt: new Date(),
-          });
-
-          // FIX: accumulate COGS from costPrice
-          if (inv.costPrice && inv.costPrice > 0) {
-            totalCOGS += inv.costPrice * item.quantity;
-          }
+        if (inv && inv.costPrice && inv.costPrice > 0) {
+          totalCOGS += inv.costPrice * item.quantity;
         }
       }
 
-      // FIX: record income in cashFlow (correct collection name, was 'cashflow')
+      // Record income in cashFlow
       await cashFlow.insertOne({
         type: 'income', category: 'sales', amount: totalAmount,
         description: `Sale ${saleNumber} — ${customerName || 'Customer'}`,
@@ -187,31 +165,7 @@ export default async function handler(req, res) {
       const sale = await salesCol.findOne({ _id: new ObjectId(id) });
       if (!sale) return res.status(404).json({ error: 'Sale not found' });
 
-      // Restore stock
-      for (const item of sale.items) {
-        if (!item.productId) continue;
-        const inv = await inventory.findOne({ productId: item.productId });
-        if (inv) {
-          const newStock = (inv.currentStock || 0) + item.quantity;
-          const available = Math.max(0, newStock - (inv.reservedStock || 0));
-
-          // Recompute stockStatus after restore
-          let stockStatus = 'in_stock';
-          if (available === 0) stockStatus = 'out_of_stock';
-          else if (inv.trackInventory && available <= (inv.lowStockAlert || 10)) stockStatus = 'low_stock';
-
-          await inventory.updateOne(
-            { productId: item.productId },
-            { $set: { currentStock: newStock, availableStock: available, stockStatus, updatedAt: new Date() } }
-          );
-          await movements.insertOne({
-            productId: item.productId, type: 'in', quantity: item.quantity,
-            reason: 'sale_cancelled', referenceId: id,
-            balanceBefore: inv.currentStock, balanceAfter: newStock,
-            note: `Sale Cancelled: ${sale.saleNumber}`, createdAt: new Date(),
-          });
-        }
-      }
+      // Stock is NOT auto-restored on cancellation — only manual adjustment changes stock
 
       // FIX: delete income + COGS cashflow entries on cancellation
       await cashFlow.deleteMany({
