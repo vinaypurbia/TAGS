@@ -10,6 +10,8 @@
   "dependencies": {
     "mongodb": "^6.0.0",
     "cloudinary": "^1.41.0",
+    "bcryptjs": "^2.4.3",
+    "jsonwebtoken": "^9.0.2",
     "react": "^18.0.0",
     "react-dom": "^18.0.0",
     "react-router-dom": "^6.22.0",
@@ -27,6 +29,8 @@
     "@types/react": "^18",
     "@types/react-dom": "^18",
     "@types/react-router-dom": "*",
+    "@types/bcryptjs": "^2.4.6",
+    "@types/jsonwebtoken": "^9.0.6",
     "typescript": "^5",
     "vite": "^6.0.0"
   }
