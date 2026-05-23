@@ -60,7 +60,7 @@ export default async function handler(req, res) {
     }
 
     if (req.method === 'POST') {
-      const { customerName, customerPhone, customerAddress, items, notes, paymentMode, status, orderId, discountAmount, taxAmount } = req.body;
+      const { customerName, customerPhone, customerAddress, items, notes, paymentMode, status, orderId, discountAmount, taxAmount, mixedCashAmount, mixedOtherMode, mixedOtherAmount } = req.body;
       if (!items || items.length === 0) return res.status(400).json({ error: 'Items required' });
 
       const enrichedItems = items.map(item => ({
@@ -108,6 +108,7 @@ export default async function handler(req, res) {
         items: enrichedItems, subtotal,
         discountAmount: discount, taxAmount: tax, totalAmount,
         paymentMode: paymentMode || 'whatsapp',
+        ...(paymentMode === 'mixed' && { mixedCashAmount: Number(mixedCashAmount) || 0, mixedOtherMode: mixedOtherMode || 'upi', mixedOtherAmount: Number(mixedOtherAmount) || 0 }),
         status: status || 'pending',
         notes: notes || '',
         date: new Date(), createdAt: new Date(), updatedAt: new Date(),
@@ -126,13 +127,35 @@ export default async function handler(req, res) {
         }
       }
 
-      // Record income in cashFlow
-      await cashFlow.insertOne({
-        type: 'income', category: 'sales', amount: totalAmount,
-        description: `Sale ${saleNumber} — ${customerName || 'Customer'}`,
-        referenceId: saleId, referenceType: 'sale',
-        date: new Date(), createdAt: new Date(),
-      });
+      // Record income in cashFlow — split entries for mixed payment
+      if (paymentMode === 'mixed' && mixedCashAmount > 0) {
+        const cashAmt  = Number(mixedCashAmount)  || 0;
+        const otherAmt = Number(mixedOtherAmount) || 0;
+        if (cashAmt > 0) await cashFlow.insertOne({
+          type: 'income', category: 'sales',
+          amount: cashAmt,
+          paymentMode: 'cash',
+          description: `Sale ${saleNumber} — Cash portion — ${customerName || 'Customer'}`,
+          referenceId: saleId, referenceType: 'sale',
+          date: new Date(), createdAt: new Date(),
+        });
+        if (otherAmt > 0) await cashFlow.insertOne({
+          type: 'income', category: 'sales',
+          amount: otherAmt,
+          paymentMode: mixedOtherMode || 'upi',
+          description: `Sale ${saleNumber} — ${(mixedOtherMode || 'upi').toUpperCase()} portion — ${customerName || 'Customer'}`,
+          referenceId: saleId, referenceType: 'sale',
+          date: new Date(), createdAt: new Date(),
+        });
+      } else {
+        await cashFlow.insertOne({
+          type: 'income', category: 'sales', amount: totalAmount,
+          paymentMode: paymentMode || 'cash',
+          description: `Sale ${saleNumber} — ${customerName || 'Customer'}`,
+          referenceId: saleId, referenceType: 'sale',
+          date: new Date(), createdAt: new Date(),
+        });
+      }
 
       // FIX: record COGS as expense so P&L profit = income - expenses is accurate
       if (totalCOGS > 0) {
