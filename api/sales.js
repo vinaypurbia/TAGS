@@ -100,8 +100,33 @@ export default async function handler(req, res) {
         }
       }
 
+      // ── STOCK AVAILABILITY CHECK ──────────────────────────────────────────
+      // Validate every item has sufficient stock before creating the sale
+      const stockErrors = [];
+      for (const item of enrichedItems) {
+        if (!item.productId) continue; // skip items without a productId (manual entries)
+        const inv = await inventory.findOne({ productId: item.productId });
+        const available = inv?.availableStock ?? null;
+
+        if (available === null) continue; // inventory not tracked for this item — allow
+
+        if (available === 0) {
+          stockErrors.push(`"${item.productName}" is currently out of stock and unavailable for sale.`);
+        } else if (available < item.quantity) {
+          stockErrors.push(`"${item.productName}" has only ${available} unit${available !== 1 ? 's' : ''} available, but ${item.quantity} ${item.quantity !== 1 ? 'were' : 'was'} requested.`);
+        }
+      }
+
+      if (stockErrors.length > 0) {
+        return res.status(400).json({
+          error: 'Sale could not be created due to insufficient stock.',
+          stockErrors,
+          message: stockErrors.join(' | '),
+        });
+      }
+      // ─────────────────────────────────────────────────────────────────────
+
       const result = await salesCol.insertOne({
-        saleNumber, orderId: orderId || null,
         customerId,
         customerName: customerName || '',
         customerPhone: customerPhone || '',
@@ -189,21 +214,37 @@ export default async function handler(req, res) {
       const sale = await salesCol.findOne({ _id: new ObjectId(id) });
       if (!sale) return res.status(404).json({ error: 'Sale not found' });
 
-      // Stock is NOT auto-restored on cancellation — only manual adjustment changes stock
+      const saleId = id; // string form of sale._id
 
-      // FIX: delete income + COGS cashflow entries on cancellation
+      // 1. Delete cashflow entries created directly from this sale (income + COGS)
       await cashFlow.deleteMany({
-        referenceId: id,
+        referenceId: saleId,
         referenceType: { $in: ['sale', 'sale_cogs'] }
       });
 
-      // Delete the linked order if one exists (linked via sale.orderId or orders.saleId)
+      // 2. Find the linked order (sale.orderId is the order's orderId STRING e.g. TAGS-PCAUTDS, not MongoDB _id)
+      let linkedOrder = null;
       if (sale.orderId) {
-        await ordersCol.deleteOne({ _id: new ObjectId(sale.orderId) });
+        // Try by orderId string field first
+        linkedOrder = await ordersCol.findOne({ orderId: sale.orderId });
+        // Fallback: try as MongoDB _id if it looks like one
+        if (!linkedOrder && sale.orderId.length === 24) {
+          try { linkedOrder = await ordersCol.findOne({ _id: new ObjectId(sale.orderId) }); } catch {}
+        }
       }
-      // Also catch orders that store the saleId reference the other way
-      await ordersCol.deleteOne({ saleId: id });
 
+      if (linkedOrder) {
+        const orderId = linkedOrder._id.toString();
+        // 3. Delete cashflow entries created when order was delivered (order_delivery + order_cogs)
+        await cashFlow.deleteMany({
+          referenceId: orderId,
+          referenceType: { $in: ['order_delivery', 'order_cogs'] }
+        });
+        // 4. Delete the order itself
+        await ordersCol.deleteOne({ _id: linkedOrder._id });
+      }
+
+      // 5. Finally delete the sale
       await salesCol.deleteOne({ _id: new ObjectId(id) });
       return res.status(200).json({ success: true });
     }
