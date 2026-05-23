@@ -428,6 +428,22 @@ export function AdminPanel() {
         sessionStorage.setItem(SESSION_KEY, 'true');
         setIsAuthenticated(true);
         setPasswordError('');
+        // Also obtain a JWT token so the Users module (and other auth-gated API calls) work.
+        // Try the email returned by /api/admin first; fall back to a known admin email.
+        const adminEmail = data.email || 'admin@tags.com';
+        try {
+          const loginRes = await fetch('/api/business?module=auth&action=login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email: adminEmail, password: passwordInput }),
+          });
+          const loginData = await loginRes.json();
+          if (loginData.token && loginData.user) {
+            authLogin(loginData.token, loginData.user);
+          }
+        } catch {
+          // JWT login failed silently — X-Admin-Key fallback in business.js will still be used
+        }
       } else {
         setPasswordError('Incorrect password.');
         setPasswordInput('');
