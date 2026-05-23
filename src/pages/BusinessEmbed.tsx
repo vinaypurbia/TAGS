@@ -1804,7 +1804,7 @@ function UsersModule({ showMsg }: any) {
       if (['associate', 'cashier'].includes(form.role) && form.pin) body.pin = form.pin;
       const res = await fetch('/api/business?module=users', {
         method: editUser ? 'PUT' : 'POST',
-        headers: usersHeaders(),
+        headers: usersHeaders(true),
         body: JSON.stringify(body),
       });
       const data = await res.json();
