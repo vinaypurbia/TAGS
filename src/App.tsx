@@ -17,27 +17,46 @@ import { Contact } from './pages/Contact';
 import { AdminPanel } from './pages/AdminPanel';
 import EditProductForm from './pages/EditProductForm';
 
-// Detects if user is on mobile browser (not installed PWA)
-function usePWABanner() {
+// Captures the install prompt on Android Chrome
+let deferredInstallPrompt: any = null;
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  deferredInstallPrompt = e;
+});
+
+function PWABanner() {
   const [show, setShow] = useState(false);
+  const [installPromptReady, setInstallPromptReady] = useState(false);
+  const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
 
   useEffect(() => {
-    // Already running as installed PWA — never show banner
+    // Already running as installed PWA — never show
     const isInstalled =
       window.matchMedia('(display-mode: standalone)').matches ||
       (window.navigator as any).standalone === true;
-
     if (isInstalled) return;
 
     // User dismissed before — respect their choice
     const dismissed = localStorage.getItem('tags_pwa_banner_dismissed');
     if (dismissed) return;
 
-    // Only show on mobile devices
+    // Only show on mobile
     const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
     if (!isMobile) return;
 
+    // Check if install prompt is already captured
+    if (deferredInstallPrompt) setInstallPromptReady(true);
+
+    // Also listen for it arriving slightly later
+    const handler = (e: any) => {
+      e.preventDefault();
+      deferredInstallPrompt = e;
+      setInstallPromptReady(true);
+    };
+    window.addEventListener('beforeinstallprompt', handler);
+
     setShow(true);
+    return () => window.removeEventListener('beforeinstallprompt', handler);
   }, []);
 
   function dismiss(permanent: boolean) {
@@ -45,12 +64,18 @@ function usePWABanner() {
     setShow(false);
   }
 
-  return { show, dismiss };
-}
-
-function PWABanner() {
-  const { show, dismiss } = usePWABanner();
-  const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+  async function handleInstall() {
+    if (deferredInstallPrompt) {
+      // Android — trigger native install prompt directly
+      deferredInstallPrompt.prompt();
+      const { outcome } = await deferredInstallPrompt.userChoice;
+      if (outcome === 'accepted') {
+        setShow(false);
+        localStorage.setItem('tags_pwa_banner_dismissed', '1');
+      }
+      deferredInstallPrompt = null;
+    }
+  }
 
   if (!show) return null;
 
@@ -76,8 +101,8 @@ function PWABanner() {
             <p className="text-white font-black text-sm">Better on the App!</p>
             <p className="text-white/50 text-xs mt-0.5 leading-relaxed">
               {isIOS
-                ? 'Tap the Share button below, then "Add to Home Screen" for the full TAGS app experience.'
-                : 'Add TAGS to your home screen for a faster, full-screen experience.'}
+                ? 'Tap Share below, then "Add to Home Screen" for the full TAGS experience.'
+                : 'Install TAGS on your home screen for a faster, full-screen experience.'}
             </p>
           </div>
           <button
@@ -88,16 +113,52 @@ function PWABanner() {
           </button>
         </div>
 
-        {/* Bottom row — instruction + don't show again */}
+        {/* Bottom row — install button or iOS instruction */}
         <div className="flex items-center gap-2 mt-3">
           {isIOS ? (
-            <div className="flex-1 bg-white/5 rounded-xl px-3 py-2 flex items-center gap-2">
-              <span className="text-[#FA5600] text-base">⬆</span>
-              <span className="text-white/60 text-xs font-bold">
-                Share → Add to Home Screen
-              </span>
+            // iPhone — step by step visual guide
+            <div className="flex-1 space-y-2">
+              <p className="text-white/40 text-[10px] font-black uppercase tracking-widest">How to install on iPhone:</p>
+              <div className="flex items-center gap-2">
+                <div className="w-6 h-6 rounded-full bg-[#FA5600] flex items-center justify-center shrink-0">
+                  <span className="text-white font-black text-[10px]">1</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-white/70 text-xs font-bold">Tap</span>
+                  <span className="bg-white/10 rounded-lg px-2 py-0.5 text-white text-xs font-black">⬆ Share</span>
+                  <span className="text-white/70 text-xs font-bold">at the bottom</span>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="w-6 h-6 rounded-full bg-[#FA5600] flex items-center justify-center shrink-0">
+                  <span className="text-white font-black text-[10px]">2</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-white/70 text-xs font-bold">Tap</span>
+                  <span className="bg-white/10 rounded-lg px-2 py-0.5 text-white text-xs font-black">＋ Add to Home Screen</span>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="w-6 h-6 rounded-full bg-[#FA5600] flex items-center justify-center shrink-0">
+                  <span className="text-white font-black text-[10px]">3</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-white/70 text-xs font-bold">Tap</span>
+                  <span className="bg-white/10 rounded-lg px-2 py-0.5 text-white text-xs font-black">Add</span>
+                  <span className="text-white/70 text-xs font-bold">— done! 🎉</span>
+                </div>
+              </div>
             </div>
+          ) : installPromptReady ? (
+            // Android with prompt ready — show real install button
+            <button
+              onClick={handleInstall}
+              className="flex-1 bg-[#FA5600] text-white font-black text-sm uppercase tracking-widest py-3 rounded-xl hover:bg-[#E04A00] transition active:scale-95"
+            >
+              + Install App
+            </button>
           ) : (
+            // Android but prompt not ready yet — show manual instruction
             <div className="flex-1 bg-white/5 rounded-xl px-3 py-2 flex items-center gap-2">
               <span className="text-[#FA5600] text-base">⊕</span>
               <span className="text-white/60 text-xs font-bold">
