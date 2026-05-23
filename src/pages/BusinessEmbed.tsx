@@ -1740,7 +1740,7 @@ const ROLE_LABELS: Record<UserRole, string> = {
 };
 
 function UsersModule({ showMsg }: any) {
-  const { token, isAdmin } = useAuth();
+  const { token } = useAuth();
   const [users, setUsers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
@@ -1751,9 +1751,22 @@ function UsersModule({ showMsg }: any) {
 
   const isPinRole = ['associate', 'cashier'].includes(form.role);
 
+  // Build headers — works with both JWT token (new auth) and old admin password system
+  function usersHeaders(withContentType = false): Record<string, string> {
+    const h: Record<string, string> = {};
+    if (withContentType) h['Content-Type'] = 'application/json';
+    if (token) h['Authorization'] = `Bearer ${token}`;
+    // Fallback: send admin password as X-Admin-Key for old session-based login
+    const adminPass = (import.meta.env as any).VITE_ADMIN_PASSWORD || '';
+    if (adminPass && sessionStorage.getItem('adminAuth') === 'true') {
+      h['X-Admin-Key'] = adminPass;
+    }
+    return h;
+  }
+
   const loadUsers = () => {
     setLoading(true);
-    fetch('/api/business?module=users', { headers: authHeaders(token) })
+    fetch('/api/business?module=users', { headers: usersHeaders() })
       .then(r => r.json())
       .then(data => setUsers(Array.isArray(data) ? data : []))
       .catch(() => setUsers([]))
@@ -1791,7 +1804,7 @@ function UsersModule({ showMsg }: any) {
       if (['associate', 'cashier'].includes(form.role) && form.pin) body.pin = form.pin;
       const res = await fetch('/api/business?module=users', {
         method: editUser ? 'PUT' : 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeaders(token) },
+        headers: usersHeaders(),
         body: JSON.stringify(body),
       });
       const data = await res.json();
@@ -1807,7 +1820,7 @@ function UsersModule({ showMsg }: any) {
     try {
       await fetch('/api/business?module=users', {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json', ...authHeaders(token) },
+        headers: usersHeaders(),
         body: JSON.stringify({ id: u._id, active: !u.active }),
       });
       showMsg(u.active ? 'User deactivated.' : '✅ User activated.', 'success');
