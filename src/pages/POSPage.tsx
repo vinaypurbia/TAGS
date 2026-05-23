@@ -233,7 +233,7 @@ export default function POSPage() {
   }
 
   return (
-    <div className="min-h-screen bg-[#F5F5F5] flex flex-col" style={{ fontFamily: 'system-ui, sans-serif' }}>
+    <div className="h-screen bg-[#F5F5F5] flex flex-col overflow-hidden" style={{ fontFamily: 'system-ui, sans-serif' }}>
 
       {/* Top bar */}
       <header className="bg-[#1A1A1A] text-white px-6 py-3 flex items-center justify-between shrink-0">
@@ -268,7 +268,7 @@ export default function POSPage() {
       </header>
 
       {/* Main layout */}
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex flex-1 min-h-0 overflow-hidden">
 
         {/* LEFT — product grid */}
         <div className="flex-1 flex flex-col overflow-hidden border-r border-gray-200">
@@ -343,7 +343,7 @@ export default function POSPage() {
         </div>
 
         {/* RIGHT — cart + checkout — fixed independent panel */}
-        <div className="w-[360px] shrink-0 flex flex-col bg-white overflow-hidden" style={{height: "calc(100vh - 56px)"}}>        
+        <div className="w-[360px] shrink-0 flex flex-col bg-white overflow-hidden h-full">
 
           {/* Cart header */}
           <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
