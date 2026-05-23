@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { requestNotificationPermission, useFirebaseNotifications } from './hooks/useNotifications';
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { CartProvider } from './context/CartContext';
 import { AppDataProvider, useAppData } from './context/AppDataContext';
@@ -15,6 +16,106 @@ import { ManageCategories } from './pages/ManageCategories';
 import { Contact } from './pages/Contact';
 import { AdminPanel } from './pages/AdminPanel';
 import EditProductForm from './pages/EditProductForm';
+
+// Detects if user is on mobile browser (not installed PWA)
+function usePWABanner() {
+  const [show, setShow] = useState(false);
+
+  useEffect(() => {
+    // Already running as installed PWA — never show banner
+    const isInstalled =
+      window.matchMedia('(display-mode: standalone)').matches ||
+      (window.navigator as any).standalone === true;
+
+    if (isInstalled) return;
+
+    // User dismissed before — respect their choice
+    const dismissed = localStorage.getItem('tags_pwa_banner_dismissed');
+    if (dismissed) return;
+
+    // Only show on mobile devices
+    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    if (!isMobile) return;
+
+    setShow(true);
+  }, []);
+
+  function dismiss(permanent: boolean) {
+    if (permanent) localStorage.setItem('tags_pwa_banner_dismissed', '1');
+    setShow(false);
+  }
+
+  return { show, dismiss };
+}
+
+function PWABanner() {
+  const { show, dismiss } = usePWABanner();
+  const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+
+  if (!show) return null;
+
+  return (
+    <div className="fixed bottom-0 left-0 right-0 z-[9999] px-4 pb-4 pointer-events-none">
+      <div
+        className="bg-[#1A1A1A] border border-white/10 rounded-2xl p-4 shadow-2xl pointer-events-auto"
+        style={{ animation: 'slideUp 0.3s ease forwards' }}
+      >
+        <style>{`
+          @keyframes slideUp {
+            from { opacity: 0; transform: translateY(20px); }
+            to   { opacity: 1; transform: translateY(0); }
+          }
+        `}</style>
+
+        {/* Top row — icon + text + close */}
+        <div className="flex items-start gap-3">
+          <div className="w-10 h-10 bg-[#FA5600] rounded-xl flex items-center justify-center shrink-0">
+            <span className="text-white font-black text-sm">T</span>
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-white font-black text-sm">Better on the App!</p>
+            <p className="text-white/50 text-xs mt-0.5 leading-relaxed">
+              {isIOS
+                ? 'Tap the Share button below, then "Add to Home Screen" for the full TAGS app experience.'
+                : 'Add TAGS to your home screen for a faster, full-screen experience.'}
+            </p>
+          </div>
+          <button
+            onClick={() => dismiss(false)}
+            className="text-white/30 hover:text-white/60 text-lg leading-none shrink-0 mt-0.5"
+          >
+            ✕
+          </button>
+        </div>
+
+        {/* Bottom row — instruction + don't show again */}
+        <div className="flex items-center gap-2 mt-3">
+          {isIOS ? (
+            <div className="flex-1 bg-white/5 rounded-xl px-3 py-2 flex items-center gap-2">
+              <span className="text-[#FA5600] text-base">⬆</span>
+              <span className="text-white/60 text-xs font-bold">
+                Share → Add to Home Screen
+              </span>
+            </div>
+          ) : (
+            <div className="flex-1 bg-white/5 rounded-xl px-3 py-2 flex items-center gap-2">
+              <span className="text-[#FA5600] text-base">⊕</span>
+              <span className="text-white/60 text-xs font-bold">
+                Tap "Add to Home Screen" in your browser menu
+              </span>
+            </div>
+          )}
+          <button
+            onClick={() => dismiss(true)}
+            className="text-white/30 text-[10px] font-bold uppercase tracking-widest shrink-0"
+          >
+            Don't show
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function SplashScreen() {
   return (
@@ -79,6 +180,17 @@ function AppShell() {
   const { isLoaded } = useAppData();
   const [minTimeDone, setMinTimeDone] = useState(false);
 
+  // Handle foreground push notifications
+  useFirebaseNotifications();
+
+  // Request notification permission after splash screen
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      requestNotificationPermission();
+    }, 5000); // Ask after 5 seconds — not immediately on load
+    return () => clearTimeout(timer);
+  }, []);
+
   // Start a timer on mount — splash shows for at least MIN_SPLASH_MS
   useEffect(() => {
     const timer = setTimeout(() => setMinTimeDone(true), MIN_SPLASH_MS);
@@ -136,6 +248,7 @@ export default function App() {
         <CartProvider>
           <AppDataProvider>
             <AppShell />
+            <PWABanner />
           </AppDataProvider>
         </CartProvider>
       </AuthProvider>
