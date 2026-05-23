@@ -13,8 +13,6 @@ import {
   KeyRound, EyeOff, MessageSquare, Pencil, Database,
 } from 'lucide-react';
 
-const ADMIN_PASSWORD = import.meta.env.VITE_ADMIN_PASSWORD ?? '';
-const SESSION_KEY    = 'adminAuth';
 const VISIBILITY_KEY = 'tagsAdminVisibility';
 
 type Section =
@@ -206,13 +204,8 @@ function ChangePasswordCard() {
 }
 
 export function AdminPanel() {
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
-  // Bridge new AuthContext so UsersModule and other auth-aware components work
-  const { login: authLogin, isAdmin: ctxIsAdmin, token: ctxToken } = useAuth();
-  const [passwordInput, setPasswordInput]     = useState('');
-  const [passwordError, setPasswordError]     = useState('');
-  const [showLoginPw,   setShowLoginPw]       = useState(false);
-  const [showChangePw,  setShowChangePw]      = useState(false);
+  // Auth comes entirely from AuthContext — no local password state
+  const { user, token, isLoading: authLoading, logout, canAccessAdmin } = useAuth();
   const [activeSection, setActiveSection]     = useState<Section>('dashboard');
   const [sidebarOpen,   setSidebarOpen]       = useState(false);
   const [idleWarning,   setIdleWarning]       = useState(false);
@@ -227,14 +220,13 @@ export function AdminPanel() {
     setIdleWarning(false);
     warnTimerRef.current = setTimeout(() => setIdleWarning(true), WARN_MS);
     idleTimerRef.current = setTimeout(() => {
-      sessionStorage.removeItem(SESSION_KEY);
-      setIsAuthenticated(false);
+      logout();
       setIdleWarning(false);
     }, IDLE_MS);
-  }, []);
+  }, [logout]);
 
   useEffect(() => {
-    if (!isAuthenticated) return;
+    if (!canAccessAdmin) return;
     const events = ['mousemove','mousedown','keydown','touchstart','scroll','click'];
     events.forEach(e => window.addEventListener(e, resetIdleTimer, { passive: true }));
     resetIdleTimer();
@@ -243,7 +235,7 @@ export function AdminPanel() {
       if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
       if (warnTimerRef.current) clearTimeout(warnTimerRef.current);
     };
-  }, [isAuthenticated, resetIdleTimer]);
+  }, [canAccessAdmin, resetIdleTimer]);
 
   const [visibility, setVisibility] = useState<Record<string, boolean>>(() => {
     try {
@@ -327,11 +319,7 @@ export function AdminPanel() {
   });
 
   useEffect(() => {
-    if (sessionStorage.getItem(SESSION_KEY) === 'true') setIsAuthenticated(true);
-  }, []);
-
-  useEffect(() => {
-    if (!isAuthenticated) return;
+    if (!canAccessAdmin) return;
 
     fetch('/api/banner').then(r => r.json()).then(data => {
       if (data.promoLines && Array.isArray(data.promoLines)) {
@@ -407,7 +395,7 @@ export function AdminPanel() {
       setDashLoading(false);
       fetchCollectorBalances();
     });
-  }, [isAuthenticated]);
+  }, [canAccessAdmin]);
 
   const toggleVisibility = (id: string) => {
     setVisibility(prev => {
@@ -419,49 +407,7 @@ export function AdminPanel() {
 
   const visibleModules = ALL_MODULES.filter(m => m.id === 'settings' || m.id === 'dashboard' || visibility[m.id] !== false);
 
-  // ── Login: verify via /api/admin first, fall back to env var ─────────────
-  const handlePasswordSubmit = async () => {
-    try {
-      const res  = await fetch(`/api/admin?action=check&password=${encodeURIComponent(passwordInput)}`);
-      const data = await res.json();
-      if (data.ok) {
-        sessionStorage.setItem(SESSION_KEY, 'true');
-        setIsAuthenticated(true);
-        setPasswordError('');
-        // Also obtain a JWT token so the Users module (and other auth-gated API calls) work.
-        // Try the email returned by /api/admin first; fall back to a known admin email.
-        const adminEmail = data.email || 'admin@tags.com';
-        try {
-          const loginRes = await fetch('/api/business?module=auth&action=login', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email: adminEmail, password: passwordInput }),
-          });
-          const loginData = await loginRes.json();
-          if (loginData.token && loginData.user) {
-            authLogin(loginData.token, loginData.user);
-          }
-        } catch {
-          // JWT login failed silently — X-Admin-Key fallback in business.js will still be used
-        }
-      } else {
-        setPasswordError('Incorrect password.');
-        setPasswordInput('');
-      }
-    } catch {
-      // Fallback to env var if API unreachable
-      if (passwordInput === ADMIN_PASSWORD) {
-        sessionStorage.setItem(SESSION_KEY, 'true');
-        setIsAuthenticated(true);
-        setPasswordError('');
-      } else {
-        setPasswordError('Incorrect password.');
-        setPasswordInput('');
-      }
-    }
-  };
-
-  const handleLock = () => { sessionStorage.removeItem(SESSION_KEY); setIsAuthenticated(false); };
+  const handleLock = () => { logout(); };
 
   const uploadImage = async (file: File): Promise<string> => {
     const res  = await fetch('/api/upload', { method: 'POST', body: file, headers: { 'Content-Type': file.type } });
@@ -528,14 +474,14 @@ export function AdminPanel() {
 
   // Fetch MongoDB storage stats
   useEffect(() => {
-    if (!isAuthenticated) return;
+    if (!canAccessAdmin) return;
     setDbLoading(true);
     fetch('/api/banner?module=dbstats')
       .then(r => r.json())
       .then(data => { if (!data.error) setDbStats(data); })
       .catch(() => {})
       .finally(() => setDbLoading(false));
-  }, [isAuthenticated]);
+  }, [canAccessAdmin]);
 
   const openPayModal = (order: any) => {
     setPayModal({
@@ -633,85 +579,20 @@ export function AdminPanel() {
     }
   };
 
-  // ── PASSWORD SCREEN ───────────────────────────────────────────────────────
-  if (!isAuthenticated) {
+  // ── AUTH GUARD ───────────────────────────────────────────────────────────
+  // While AuthContext is verifying the saved token, show a neutral loading screen
+  if (authLoading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-[#0F0F0F] px-4">
-        <div className="bg-[#1A1A1A] border border-white/10 p-10 rounded-2xl shadow-2xl w-full max-w-sm">
-
-          {/* Header */}
-          <div className="text-center mb-8">
-            <div className="w-16 h-16 bg-[#FA5600] rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-lg shadow-orange-500/30">
-              <span className="text-white font-black text-2xl">T</span>
-            </div>
-            <h2 className="text-2xl font-black text-white uppercase tracking-tight">TAGS Admin</h2>
-            <p className="text-sm text-white/40 mt-1">
-              {showChangePw ? 'Change your password' : 'Enter your password to continue'}
-            </p>
-          </div>
-
-          {/* ── LOGIN FORM ── */}
-          {!showChangePw && (
-            <>
-              <div className="relative mb-3">
-                <input
-                  type={showLoginPw ? 'text' : 'password'}
-                  value={passwordInput}
-                  onChange={e => setPasswordInput(e.target.value)}
-                  onKeyDown={e => e.key === 'Enter' && handlePasswordSubmit()}
-                  placeholder="Password"
-                  className="w-full bg-white/5 border border-white/10 rounded-xl p-3 pr-10 text-center text-white text-lg focus:ring-2 focus:ring-[#FA5600] focus:border-[#FA5600] outline-none placeholder-white/20 transition"
-                  autoFocus
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowLoginPw(v => !v)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-white/30 hover:text-white/60 transition">
-                  {showLoginPw ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                </button>
-              </div>
-
-              {passwordError && <p className="text-red-400 text-sm text-center mb-3">{passwordError}</p>}
-
-              <button
-                onClick={handlePasswordSubmit}
-                className="w-full bg-[#FA5600] text-white font-black py-3 rounded-xl hover:bg-[#E04A00] transition uppercase tracking-widest mb-4">
-                Enter
-              </button>
-
-              {/* Change password link */}
-              <div className="text-center">
-                <button
-                  onClick={() => { setShowChangePw(true); setPasswordError(''); }}
-                  className="text-xs text-white/30 hover:text-white/60 transition font-bold uppercase tracking-widest flex items-center gap-1.5 mx-auto">
-                  <KeyRound className="w-3.5 h-3.5" />
-                  Change Password
-                </button>
-              </div>
-            </>
-          )}
-
-          {/* ── CHANGE PASSWORD FORM (on login screen) ── */}
-          {showChangePw && (
-            <>
-              <ChangePasswordForm
-                onSuccess={() => {
-                  setTimeout(() => setShowChangePw(false), 1800);
-                }}
-                onCancel={() => setShowChangePw(false)}
-              />
-              <div className="text-center mt-4">
-                <button
-                  onClick={() => setShowChangePw(false)}
-                  className="text-xs text-white/30 hover:text-white/60 transition font-bold uppercase tracking-widest">
-                  ← Back to Login
-                </button>
-              </div>
-            </>
-          )}
-        </div>
+      <div className="min-h-screen flex items-center justify-center bg-[#0F0F0F]">
+        <div className="text-white/40 text-sm font-bold uppercase tracking-widest animate-pulse">Verifying session…</div>
       </div>
     );
+  }
+
+  // Not logged in, or logged in with a role that cannot access admin → redirect to login
+  if (!canAccessAdmin) {
+    window.location.href = '/login?redirect=/admin';
+    return null;
   }
 
   // ── MAIN LAYOUT ───────────────────────────────────────────────────────────
