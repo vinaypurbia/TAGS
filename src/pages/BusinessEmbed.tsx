@@ -1034,7 +1034,12 @@ function SalesModule({ showMsg }: any) {
       setShowForm(false);
       setForm({ customerName: '', customerPhone: '', customerAddress: '', notes: '', paymentMode: 'cash', items: [{ productId: '', productName: '', price: '', quantity: '1' }] });
       fetchSales();
-    } else showMsg(data.error || 'Failed.', 'error');
+    } else if (data.stockErrors) {
+      // Professional stock error display
+      showMsg(`⚠️ Stock unavailable: ${data.stockErrors.join(' • ')}`, 'error');
+    } else {
+      showMsg(data.error || 'Failed.', 'error');
+    }
   };
 
   const updateStatus = async (id: string, status: string) => {
