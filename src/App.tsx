@@ -2,6 +2,10 @@ import React, { useEffect, useState } from 'react';
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { CartProvider } from './context/CartContext';
 import { AppDataProvider, useAppData } from './context/AppDataContext';
+import { AuthProvider } from './context/AuthContext';
+import LoginPage from './pages/LoginPage';
+import PosLoginPage from './pages/PosLoginPage';
+import POSPage from './pages/POSPage';
 import { Layout } from './components/Layout';
 import { Home } from './pages/Home';
 import { Catalog } from './pages/Catalog';
@@ -102,6 +106,9 @@ function AppShell() {
       <div className="site-fadein">
         <Routes>
           <Route path="/admin" element={<AdminPanel />} />
+          <Route path="/login" element={<LoginPage />} />
+          <Route path="/pos-login" element={<PosLoginPage />} />
+          <Route path="/pos" element={<POSPage />} />
           <Route path="/products/:id/edit" element={<EditProductForm />} />
           <Route path="/*" element={
             <Layout>
@@ -125,11 +132,13 @@ function AppShell() {
 export default function App() {
   return (
     <BrowserRouter>
-      <CartProvider>
-        <AppDataProvider>
-          <AppShell />
-        </AppDataProvider>
-      </CartProvider>
+      <AuthProvider>
+        <CartProvider>
+          <AppDataProvider>
+            <AppShell />
+          </AppDataProvider>
+        </CartProvider>
+      </AuthProvider>
     </BrowserRouter>
   );
 }
