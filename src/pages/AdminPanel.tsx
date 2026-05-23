@@ -1,5 +1,6 @@
 import { StockVisibilityPanel } from '../components/StockVisibilityPanel';
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { useAuth } from '../context/AuthContext';
 import { ProductManagerEmbed } from './ProductManagerEmbed';
 import { ManageCategoriesEmbed } from './ManageCategoriesEmbed';
 import { InventoryEmbed } from './InventoryEmbed';
@@ -206,6 +207,8 @@ function ChangePasswordCard() {
 
 export function AdminPanel() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  // Bridge new AuthContext so UsersModule and other auth-aware components work
+  const { login: authLogin, isAdmin: ctxIsAdmin, token: ctxToken } = useAuth();
   const [passwordInput, setPasswordInput]     = useState('');
   const [passwordError, setPasswordError]     = useState('');
   const [showLoginPw,   setShowLoginPw]       = useState(false);
