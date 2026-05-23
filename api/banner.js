@@ -333,6 +333,46 @@ export default async function handler(req, res) {
       }
     }
 
+    // ── DBSTATS MODULE (?module=dbstats) ───────────────────────
+    if (req.query.module === 'dbstats') {
+      if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
+      try {
+        const dbStats = await db.command({ dbStats: 1, scale: 1024 });
+        const collectionNames = await db.listCollections().toArray();
+        const collections = await Promise.all(
+          collectionNames.map(async (col) => {
+            try {
+              const stats = await db.command({ collStats: col.name, scale: 1024 });
+              return {
+                name: col.name,
+                count: stats.count || 0,
+                sizeMB: (stats.size || 0) / 1024,
+                storageMB: (stats.storageSize || 0) / 1024,
+              };
+            } catch {
+              return { name: col.name, count: 0, sizeMB: 0, storageMB: 0 };
+            }
+          })
+        );
+        collections.sort((a, b) => b.sizeMB - a.sizeMB);
+        const storageSizeMB = (dbStats.storageSize || 0) / 1024;
+        const indexSizeMB   = (dbStats.indexSize   || 0) / 1024;
+        const totalSizeMB   = storageSizeMB + indexSizeMB;
+        return res.status(200).json({
+          storageSizeMB: totalSizeMB,
+          dataSizeMB: (dbStats.dataSize || 0) / 1024,
+          indexSizeMB,
+          limitMB: 512,
+          usedPct: Math.min(100, (totalSizeMB / 512) * 100),
+          collections,
+          totalCollections: collections.length,
+          totalDocuments: collections.reduce((s, c) => s + c.count, 0),
+        });
+      } catch (e) {
+        return res.status(500).json({ error: 'Failed to fetch DB stats', details: e.message });
+      }
+    }
+
     return res.status(400).json({ error: 'Invalid module. Use ?module=auth|users|suppliers|expenses|cashflow|reports' });
   } catch (error) {
     console.error('Business API error:', error);
