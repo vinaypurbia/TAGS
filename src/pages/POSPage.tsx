@@ -61,8 +61,12 @@ export default function POSPage() {
   const [newCustomerPhone, setNewCustomerPhone] = useState('');
   const [savingCustomer, setSavingCustomer] = useState(false);
 
+  const [selectedCategory, setSelectedCategory] = useState('All');
   const [discount, setDiscount] = useState(0);
   const [paymentMode, setPaymentMode] = useState('cash');
+  const [mixedCash, setMixedCash] = useState(0);
+  const [mixedOther, setMixedOther] = useState(0);
+  const [mixedOtherMode, setMixedOtherMode] = useState<'upi'|'card'>('upi');
   const [notes, setNotes] = useState('');
   const [checkoutLoading, setCheckoutLoading] = useState(false);
   const [success, setSuccess] = useState(false);
@@ -86,18 +90,23 @@ export default function POSPage() {
     searchRef.current?.focus();
   }, [token]);
 
-  // Filter products on search
+  // Category list derived from products
+  const categories = ['All', ...Array.from(new Set(products.map(p => p.category || '').filter(Boolean))).sort()];
+
+  // Filter products on search + category
   useEffect(() => {
-    if (!search.trim()) { setFiltered(products.slice(0, 20)); return; }
+    let list = products;
+    if (selectedCategory !== 'All') list = list.filter(p => p.category === selectedCategory);
+    if (!search.trim()) { setFiltered(list.slice(0, 100)); return; }
     const q = search.toLowerCase();
     setFiltered(
-      products.filter(p =>
+      list.filter(p =>
         p.name?.toLowerCase().includes(q) ||
         p.category?.toLowerCase().includes(q) ||
         p.sku?.toLowerCase().includes(q)
-      ).slice(0, 40)
+      ).slice(0, 100)
     );
-  }, [search, products]);
+  }, [search, products, selectedCategory]);
 
   // Customer search — matches BusinessEmbed customers fetch: data.customers || []
   useEffect(() => {
@@ -136,6 +145,7 @@ export default function POSPage() {
     setCart([]); setDiscount(0);
     setSelectedCustomer(null); setCustomerSearch('');
     setNotes(''); setPaymentMode('cash');
+    setMixedCash(0); setMixedOther(0);
   }
 
   async function createCustomer() {
@@ -173,6 +183,7 @@ export default function POSPage() {
         customerPhone: selectedCustomer?.phone || '',
         customerAddress: '',
         paymentMode,
+        ...(paymentMode === 'mixed' && { mixedCashAmount: mixedCash, mixedOtherMode, mixedOtherAmount: mixedOther }),
         notes,
         items: cart.map(i => ({
           productId: i._id,
@@ -280,6 +291,23 @@ export default function POSPage() {
             </div>
           </div>
 
+          {/* Category strip */}
+          <div className="bg-white border-b border-gray-200 px-4 py-2 flex gap-2 overflow-x-auto no-scrollbar">
+            {categories.map(cat => (
+              <button
+                key={cat}
+                onClick={() => setSelectedCategory(cat)}
+                className={`shrink-0 text-[10px] font-black uppercase tracking-widest px-3 py-1.5 rounded-full border-2 transition-all ${
+                  selectedCategory === cat
+                    ? 'bg-[#FA5600] text-white border-[#FA5600]'
+                    : 'border-gray-200 text-gray-500 hover:border-[#FA5600]/50'
+                }`}
+              >
+                {cat}
+              </button>
+            ))}
+          </div>
+
           {/* Product grid */}
           <div className="flex-1 overflow-y-auto p-4 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 content-start">
             {filtered.length === 0 && (
@@ -314,8 +342,8 @@ export default function POSPage() {
           </div>
         </div>
 
-        {/* RIGHT — cart + checkout */}
-        <div className="w-[360px] shrink-0 flex flex-col bg-white overflow-hidden">
+        {/* RIGHT — cart + checkout — fixed independent panel */}
+        <div className="w-[360px] shrink-0 flex flex-col bg-white overflow-hidden" style={{height: "calc(100vh - 56px)"}}>        
 
           {/* Cart header */}
           <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
@@ -465,18 +493,58 @@ export default function POSPage() {
             )}
 
             {/* Payment mode */}
-            <div className="flex items-center gap-2 flex-wrap">
-              <label className="text-[10px] font-black uppercase tracking-widest text-gray-500 w-20 shrink-0">Payment</label>
-              <div className="flex gap-1.5 flex-wrap">
-                {PAYMENT_MODES.map(m => (
-                  <button
-                    key={m.value} onClick={() => setPaymentMode(m.value)}
-                    className={`text-[10px] font-black uppercase tracking-widest px-2.5 py-1 rounded-full border-2 transition-all ${paymentMode === m.value ? 'bg-[#FA5600] text-white border-[#FA5600]' : 'border-gray-200 text-gray-500 hover:border-[#FA5600]/50'}`}
-                  >
-                    {m.label}
-                  </button>
-                ))}
+            <div className="space-y-2">
+              <div className="flex items-center gap-2 flex-wrap">
+                <label className="text-[10px] font-black uppercase tracking-widest text-gray-500 w-20 shrink-0">Payment</label>
+                <div className="flex gap-1.5 flex-wrap">
+                  {PAYMENT_MODES.map(m => (
+                    <button
+                      key={m.value} onClick={() => setPaymentMode(m.value)}
+                      className={`text-[10px] font-black uppercase tracking-widest px-2.5 py-1 rounded-full border-2 transition-all ${paymentMode === m.value ? 'bg-[#FA5600] text-white border-[#FA5600]' : 'border-gray-200 text-gray-500 hover:border-[#FA5600]/50'}`}
+                    >
+                      {m.label}
+                    </button>
+                  ))}
+                </div>
               </div>
+              {/* Mixed payment split */}
+              {paymentMode === 'mixed' && (
+                <div className="bg-orange-50 border border-orange-200 rounded-xl p-3 space-y-2">
+                  <p className="text-[9px] font-black uppercase tracking-widest text-[#FA5600]">Split Payment</p>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-black text-gray-500 w-14 shrink-0">Cash ₹</span>
+                    <input
+                      type="number" min={0} max={total}
+                      value={mixedCash || ''}
+                      onChange={e => { const v = Math.max(0, Number(e.target.value)); setMixedCash(v); setMixedOther(Math.max(0, total - v)); }}
+                      placeholder="0"
+                      className="flex-1 border-2 border-gray-200 rounded-lg px-2 py-1 text-sm font-bold focus:border-[#FA5600] outline-none"
+                    />
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="flex gap-1 w-14 shrink-0">
+                      {(['upi','card'] as const).map(m => (
+                        <button key={m} onClick={() => setMixedOtherMode(m)}
+                          className={`text-[9px] font-black uppercase px-1.5 py-0.5 rounded-md border transition-all ${mixedOtherMode === m ? 'bg-[#FA5600] text-white border-[#FA5600]' : 'border-gray-300 text-gray-400'}`}>
+                          {m}
+                        </button>
+                      ))}
+                    </div>
+                    <input
+                      type="number" min={0} max={total}
+                      value={mixedOther || ''}
+                      onChange={e => { const v = Math.max(0, Number(e.target.value)); setMixedOther(v); setMixedCash(Math.max(0, total - v)); }}
+                      placeholder="0"
+                      className="flex-1 border-2 border-gray-200 rounded-lg px-2 py-1 text-sm font-bold focus:border-[#FA5600] outline-none"
+                    />
+                  </div>
+                  {(mixedCash + mixedOther) > 0 && (
+                    <p className={`text-[9px] font-black ${Math.abs(mixedCash + mixedOther - total) < 0.01 ? 'text-green-600' : 'text-red-500'}`}>
+                      {Math.abs(mixedCash + mixedOther - total) < 0.01 ? '✓ Amounts balance' : `Remaining: ${fmt(total - mixedCash - mixedOther)}`}
+                    </p>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* Notes */}
