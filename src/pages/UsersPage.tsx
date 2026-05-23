@@ -36,7 +36,7 @@ const ROLE_LABELS: Record<UserRole, string> = {
 };
 
 export function UsersModule({ showMsg }: { showMsg: (text: string, type: string) => void }) {
-  const { token, isAdmin } = useAuth();
+  const { token, isAdmin, canAccessAdmin } = useAuth();
 
   const [users, setUsers] = useState<StaffUser[]>([]);
   const [loading, setLoading] = useState(true);
@@ -125,7 +125,7 @@ export function UsersModule({ showMsg }: { showMsg: (text: string, type: string)
     } catch { showMsg('Failed.', 'error'); }
   }
 
-  if (!isAdmin) {
+  if (!canAccessAdmin) {
     return (
       <div className="bg-red-50 rounded-xl border border-red-200 p-12 text-center">
         <p className="text-red-500 font-bold text-sm">Admin access required.</p>
