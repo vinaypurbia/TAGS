@@ -25,12 +25,24 @@ function getTokenFromReq(req) {
   return null;
 }
 function requireAuth(req, roles = []) {
+  // Primary: JWT token auth (for new auth system)
   const token = getTokenFromReq(req);
-  if (!token) return null;
-  const decoded = verifyToken(token);
-  if (!decoded) return null;
-  if (roles.length && !roles.includes(decoded.role)) return null;
-  return decoded;
+  if (token) {
+    const decoded = verifyToken(token);
+    if (decoded) {
+      if (roles.length && !roles.includes(decoded.role)) return null;
+      return decoded;
+    }
+  }
+  // Fallback: X-Admin-Key header (for old admin password system)
+  const adminKey = req.headers['x-admin-key'];
+  const ADMIN_PASSWORD = process.env.VITE_ADMIN_PASSWORD || process.env.ADMIN_PASSWORD || '';
+  if (adminKey && ADMIN_PASSWORD && adminKey === ADMIN_PASSWORD) {
+    // Treat as admin role — passes all role checks
+    if (roles.length && !roles.includes('admin')) return null;
+    return { userId: 'admin', role: 'admin', name: 'Admin' };
+  }
+  return null;
 }
 
 export default async function handler(req, res) {
