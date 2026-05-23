@@ -22,6 +22,7 @@ export default async function handler(req, res) {
     // FIX: unified collection name — was 'cashflow' (lowercase), now matches cashflow.js and purchase-orders.js
     const cashFlow = db.collection('cashFlow');
     const customers = db.collection('customers');
+    const ordersCol = db.collection('orders');
 
     if (req.method === 'GET') {
       const { id, from, to, status, period } = req.query;
@@ -195,6 +196,14 @@ export default async function handler(req, res) {
         referenceId: id,
         referenceType: { $in: ['sale', 'sale_cogs'] }
       });
+
+      // Delete the linked order if one exists (linked via sale.orderId or orders.saleId)
+      if (sale.orderId) {
+        await ordersCol.deleteOne({ _id: new ObjectId(sale.orderId) });
+      }
+      // Also catch orders that store the saleId reference the other way
+      await ordersCol.deleteOne({ saleId: id });
+
       await salesCol.deleteOne({ _id: new ObjectId(id) });
       return res.status(200).json({ success: true });
     }
