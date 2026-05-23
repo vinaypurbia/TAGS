@@ -13,6 +13,8 @@ interface Product {
   discountedPrice?: string;
   category?: string;
   image?: string;
+  imageUrl?: string;
+  imageUrls?: string[];
   sku?: string;
 }
 
@@ -54,6 +56,10 @@ export default function POSPage() {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
   const [showCustomerDrop, setShowCustomerDrop] = useState(false);
+  const [showNewCustomer, setShowNewCustomer] = useState(false);
+  const [newCustomerName, setNewCustomerName] = useState('');
+  const [newCustomerPhone, setNewCustomerPhone] = useState('');
+  const [savingCustomer, setSavingCustomer] = useState(false);
 
   const [discount, setDiscount] = useState(0);
   const [paymentMode, setPaymentMode] = useState('cash');
@@ -61,6 +67,11 @@ export default function POSPage() {
   const [checkoutLoading, setCheckoutLoading] = useState(false);
   const [success, setSuccess] = useState(false);
   const [lastSaleNumber, setLastSaleNumber] = useState('');
+
+  // Login guard — redirect to pos-login if not authenticated
+  useEffect(() => {
+    if (!token && !user) navigate('/pos-login', { replace: true });
+  }, [token, user, navigate]);
 
   // Load products — matches BusinessEmbed: data.products || []
   useEffect(() => {
@@ -125,6 +136,27 @@ export default function POSPage() {
     setCart([]); setDiscount(0);
     setSelectedCustomer(null); setCustomerSearch('');
     setNotes(''); setPaymentMode('cash');
+  }
+
+  async function createCustomer() {
+    if (!newCustomerName.trim() || !newCustomerPhone.trim()) return;
+    setSavingCustomer(true);
+    try {
+      const res = await fetch('/api/customers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders(token) },
+        body: JSON.stringify({ name: newCustomerName.trim(), phone: newCustomerPhone.trim() }),
+      });
+      const data = await res.json();
+      if (data.success || data._id) {
+        setSelectedCustomer({ _id: data._id?.toString() || '', name: newCustomerName.trim(), phone: newCustomerPhone.trim() });
+        setShowNewCustomer(false);
+        setNewCustomerName('');
+        setNewCustomerPhone('');
+        setCustomerSearch('');
+      }
+    } catch {}
+    finally { setSavingCustomer(false); }
   }
 
   const subtotal = cart.reduce((s, i) => s + i.unitPrice * i.qty, 0);
@@ -261,8 +293,8 @@ export default function POSPage() {
                   key={p._id} onClick={() => addToCart(p)}
                   className={`bg-white rounded-xl border-2 p-3 text-left transition-all hover:shadow-md active:scale-95 ${inCart ? 'border-[#FA5600]' : 'border-gray-200 hover:border-[#FA5600]/50'}`}
                 >
-                  {p.image ? (
-                    <img src={p.image} alt={p.name} className="w-full aspect-square object-cover rounded-lg mb-2 bg-gray-100" />
+                  {(p.imageUrls?.[0] || p.imageUrl || p.image) ? (
+                    <img src={p.imageUrls?.[0] || p.imageUrl || p.image} alt={p.name} className="w-full aspect-square object-cover rounded-lg mb-2 bg-gray-100" />
                   ) : (
                     <div className="w-full aspect-square rounded-lg bg-orange-50 flex items-center justify-center mb-2">
                       <ShoppingCart className="w-6 h-6 text-[#FA5600]/30" />
@@ -314,31 +346,65 @@ export default function POSPage() {
                 </button>
               </div>
             ) : (
-              <div className="relative">
-                <User className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
-                <input
-                  type="text" value={customerSearch}
-                  onChange={e => { setCustomerSearch(e.target.value); setShowCustomerDrop(true); }}
-                  onFocus={() => setShowCustomerDrop(true)}
-                  onBlur={() => setTimeout(() => setShowCustomerDrop(false), 150)}
-                  placeholder="Search customer (optional)"
-                  className="w-full border-2 border-gray-200 rounded-xl pl-8 pr-4 py-2 text-sm font-bold focus:border-[#FA5600] outline-none transition"
-                />
-                {showCustomerDrop && customers.length > 0 && (
-                  <div className="absolute z-30 left-0 right-0 bg-white border-2 border-[#FA5600] rounded-xl mt-1 shadow-xl max-h-40 overflow-y-auto">
-                    {customers.map(c => (
-                      <button
-                        key={c._id} type="button"
-                        onMouseDown={() => { setSelectedCustomer(c); setCustomerSearch(''); setShowCustomerDrop(false); }}
-                        className="w-full text-left px-3 py-2 hover:bg-orange-50 border-b border-gray-100 last:border-0"
-                      >
-                        <p className="text-sm font-bold text-gray-800">{c.name}</p>
-                        {c.phone && <p className="text-[10px] text-gray-400">{c.phone}</p>}
-                      </button>
-                    ))}
+              {showNewCustomer ? (
+                <div className="space-y-2">
+                  <input
+                    type="text" value={newCustomerName}
+                    onChange={e => setNewCustomerName(e.target.value)}
+                    placeholder="Customer name *"
+                    className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none transition"
+                  />
+                  <input
+                    type="tel" value={newCustomerPhone}
+                    onChange={e => setNewCustomerPhone(e.target.value)}
+                    placeholder="Phone number *"
+                    className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none transition"
+                  />
+                  <div className="flex gap-2">
+                    <button
+                      onClick={createCustomer} disabled={savingCustomer || !newCustomerName.trim() || !newCustomerPhone.trim()}
+                      className="flex-1 bg-[#FA5600] text-white text-xs font-black uppercase tracking-widest py-2 rounded-xl hover:bg-[#E04A00] transition disabled:opacity-40"
+                    >
+                      {savingCustomer ? 'Saving...' : 'Save Customer'}
+                    </button>
+                    <button onClick={() => setShowNewCustomer(false)} className="px-3 bg-gray-100 text-gray-600 text-xs font-bold rounded-xl hover:bg-gray-200 transition">
+                      Cancel
+                    </button>
                   </div>
-                )}
-              </div>
+                </div>
+              ) : (
+                <div className="relative">
+                  <User className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
+                  <input
+                    type="text" value={customerSearch}
+                    onChange={e => { setCustomerSearch(e.target.value); setShowCustomerDrop(true); }}
+                    onFocus={() => setShowCustomerDrop(true)}
+                    onBlur={() => setTimeout(() => setShowCustomerDrop(false), 150)}
+                    placeholder="Search customer (optional)"
+                    className="w-full border-2 border-gray-200 rounded-xl pl-8 pr-20 py-2 text-sm font-bold focus:border-[#FA5600] outline-none transition"
+                  />
+                  <button
+                    onClick={() => setShowNewCustomer(true)}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-[9px] font-black uppercase tracking-widest bg-[#FA5600] text-white px-2 py-1 rounded-lg hover:bg-[#E04A00] transition"
+                  >
+                    + New
+                  </button>
+                  {showCustomerDrop && customers.length > 0 && (
+                    <div className="absolute z-30 left-0 right-0 bg-white border-2 border-[#FA5600] rounded-xl mt-1 shadow-xl max-h-40 overflow-y-auto">
+                      {customers.map(c => (
+                        <button
+                          key={c._id} type="button"
+                          onMouseDown={() => { setSelectedCustomer(c); setCustomerSearch(''); setShowCustomerDrop(false); }}
+                          className="w-full text-left px-3 py-2 hover:bg-orange-50 border-b border-gray-100 last:border-0"
+                        >
+                          <p className="text-sm font-bold text-gray-800">{c.name}</p>
+                          {c.phone && <p className="text-[10px] text-gray-400">{c.phone}</p>}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
             )}
           </div>
 
@@ -353,9 +419,9 @@ export default function POSPage() {
               <div className="divide-y divide-gray-50">
                 {cart.map(item => (
                   <div key={item._id} className="px-4 py-3 flex items-center gap-3">
-                    {item.image
-                      ? <img src={item.image} alt={item.name} className="w-10 h-10 rounded-lg object-cover bg-gray-100 shrink-0" />
-                      : <div className="w-10 h-10 rounded-lg bg-orange-50 shrink-0" />
+                    {(item.imageUrls?.[0] || item.imageUrl || item.image)
+                      ? <img src={item.imageUrls?.[0] || item.imageUrl || item.image} alt={item.name} className="w-10 h-10 rounded-lg object-cover bg-gray-100 shrink-0" />
+                      : <div className="w-10 h-10 rounded-lg bg-orange-50 shrink-0 flex items-center justify-center"><ShoppingCart className="w-4 h-4 text-[#FA5600]/30" /></div>
                     }
                     <div className="flex-1 min-w-0">
                       <p className="text-xs font-bold text-gray-900 truncate">{item.name}</p>
