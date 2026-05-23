@@ -1771,17 +1771,12 @@ function UsersModule({ showMsg }: any) {
 
   const isPinRole = ['associate', 'cashier'].includes(form.role);
 
-  // Build headers — works with both JWT token (new auth) and old admin password system
+  // Build request headers using the JWT token from AuthContext
   function usersHeaders(withContentType = false): Record<string, string> {
-    const h: Record<string, string> = {};
-    if (withContentType) h['Content-Type'] = 'application/json';
-    if (token) h['Authorization'] = `Bearer ${token}`;
-    // Fallback: send admin password as X-Admin-Key for old session-based login
-    const adminPass = (import.meta.env as any).VITE_ADMIN_PASSWORD || '';
-    if (adminPass && sessionStorage.getItem('adminAuth') === 'true') {
-      h['X-Admin-Key'] = adminPass;
-    }
-    return h;
+    return {
+      ...(withContentType ? { 'Content-Type': 'application/json' } : {}),
+      ...authHeaders(token),
+    };
   }
 
   const loadUsers = () => {
