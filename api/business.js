@@ -36,10 +36,9 @@ function requireAuth(req, roles = []) {
   }
   // Fallback: X-Admin-Key header (for old admin password system)
   const adminKey = req.headers['x-admin-key'];
-  const ADMIN_PASSWORD = process.env.VITE_ADMIN_PASSWORD || process.env.ADMIN_PASSWORD || '';
+  const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || process.env.VITE_ADMIN_PASSWORD || '';
   if (adminKey && ADMIN_PASSWORD && adminKey === ADMIN_PASSWORD) {
-    // Treat as admin role — passes all role checks
-    if (roles.length && !roles.includes('admin')) return null;
+    // Treat as admin — admin role always passes any role check
     return { userId: 'admin', role: 'admin', name: 'Admin' };
   }
   return null;
