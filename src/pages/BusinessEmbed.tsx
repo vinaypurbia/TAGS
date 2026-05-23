@@ -1815,11 +1815,7 @@ function UsersModule({ showMsg }: any) {
     } catch { showMsg('Failed.', 'error'); }
   };
 
-  if (!isAdmin) return (
-    <div className="bg-red-50 rounded-xl border border-red-200 p-12 text-center">
-      <p className="text-red-500 font-bold text-sm">Admin access required.</p>
-    </div>
-  );
+  // Access already guarded by AdminPanel login
 
   return (
     <div className="space-y-4">
