@@ -373,8 +373,7 @@ export default function POSPage() {
                   <X className="w-4 h-4" />
                 </button>
               </div>
-            ) : (
-              {showNewCustomer ? (
+            ) : showNewCustomer ? (
                 <div className="space-y-2">
                   <input
                     type="text" value={newCustomerName}
@@ -433,7 +432,6 @@ export default function POSPage() {
                   )}
                 </div>
               )}
-            )}
           </div>
 
           {/* Cart items */}
