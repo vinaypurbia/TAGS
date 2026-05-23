@@ -615,6 +615,17 @@ function OrdersModule({ showMsg }: any) {
 
   const filtered = statusFilter === 'all' ? orders : orders.filter(o => o.status === statusFilter);
 
+  const deleteOrder = async (order: any) => {
+    if (!confirm(`Delete order ${order.orderId} for ${order.customerName}? This cannot be undone.`)) return;
+    await fetch('/api/customers?module=orders', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: order._id }),
+    });
+    showMsg('Order deleted.', 'success');
+    fetchOrders();
+  };
+
   const updateStatus = async (order: any, status: string, extra: any = {}) => {
     await fetch('/api/customers?module=orders', {
       method: 'PUT',
@@ -864,6 +875,10 @@ function OrdersModule({ showMsg }: any) {
                     <span className={`text-[10px] font-black uppercase tracking-widest px-2 py-1.5 rounded-full ${statusColors[order.status] || 'bg-gray-100 text-gray-500'}`}>
                       {order.status}
                     </span>
+                    <button onClick={() => deleteOrder(order)}
+                      className="ml-auto text-xs text-red-400 font-bold border border-red-200 px-3 py-1.5 rounded-full hover:bg-red-50 transition">
+                      Delete Order
+                    </button>
                   </div>
                 </div>
               )}
