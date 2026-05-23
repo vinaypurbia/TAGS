@@ -10,7 +10,7 @@ import {
   Save, Check, Trash2, Eye, Upload, BarChart2,
   LayoutDashboard, ShoppingBag, Menu, X,
   TrendingUp, TrendingDown, Users, AlertTriangle, DollarSign,
-  KeyRound, EyeOff, MessageSquare, Pencil,
+  KeyRound, EyeOff, MessageSquare, Pencil, Database,
 } from 'lucide-react';
 
 const ADMIN_PASSWORD = import.meta.env.VITE_ADMIN_PASSWORD ?? '';
@@ -294,6 +294,8 @@ export function AdminPanel() {
 
   const [dashStats,     setDashStats]     = useState<any>(null);
   const [dashLoading,   setDashLoading]   = useState(true);
+  const [dbStats,       setDbStats]       = useState<any>(null);
+  const [dbLoading,     setDbLoading]     = useState(true);
   const [shortage,      setShortage]      = useState<any[]>([]);
   const [pendingOrders, setPendingOrders] = useState<any[]>([]);
 
@@ -507,6 +509,17 @@ export function AdminPanel() {
       setCollectorBalances(Array.isArray(data) ? data : []);
     } catch {}
   };
+
+  // Fetch MongoDB storage stats
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    setDbLoading(true);
+    fetch('/api/banner?module=dbstats')
+      .then(r => r.json())
+      .then(data => { if (!data.error) setDbStats(data); })
+      .catch(() => {})
+      .finally(() => setDbLoading(false));
+  }, [isAuthenticated]);
 
   const openPayModal = (order: any) => {
     setPayModal({
@@ -855,6 +868,73 @@ export function AdminPanel() {
                     </div>
                   </div>
                 ))}
+              </div>
+
+              {/* MongoDB Storage Widget */}
+              <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+                <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
+                  <div className="flex items-center gap-2">
+                    <div className="w-8 h-8 bg-green-50 rounded-xl flex items-center justify-center">
+                      <Database className="w-4 h-4 text-green-600" />
+                    </div>
+                    <div>
+                      <h3 className="font-black text-sm uppercase tracking-widest text-gray-800">MongoDB Atlas Storage</h3>
+                      <p className="text-[10px] text-gray-400">Free tier · 512 MB limit</p>
+                    </div>
+                  </div>
+                  <button onClick={() => { setDbLoading(true); fetch('/api/banner?module=dbstats').then(r=>r.json()).then(d=>{if(!d.error)setDbStats(d)}).finally(()=>setDbLoading(false)); }}
+                    className="text-[10px] font-black uppercase tracking-widest text-gray-400 hover:text-[#FA5600] transition">
+                    Refresh
+                  </button>
+                </div>
+                {dbLoading ? (
+                  <div className="p-5 space-y-3">
+                    <div className="h-4 bg-gray-100 rounded-full animate-pulse" />
+                    <div className="grid grid-cols-4 gap-3">{[...Array(4)].map((_,i)=><div key={i} className="h-16 bg-gray-100 rounded-xl animate-pulse"/>)}</div>
+                  </div>
+                ) : !dbStats ? (
+                  <div className="p-6 text-center text-xs text-gray-400 font-bold uppercase tracking-widest">
+                    Storage stats unavailable — deploy dbstats API
+                  </div>
+                ) : (
+                  <div className="p-5 space-y-4">
+                    {/* Storage bar */}
+                    {(() => {
+                      const usedMB  = dbStats.storageSizeMB || 0;
+                      const limitMB = 512;
+                      const pct     = Math.min(100, (usedMB / limitMB) * 100);
+                      const color   = pct > 80 ? 'bg-red-500' : pct > 60 ? 'bg-yellow-400' : 'bg-green-500';
+                      return (
+                        <div>
+                          <div className="flex justify-between text-xs font-black text-gray-700 mb-1.5">
+                            <span>{usedMB.toFixed(2)} MB used</span>
+                            <span className={pct > 80 ? 'text-red-500' : 'text-gray-400'}>{pct.toFixed(1)}% of 512 MB</span>
+                          </div>
+                          <div className="w-full bg-gray-100 rounded-full h-3 overflow-hidden">
+                            <div className={`h-3 rounded-full transition-all ${color}`} style={{width: `${pct}%`}} />
+                          </div>
+                          <p className="text-[10px] text-gray-400 mt-1">{(limitMB - usedMB).toFixed(2)} MB remaining</p>
+                        </div>
+                      );
+                    })()}
+                    {/* Collection breakdown */}
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                      {(dbStats.collections || []).map((col: any) => (
+                        <div key={col.name} className="bg-gray-50 rounded-xl p-3 border border-gray-100">
+                          <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 truncate">{col.name}</p>
+                          <p className="text-lg font-black text-gray-900 mt-1">{col.count.toLocaleString()}</p>
+                          <p className="text-[9px] text-gray-400">{col.sizeMB.toFixed(3)} MB</p>
+                        </div>
+                      ))}
+                    </div>
+                    {dbStats.storageSizeMB > 400 && (
+                      <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-2 flex items-center gap-2">
+                        <AlertTriangle className="w-4 h-4 text-red-500 shrink-0" />
+                        <p className="text-xs font-black text-red-600">Storage above 80% — consider cleaning old data or upgrading Atlas plan</p>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
 
               <div className="bg-white rounded-2xl border-2 border-orange-200 shadow-sm overflow-hidden">
