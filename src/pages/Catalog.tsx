@@ -691,17 +691,17 @@ export function Catalog() {
                                 <span className="text-xs text-gray-400 line-through">₹{formatPrice(originalPrice)}</span>
                               )}
                             </div>
-                            {/* Status badge — only shown for out_of_stock and low_stock.
-                                Hidden products never reach here (filtered server-side + client-side). */}
-                            {(frontendStatus === 'out_of_stock' || frontendStatus === 'low_stock') && (
-                              <span className={cn(
-                                'text-[8px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded-full shrink-0',
-                                frontendStatus === 'out_of_stock' ? 'bg-red-100 text-red-600'
-                                : 'bg-yellow-100 text-yellow-700'
-                              )}>
-                                {frontendStatus === 'out_of_stock' ? '✕ OOS' : '⚡ Low'}
-                              </span>
-                            )}
+                            {/* Status badge — always shown. Hidden products never reach here. */}
+                            <span className={cn(
+                              'text-[8px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded-full shrink-0',
+                              frontendStatus === 'out_of_stock' ? 'bg-red-100 text-red-600'
+                              : frontendStatus === 'low_stock'  ? 'bg-yellow-100 text-yellow-700'
+                              : 'bg-green-100 text-green-600'
+                            )}>
+                              {frontendStatus === 'out_of_stock' ? '✕ OOS'
+                                : frontendStatus === 'low_stock' ? '⚡ Low'
+                                : '✓ Avail'}
+                            </span>
                           </div>
                           <button
                             onClick={e => handleAddItem(e, { ...product, id })}
