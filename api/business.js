@@ -25,19 +25,30 @@ function getTokenFromReq(req) {
   return null;
 }
 function requireAuth(req, roles = []) {
+  // Primary: JWT token auth (for new auth system)
   const token = getTokenFromReq(req);
-  if (!token) return null;
-  const decoded = verifyToken(token);
-  if (!decoded) return null;
-  if (roles.length && !roles.includes(decoded.role)) return null;
-  return decoded;
+  if (token) {
+    const decoded = verifyToken(token);
+    if (decoded) {
+      if (roles.length && !roles.includes(decoded.role)) return null;
+      return decoded;
+    }
+  }
+  // Fallback: X-Admin-Key header (for old admin password system)
+  const adminKey = req.headers['x-admin-key'];
+  const ADMIN_PASSWORD = process.env.VITE_ADMIN_PASSWORD || process.env.ADMIN_PASSWORD || '';
+  if (adminKey && ADMIN_PASSWORD && adminKey === ADMIN_PASSWORD) {
+    // Treat as admin role — passes all role checks
+    if (roles.length && !roles.includes('admin')) return null;
+    return { userId: 'admin', role: 'admin', name: 'Admin' };
+  }
+  return null;
 }
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  res.setHeader('Access-Control-Allow-Credentials', 'true');
   if (req.method === 'OPTIONS') return res.status(200).end();
 
   const { module } = req.query;
@@ -309,6 +320,8 @@ export default async function handler(req, res) {
           const { from, to } = req.query;
           const filter = {};
           if (from || to) { filter.date = {}; if (from) filter.date.$gte = new Date(from); if (to) filter.date.$lte = new Date(to); }
+          // EXCLUDE financing entries — capital & loans are not revenue or operating expenses
+          filter.category = { $ne: 'financing' };
           const allCashFlow = await cashFlow.find(filter).toArray();
           const income = allCashFlow.filter(e => e.type === 'income').reduce((s, e) => s + e.amount, 0);
           const expenses = allCashFlow.filter(e => e.type === 'expense').reduce((s, e) => s + e.amount, 0);
@@ -334,7 +347,145 @@ export default async function handler(req, res) {
       }
     }
 
-    return res.status(400).json({ error: 'Invalid module. Use ?module=auth|users|suppliers|expenses|cashflow|reports' });
+    // ─── FINANCING ────────────────────────────────────────────────────────────
+    // Handles: opening capital, capital infusion, loans, repayments, withdrawals.
+    //
+    // Rules:
+    //   • Every financing entry writes a mirrored cashFlow entry so the ledger
+    //     is always complete (referenceType: 'financing').
+    //   • Editing rebuilds the cashFlow mirrors — no stale data possible.
+    //   • Deleting cascades: removes cashFlow mirrors first, then source record.
+    //   • P&L reports exclude category:'financing' so capital/loans don't inflate
+    //     revenue or operating expenses. Financing has its own summary view.
+    //
+    // cashFlow direction by type:
+    //   opening_capital / capital_infusion / loan_received → income
+    //   loan_repayment / owner_withdrawal                  → expense
+    if (module === 'financing') {
+      const auth = requireAuth(req, ['admin', 'manager']);
+      if (!auth) return res.status(403).json({ error: 'Access denied' });
+
+      const finCol   = db.collection('financing');
+      const cfCol    = db.collection('cashFlow');
+
+      const INCOME_TYPES  = ['opening_capital', 'capital_infusion', 'loan_received'];
+      const EXPENSE_TYPES = ['loan_repayment', 'owner_withdrawal'];
+      const ALL_TYPES     = [...INCOME_TYPES, ...EXPENSE_TYPES];
+      const TYPE_LABELS   = {
+        opening_capital:  'Opening Capital',
+        capital_infusion: 'Capital Infusion',
+        loan_received:    'Loan Received',
+        loan_repayment:   'Loan Repayment',
+        owner_withdrawal: 'Owner Withdrawal',
+      };
+
+      // Writes cashFlow mirror(s) for a financing entry.
+      // If amount is split across cash and bank, creates two entries.
+      async function writeMirrors(finId, type, amount, cashAmt, bankAmt, source, date) {
+        const cfType = INCOME_TYPES.includes(type) ? 'income' : 'expense';
+        const desc   = `${TYPE_LABELS[type]}${source ? ' — ' + source : ''}`;
+        if (cashAmt > 0 && bankAmt > 0) {
+          await cfCol.insertOne({ type: cfType, category: 'financing', amount: cashAmt,
+            paymentMode: 'cash', description: `${desc} (Cash)`,
+            referenceId: finId, referenceType: 'financing', date, createdAt: new Date() });
+          await cfCol.insertOne({ type: cfType, category: 'financing', amount: bankAmt,
+            paymentMode: 'bank', description: `${desc} (Bank)`,
+            referenceId: finId, referenceType: 'financing', date, createdAt: new Date() });
+        } else {
+          const paymentMode = bankAmt > 0 ? 'bank' : cashAmt > 0 ? 'cash' : 'other';
+          await cfCol.insertOne({ type: cfType, category: 'financing', amount,
+            paymentMode, description: desc,
+            referenceId: finId, referenceType: 'financing', date, createdAt: new Date() });
+        }
+      }
+
+      // GET — list entries + summary
+      if (req.method === 'GET') {
+        const { type, from, to } = req.query;
+        const filter = {};
+        if (type) filter.type = type;
+        if (from || to) {
+          filter.date = {};
+          if (from) filter.date.$gte = new Date(from);
+          if (to)   filter.date.$lte = new Date(to);
+        }
+        const entries = await finCol.find(filter).sort({ date: -1 }).toArray();
+        const totalCapital    = entries.filter(e => INCOME_TYPES.includes(e.type)).reduce((s, e) => s + e.amount, 0);
+        const totalWithdrawn  = entries.filter(e => EXPENSE_TYPES.includes(e.type)).reduce((s, e) => s + e.amount, 0);
+        const totalLoans      = entries.filter(e => e.type === 'loan_received').reduce((s, e) => s + e.amount, 0);
+        const totalRepaid     = entries.filter(e => e.type === 'loan_repayment').reduce((s, e) => s + e.amount, 0);
+        return res.status(200).json({
+          entries,
+          summary: {
+            totalCapital,
+            totalWithdrawn,
+            netCapital:      totalCapital - totalWithdrawn,
+            totalCash:       entries.reduce((s, e) => s + (e.cashAmount || 0), 0),
+            totalBank:       entries.reduce((s, e) => s + (e.bankAmount || 0), 0),
+            totalLoans,
+            totalRepaid,
+            outstandingLoan: Math.max(0, totalLoans - totalRepaid),
+          },
+        });
+      }
+
+      // POST — create
+      if (req.method === 'POST') {
+        const { type, amount, cashAmount, bankAmount, source, date, notes } = req.body;
+        if (!type || !ALL_TYPES.includes(type))
+          return res.status(400).json({ error: `type must be one of: ${ALL_TYPES.join(', ')}` });
+        if (!amount || isNaN(Number(amount)) || Number(amount) <= 0)
+          return res.status(400).json({ error: 'amount must be a positive number' });
+        const totalAmt  = Number(amount);
+        const cashAmt   = Number(cashAmount) || 0;
+        const bankAmt   = Number(bankAmount)  || 0;
+        if (cashAmt + bankAmt > 0 && Math.abs(cashAmt + bankAmt - totalAmt) > 1)
+          return res.status(400).json({ error: 'cashAmount + bankAmount must equal total amount' });
+        const entryDate = date ? new Date(date) : new Date();
+        const finResult = await finCol.insertOne({
+          type, amount: totalAmt, cashAmount: cashAmt, bankAmount: bankAmt,
+          source: source || '', notes: notes || '',
+          date: entryDate, createdAt: new Date(), updatedAt: new Date(),
+        });
+        await writeMirrors(finResult.insertedId.toString(), type, totalAmt, cashAmt, bankAmt, source || '', entryDate);
+        return res.status(201).json({ success: true, _id: finResult.insertedId });
+      }
+
+      // PUT — edit (rebuilds cashFlow mirrors to stay in sync)
+      if (req.method === 'PUT') {
+        const { id, type, amount, cashAmount, bankAmount, source, date, notes } = req.body;
+        if (!id) return res.status(400).json({ error: 'id is required' });
+        const existing = await finCol.findOne({ _id: new ObjectId(id) });
+        if (!existing) return res.status(404).json({ error: 'Entry not found' });
+        const newType   = type       || existing.type;
+        const newAmount = amount     !== undefined ? Number(amount)     : existing.amount;
+        const newCash   = cashAmount !== undefined ? Number(cashAmount) : existing.cashAmount;
+        const newBank   = bankAmount !== undefined ? Number(bankAmount) : existing.bankAmount;
+        const newSource = source     !== undefined ? source : existing.source;
+        const newNotes  = notes      !== undefined ? notes  : existing.notes;
+        const newDate   = date       ? new Date(date) : existing.date;
+        await finCol.updateOne({ _id: new ObjectId(id) },
+          { $set: { type: newType, amount: newAmount, cashAmount: newCash, bankAmount: newBank,
+                    source: newSource, notes: newNotes, date: newDate, updatedAt: new Date() } });
+        // Rebuild mirrors — wipe stale entries, write fresh
+        await cfCol.deleteMany({ referenceId: id, referenceType: 'financing' });
+        await writeMirrors(id, newType, newAmount, newCash, newBank, newSource, newDate);
+        return res.status(200).json({ success: true });
+      }
+
+      // DELETE — cascade to cashFlow mirrors
+      if (req.method === 'DELETE') {
+        const { id } = req.body;
+        if (!id) return res.status(400).json({ error: 'id is required' });
+        const existing = await finCol.findOne({ _id: new ObjectId(id) });
+        if (!existing) return res.status(404).json({ error: 'Entry not found' });
+        await cfCol.deleteMany({ referenceId: id, referenceType: 'financing' });
+        await finCol.deleteOne({ _id: new ObjectId(id) });
+        return res.status(200).json({ success: true });
+      }
+    }
+
+    return res.status(400).json({ error: 'Invalid module. Use ?module=auth|users|suppliers|expenses|cashflow|reports|financing' });
   } catch (error) {
     console.error('Business API error:', error);
     return res.status(500).json({ error: 'Database error', details: error.message });
