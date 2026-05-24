@@ -133,17 +133,31 @@ export default async function handler(req, res) {
         });
       }
 
-      // ── STOCK VISIBILITY PANEL: get low/out-of-stock for admin control ────
-      // GET /api/inventory?action=visibilityPanel
-      // Returns all products with stockStatus low_stock or out_of_stock
-      // along with their frontendStatus so admin can update display mode
+      // ── STOCK VISIBILITY PANEL: get all tracked products for admin control ──
       if (action === 'visibilityPanel') {
+        // Get ALL tracked inventory records (not just out_of_stock)
         const allInventory = await inventoryCol
-          .find({ stockStatus: { $in: ['low_stock', 'out_of_stock'] } })
+          .find({ trackInventory: true })
           .toArray();
 
         const enriched = await Promise.all(allInventory.map(async (inv) => {
           const product = await productsCol.findOne({ _id: new ObjectId(inv.productId) }).catch(() => null);
+
+          // Always recalculate stockStatus from actual stock numbers — never trust stored value
+          const available = inv.availableStock || 0;
+          const alert = inv.lowStockAlert || 5;
+          let stockStatus = 'in_stock';
+          if (available === 0) stockStatus = 'out_of_stock';
+          else if (available <= alert) stockStatus = 'low_stock';
+
+          // Sync corrected stockStatus back to DB if it differs
+          if (stockStatus !== inv.stockStatus) {
+            await inventoryCol.updateOne(
+              { _id: inv._id },
+              { $set: { stockStatus, updatedAt: new Date() } }
+            );
+          }
+
           return {
             productId: inv.productId,
             inventoryId: inv._id.toString(),
@@ -152,9 +166,9 @@ export default async function handler(req, res) {
             image: product?.image || '',
             price: product?.price || 0,
             currentStock: inv.currentStock || 0,
-            availableStock: inv.availableStock || 0,
-            lowStockAlert: inv.lowStockAlert || 5,
-            stockStatus: inv.stockStatus || 'in_stock',
+            availableStock: available,
+            lowStockAlert: alert,
+            stockStatus,
             frontendStatus: inv.frontendStatus || 'normal',
           };
         }));
