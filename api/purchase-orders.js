@@ -229,12 +229,16 @@ export default async function handler(req, res) {
           { $set: { status: 'received', receivedDate: new Date(), updatedAt: new Date() } }
         );
 
-        // Auto-create cash flow expense entry — linked by referenceType so deleting PO cascades
+        // Record PO as inventory asset acquisition (NOT an expense — it's a balance sheet entry)
+        // This reduces cash/bank but increases inventory asset value
+        // Category 'inventory_asset' is excluded from P&L — only COGS hits the income statement
+        const { paymentMode: poPaymentMode } = req.body;
         await cashFlow.insertOne({
           type: 'expense',
-          category: 'purchase',
+          category: 'inventory_asset',
           amount: po.totalAmount,
-          description: `Purchase Order ${po.poNumber} — ${po.supplier?.name || 'Supplier'}`,
+          paymentMode: poPaymentMode || 'cash',
+          description: `Inventory Purchase — PO ${po.poNumber} — ${po.supplier?.name || 'Supplier'}`,
           referenceId: id,
           referenceType: 'purchase_order',
           date: new Date(),
