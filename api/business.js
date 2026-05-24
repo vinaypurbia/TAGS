@@ -250,18 +250,37 @@ export default async function handler(req, res) {
         // ── ALL-TIME entries for cash position (no date filter) ──────────────
         const allEntries = await col.find({}).toArray();
 
-        // ── NET PROFIT: sales revenue - COGS - operating expenses ───────────
-        // Exclude: financing (capital/loans), cogs (already netted in sales)
-        const EXCLUDE_FROM_REVENUE  = ['financing', 'cogs'];
-        const EXCLUDE_FROM_EXPENSES = ['financing', 'cogs'];
+        // ── PROPER 3-TIER P&L ────────────────────────────────────────────────
+        // Excluded from P&L: financing (capital/loans), inventory_asset (PO purchases)
+        const PL_EXCLUDE = ['financing', 'inventory_asset'];
 
-        const operatingIncome  = entries
-          .filter(e => e.type === 'income'  && !EXCLUDE_FROM_REVENUE.includes(e.category))
+        // Revenue = sales income only (filtered period)
+        const revenue = entries
+          .filter(e => e.type === 'income' && e.category === 'sales')
           .reduce((s, e) => s + e.amount, 0);
+
+        // COGS = cost of goods sold per sale
+        const cogs = entries
+          .filter(e => e.type === 'expense' && e.category === 'cogs')
+          .reduce((s, e) => s + e.amount, 0);
+
+        // Gross Profit = Revenue - COGS
+        const grossProfit = revenue - cogs;
+
+        // Operating Expenses = all expenses except cogs and excluded categories
         const operatingExpense = entries
-          .filter(e => e.type === 'expense' && !EXCLUDE_FROM_EXPENSES.includes(e.category))
+          .filter(e => e.type === 'expense' && e.category !== 'cogs' && !PL_EXCLUDE.includes(e.category))
           .reduce((s, e) => s + e.amount, 0);
-        const netProfit = operatingIncome - operatingExpense;
+
+        // Net Profit = Gross Profit - Operating Expenses
+        const netProfit = grossProfit - operatingExpense;
+
+        // Other income (non-sales, non-financing)
+        const otherIncome = entries
+          .filter(e => e.type === 'income' && e.category !== 'sales' && !PL_EXCLUDE.includes(e.category))
+          .reduce((s, e) => s + e.amount, 0);
+
+        const operatingIncome = revenue + otherIncome;
 
         // ── CASH IN HAND: all-time cash/upi inflows - cash/upi outflows ─────
         const CASH_MODES = ['cash', 'upi', null, undefined, ''];
@@ -299,9 +318,16 @@ export default async function handler(req, res) {
         return res.status(200).json({
           entries,
           summary: {
-            income:    operatingIncome,
-            expense:   operatingExpense,
-            profit:    netProfit,
+            income:           operatingIncome,
+            revenue,
+            cogs,
+            grossProfit,
+            operatingExpense,
+            expense:          operatingExpense,
+            profit:           netProfit,
+            netProfit,
+            grossMargin:      revenue > 0 ? ((grossProfit / revenue) * 100).toFixed(1) : 0,
+            netMargin:        revenue > 0 ? ((netProfit   / revenue) * 100).toFixed(1) : 0,
             cashInHand,
             cashAtBank,
           },
@@ -375,16 +401,37 @@ export default async function handler(req, res) {
 
         if (type === 'pnl') {
           const { from, to } = req.query;
-          const filter = {};
-          if (from || to) { filter.date = {}; if (from) filter.date.$gte = new Date(from); if (to) filter.date.$lte = new Date(to); }
-          // EXCLUDE financing entries — capital & loans are not revenue or operating expenses
-          filter.category = { $ne: 'financing' };
-          const allCashFlow = await cashFlow.find(filter).toArray();
-          const income = allCashFlow.filter(e => e.type === 'income').reduce((s, e) => s + e.amount, 0);
-          const expenses = allCashFlow.filter(e => e.type === 'expense').reduce((s, e) => s + e.amount, 0);
+          const dateFilter = {};
+          if (from || to) { dateFilter.date = {}; if (from) dateFilter.date.$gte = new Date(from); if (to) dateFilter.date.$lte = new Date(to); }
+          // Exclude financing and inventory_asset from P&L
+          const PL_EXCLUDE = ['financing', 'inventory_asset'];
+          const allCashFlow = await cashFlow.find({ ...dateFilter, category: { $nin: PL_EXCLUDE } }).toArray();
+
+          const revenue          = allCashFlow.filter(e => e.type === 'income'  && e.category === 'sales').reduce((s, e) => s + e.amount, 0);
+          const cogs             = allCashFlow.filter(e => e.type === 'expense' && e.category === 'cogs').reduce((s, e) => s + e.amount, 0);
+          const grossProfit      = revenue - cogs;
+          const operatingExpenses = allCashFlow.filter(e => e.type === 'expense' && e.category !== 'cogs').reduce((s, e) => s + e.amount, 0);
+          const otherIncome      = allCashFlow.filter(e => e.type === 'income'  && e.category !== 'sales').reduce((s, e) => s + e.amount, 0);
+          const netProfit        = grossProfit + otherIncome - operatingExpenses;
+          const totalIncome      = revenue + otherIncome;
+          const totalExpenses    = cogs + operatingExpenses;
+
           const byCategory = {};
-          allCashFlow.forEach(e => { const key = `${e.type}:${e.category || 'other'}`; if (!byCategory[key]) byCategory[key] = { type: e.type, category: e.category || 'other', total: 0, count: 0 }; byCategory[key].total += e.amount; byCategory[key].count += 1; });
-          return res.status(200).json({ income, expenses, profit: income - expenses, profitMargin: income > 0 ? ((income - expenses) / income * 100).toFixed(1) : 0, breakdown: Object.values(byCategory) });
+          allCashFlow.forEach(e => {
+            const key = `${e.type}:${e.category || 'other'}`;
+            if (!byCategory[key]) byCategory[key] = { type: e.type, category: e.category || 'other', total: 0, count: 0 };
+            byCategory[key].total += e.amount; byCategory[key].count += 1;
+          });
+
+          return res.status(200).json({
+            revenue, cogs, grossProfit,
+            operatingExpenses, otherIncome,
+            income: totalIncome, expenses: totalExpenses,
+            profit: netProfit, netProfit,
+            grossMargin: revenue > 0 ? ((grossProfit / revenue) * 100).toFixed(1) : 0,
+            netMargin:   revenue > 0 ? ((netProfit   / revenue) * 100).toFixed(1) : 0,
+            breakdown: Object.values(byCategory),
+          });
         }
 
         if (type === 'stock-valuation') {
