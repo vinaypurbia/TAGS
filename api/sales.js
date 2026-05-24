@@ -127,6 +127,7 @@ export default async function handler(req, res) {
       // ─────────────────────────────────────────────────────────────────────
 
       const result = await salesCol.insertOne({
+        saleNumber,
         customerId,
         customerName: customerName || '',
         customerPhone: customerPhone || '',
