@@ -53,6 +53,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     localStorage.setItem(USER_KEY, JSON.stringify(newUser));
     setToken(newToken);
     setUser(newUser);
+    setIsLoading(false); // Fresh login — no verification needed, clear loading immediately
   }, []);
 
   const logout = useCallback(() => { clearSession(); }, [clearSession]);
