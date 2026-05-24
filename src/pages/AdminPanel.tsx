@@ -1,5 +1,6 @@
 import { StockVisibilityPanel } from '../components/StockVisibilityPanel';
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { ProductManagerEmbed } from './ProductManagerEmbed';
 import { ManageCategoriesEmbed } from './ManageCategoriesEmbed';
@@ -206,6 +207,7 @@ function ChangePasswordCard() {
 export function AdminPanel() {
   // Auth comes entirely from AuthContext — no local password state
   const { user, token, isLoading: authLoading, logout, canAccessAdmin } = useAuth();
+  const navigate = useNavigate();
   const [activeSection, setActiveSection]     = useState<Section>('dashboard');
   const [sidebarOpen,   setSidebarOpen]       = useState(false);
   const [idleWarning,   setIdleWarning]       = useState(false);
@@ -590,8 +592,9 @@ export function AdminPanel() {
   }
 
   // Not logged in, or logged in with a role that cannot access admin → redirect to login
+  // Only fires AFTER authLoading is false — prevents premature redirect on first load
   if (!canAccessAdmin) {
-    window.location.href = '/login?redirect=/admin';
+    navigate('/login?redirect=/admin', { replace: true });
     return null;
   }
 
