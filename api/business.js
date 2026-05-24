@@ -246,9 +246,66 @@ export default async function handler(req, res) {
         if (fromDate || toDate) { filter.date = {}; if (fromDate) filter.date.$gte = fromDate; if (toDate) filter.date.$lte = toDate; }
         if (type) filter.type = type;
         const entries = await col.find(filter).sort({ date: -1 }).toArray();
-        const income = entries.filter(e => e.type === 'income').reduce((s, e) => s + e.amount, 0);
-        const expense = entries.filter(e => e.type === 'expense').reduce((s, e) => s + e.amount, 0);
-        return res.status(200).json({ entries, summary: { income, expense, profit: income - expense } });
+
+        // ── ALL-TIME entries for cash position (no date filter) ──────────────
+        const allEntries = await col.find({}).toArray();
+
+        // ── NET PROFIT: sales revenue - COGS - operating expenses ───────────
+        // Exclude: financing (capital/loans), cogs (already netted in sales)
+        const EXCLUDE_FROM_REVENUE  = ['financing', 'cogs'];
+        const EXCLUDE_FROM_EXPENSES = ['financing', 'cogs'];
+
+        const operatingIncome  = entries
+          .filter(e => e.type === 'income'  && !EXCLUDE_FROM_REVENUE.includes(e.category))
+          .reduce((s, e) => s + e.amount, 0);
+        const operatingExpense = entries
+          .filter(e => e.type === 'expense' && !EXCLUDE_FROM_EXPENSES.includes(e.category))
+          .reduce((s, e) => s + e.amount, 0);
+        const netProfit = operatingIncome - operatingExpense;
+
+        // ── CASH IN HAND: all-time cash/upi inflows - cash/upi outflows ─────
+        const CASH_MODES = ['cash', 'upi', null, undefined, ''];
+        const cashIn  = allEntries
+          .filter(e => e.type === 'income'  && CASH_MODES.includes(e.paymentMode) && e.category !== 'financing')
+          .reduce((s, e) => s + e.amount, 0);
+        const cashOut = allEntries
+          .filter(e => e.type === 'expense' && CASH_MODES.includes(e.paymentMode) && e.category !== 'financing')
+          .reduce((s, e) => s + e.amount, 0);
+        // Add financing cash inflows (opening capital cash portion) to cash position
+        const finCashIn  = allEntries
+          .filter(e => e.type === 'income'  && e.category === 'financing' && e.paymentMode === 'cash')
+          .reduce((s, e) => s + e.amount, 0);
+        const finCashOut = allEntries
+          .filter(e => e.type === 'expense' && e.category === 'financing' && e.paymentMode === 'cash')
+          .reduce((s, e) => s + e.amount, 0);
+        const cashInHand = Math.max(0, cashIn + finCashIn - cashOut - finCashOut);
+
+        // ── CASH AT BANK: all-time bank/card/neft inflows - outflows ────────
+        const BANK_MODES = ['bank', 'card', 'neft', 'upi_bank'];
+        const bankIn  = allEntries
+          .filter(e => e.type === 'income'  && BANK_MODES.includes(e.paymentMode) && e.category !== 'financing')
+          .reduce((s, e) => s + e.amount, 0);
+        const bankOut = allEntries
+          .filter(e => e.type === 'expense' && BANK_MODES.includes(e.paymentMode) && e.category !== 'financing')
+          .reduce((s, e) => s + e.amount, 0);
+        const finBankIn  = allEntries
+          .filter(e => e.type === 'income'  && e.category === 'financing' && e.paymentMode === 'bank')
+          .reduce((s, e) => s + e.amount, 0);
+        const finBankOut = allEntries
+          .filter(e => e.type === 'expense' && e.category === 'financing' && e.paymentMode === 'bank')
+          .reduce((s, e) => s + e.amount, 0);
+        const cashAtBank = Math.max(0, bankIn + finBankIn - bankOut - finBankOut);
+
+        return res.status(200).json({
+          entries,
+          summary: {
+            income:    operatingIncome,
+            expense:   operatingExpense,
+            profit:    netProfit,
+            cashInHand,
+            cashAtBank,
+          },
+        });
       }
       if (req.method === 'POST') {
         const { type, category, amount, description, date, paymentMode, notes } = req.body;
