@@ -415,6 +415,70 @@ export default async function handler(req, res) {
       }
     }
 
+    // ── BANNER / SETTINGS / PERKS (no ?module param) ────────────
+    // GET /api/banner  → return siteSettings
+    // POST /api/banner → save bannerSlides, promoLines, perks
+    if (!module) {
+      const settingsCol = db.collection('settings');
+
+      if (req.method === 'GET') {
+        // Image proxy (GET ?proxy=<url>)
+        if (req.query.proxy) {
+          const imageUrl = decodeURIComponent(req.query.proxy);
+          if (!imageUrl.startsWith('http://') && !imageUrl.startsWith('https://')) {
+            return res.status(400).json({ error: 'Invalid URL' });
+          }
+          const imgRes = await fetch(imageUrl, {
+            headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'image/*' },
+          });
+          if (!imgRes.ok) return res.status(imgRes.status).end();
+          const contentType = imgRes.headers.get('content-type') || 'image/jpeg';
+          const buffer = await imgRes.arrayBuffer();
+          res.setHeader('Content-Type', contentType);
+          res.setHeader('Cache-Control', 'public, max-age=86400');
+          res.setHeader('Access-Control-Allow-Origin', '*');
+          return res.send(Buffer.from(buffer));
+        }
+
+        const settings = await settingsCol.findOne({ key: 'siteSettings' });
+        return res.status(200).json(settings || {});
+      }
+
+      if (req.method === 'POST') {
+        const { promoLines, promoText, bannerSlides, bannerImage, bannerText, perks } = req.body;
+
+        const cleanedSlides = Array.isArray(bannerSlides)
+          ? bannerSlides.map(s => ({
+              image: s.image || '',
+              text: s.text || '',
+              description: s.description || '',
+            }))
+          : [];
+
+        const cleanedPerks = Array.isArray(perks)
+          ? perks.map(p => ({ icon: p.icon || '', label: p.label || '' }))
+          : [];
+
+        await settingsCol.updateOne(
+          { key: 'siteSettings' },
+          {
+            $set: {
+              key: 'siteSettings',
+              promoLines: promoLines || [],
+              promoText: promoText || '',
+              bannerSlides: cleanedSlides,
+              bannerImage: bannerImage || '',
+              bannerText: bannerText || '',
+              perks: cleanedPerks,
+              updatedAt: new Date(),
+            }
+          },
+          { upsert: true }
+        );
+        return res.status(200).json({ success: true });
+      }
+    }
+
     return res.status(400).json({ error: 'Invalid module. Use ?module=auth|users|suppliers|expenses|cashflow|reports|dbstats|cloudinarystats' });
   } catch (error) {
     console.error('Business API error:', error);
