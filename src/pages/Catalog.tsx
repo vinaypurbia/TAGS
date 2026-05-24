@@ -649,11 +649,39 @@ export function Catalog() {
                               className={cn('w-full h-full object-cover group-hover:scale-105 transition-transform duration-300',
                                 isOutOfStock && 'grayscale')} />
                           ) : (
-                            <div className="text-5xl text-gray-200">📦</div>
+                            // No image — show status-coloured placeholder
+                            <div className={cn(
+                              'w-full h-full flex flex-col items-center justify-center gap-1.5',
+                              frontendStatus === 'out_of_stock' ? 'bg-red-50'
+                              : frontendStatus === 'low_stock'  ? 'bg-yellow-50'
+                              : frontendStatus === 'hidden'     ? 'bg-gray-100'
+                              : 'bg-gray-50'
+                            )}>
+                              <span className="text-3xl opacity-30">📦</span>
+                              <span className={cn(
+                                'text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full',
+                                frontendStatus === 'out_of_stock' ? 'bg-red-100 text-red-600'
+                                : frontendStatus === 'low_stock'  ? 'bg-yellow-100 text-yellow-700'
+                                : frontendStatus === 'hidden'     ? 'bg-gray-200 text-gray-500'
+                                : 'bg-green-100 text-green-600'
+                              )}>
+                                {frontendStatus === 'out_of_stock' ? 'Out of Stock'
+                                  : frontendStatus === 'low_stock' ? 'Low Stock'
+                                  : frontendStatus === 'hidden'    ? 'Hidden'
+                                  : 'Available'}
+                              </span>
+                            </div>
                           )}
-                          {isOutOfStock && (
+                          {isOutOfStock && productImage && (
                             <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
                               <span className="bg-white text-gray-900 text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded-full shadow">
+                                Out of Stock
+                              </span>
+                            </div>
+                          )}
+                          {isOutOfStock && !productImage && (
+                            <div className="absolute inset-0 flex items-end justify-center pb-3">
+                              <span className="bg-red-500 text-white text-[9px] font-black uppercase tracking-widest px-3 py-1 rounded-full shadow">
                                 Out of Stock
                               </span>
                             </div>
