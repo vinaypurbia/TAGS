@@ -1145,7 +1145,7 @@ export function AdminPanel() {
                           </div>
                           <div className="text-right shrink-0">
                             <p className={`font-black text-sm ${item.isOutOfStock ? 'text-red-600' : 'text-yellow-600'}`}>{item.availableStock} left</p>
-                            <p className="text-[10px] text-gray-400">min {item.lowStockAlert}</p>
+                            <p className="text-[10px] text-gray-400">min {item.lowStockAlert || 5}</p>
                           </div>
                         </div>
                       ))}
