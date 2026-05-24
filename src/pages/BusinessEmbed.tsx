@@ -291,13 +291,11 @@ function DashboardModule({ showMsg }: any) {
 
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
         {[
-          { label: 'Revenue (Month)', value: fmt(stats?.sales?.totalRevenue || 0), icon: TrendingUp, color: 'text-green-600 bg-green-50' },
-          { label: 'Orders (Month)', value: fmtQty(stats?.sales?.totalOrders || 0), icon: ShoppingCart, color: 'text-blue-600 bg-blue-50' },
-          { label: 'Total Customers', value: fmtQty(stats?.customers?.totalCustomers || 0), icon: Users, color: 'text-purple-600 bg-purple-50' },
-          { label: 'Cash in Hand', value: fmt(stats?.cash?.cashInHand || 0), icon: DollarSign, color: 'text-yellow-600 bg-yellow-50' },
-          { label: 'Cash at Bank', value: fmt(stats?.cash?.cashAtBank || 0), icon: DollarSign, color: 'text-blue-600 bg-blue-50' },
+          { label: 'Revenue (Month)', value: fmt(stats?.sales?.totalRevenue || 0), icon: TrendingUp, color: 'text-green-600 bg-green-50', sub: `${stats?.sales?.totalOrders || 0} orders` },
+          { label: 'Net Profit (Month)', value: fmt(stats?.cash?.profit || 0), icon: BarChart2, color: (stats?.cash?.profit || 0) >= 0 ? 'text-emerald-600 bg-emerald-50' : 'text-red-600 bg-red-50', sub: 'Revenue − Expenses' },
+          { label: 'Total Customers', value: fmtQty(stats?.customers?.totalCustomers || 0), icon: Users, color: 'text-purple-600 bg-purple-50', sub: `${stats?.customers?.repeatCustomers || 0} repeat buyers` },
         ].map(card => (
           <div key={card.label} className="bg-white rounded-xl border border-gray-200 p-4">
             <div className={`w-8 h-8 rounded-lg flex items-center justify-center mb-2 ${card.color}`}>
@@ -305,8 +303,29 @@ function DashboardModule({ showMsg }: any) {
             </div>
             <p className="text-xl font-black text-gray-900">{card.value}</p>
             <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mt-1">{card.label}</p>
+            {card.sub && <p className="text-[9px] text-gray-300 mt-0.5">{card.sub}</p>}
           </div>
         ))}
+      </div>
+
+      {/* Cash Position — all-time balances */}
+      <div className="grid grid-cols-2 gap-3">
+        <div className="bg-yellow-50 border-2 border-yellow-200 rounded-xl p-4 flex items-center gap-3">
+          <div className="text-2xl">💵</div>
+          <div>
+            <p className="text-xl font-black text-gray-900">{fmt(stats?.cash?.cashInHand || 0)}</p>
+            <p className="text-[10px] font-black text-yellow-600 uppercase tracking-widest">Cash in Hand</p>
+            <p className="text-[9px] text-gray-400">Cash & UPI transactions</p>
+          </div>
+        </div>
+        <div className="bg-blue-50 border-2 border-blue-200 rounded-xl p-4 flex items-center gap-3">
+          <div className="text-2xl">🏦</div>
+          <div>
+            <p className="text-xl font-black text-gray-900">{fmt(stats?.cash?.cashAtBank || 0)}</p>
+            <p className="text-[10px] font-black text-blue-600 uppercase tracking-widest">Cash at Bank</p>
+            <p className="text-[9px] text-gray-400">Bank, Card & NEFT</p>
+          </div>
+        </div>
       </div>
 
       {shortage.length > 0 && (
