@@ -1292,14 +1292,15 @@ export function AdminPanel() {
               <SectionHeader icon={ShoppingBag} title="Inventory" desc="Track stock levels" />
               {/* ── Collapsible Inventory Panel ── */}
               <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
-                <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
+                {/* Sticky header — stays visible as you scroll through inventory list */}
+                <div className="sticky top-[57px] z-20 bg-white flex items-center justify-between px-5 py-3 border-b border-gray-100 shadow-sm">
                   <div className="flex items-center gap-2">
                     <ShoppingBag className="w-4 h-4 text-gray-500" />
                     <span className="font-black text-sm uppercase tracking-widest text-gray-700">Stock Levels</span>
-                    <span className="text-[10px] text-gray-400 font-bold">Manage quantities, cost prices & SKUs</span>
+                    <span className="text-[10px] text-gray-400 font-bold hidden sm:block">Manage quantities, cost prices & SKUs</span>
                   </div>
                   <button onClick={() => setShowInventory(v => !v)}
-                    className="flex items-center gap-1.5 text-xs font-black uppercase tracking-widest text-gray-400 hover:text-[#FA5600] transition px-3 py-1.5 rounded-lg border border-gray-200 hover:border-[#FA5600]">
+                    className={`flex items-center gap-1.5 text-xs font-black uppercase tracking-widest transition px-3 py-1.5 rounded-lg border ${showInventory ? 'text-gray-400 border-gray-200 hover:text-[#FA5600] hover:border-[#FA5600]' : 'text-white bg-[#FA5600] border-[#FA5600]'}`}>
                     {showInventory ? '▲ Hide' : '▼ Show'}
                   </button>
                 </div>
