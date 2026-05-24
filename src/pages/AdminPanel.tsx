@@ -297,6 +297,7 @@ export function AdminPanel() {
   // Storage popup state: null | 'mongo' | 'cloudinary'
   const [storagePopup,  setStoragePopup]  = useState<null | 'mongo' | 'cloudinary'>(null);
   const [shortage,      setShortage]      = useState<any[]>([]);
+  const [showAllShortage, setShowAllShortage] = useState(false);
   const [pendingOrders, setPendingOrders] = useState<any[]>([]);
 
   // Collector cash balances
@@ -378,7 +379,7 @@ export function AdminPanel() {
         inStock:       invArr.filter((p: any) =>  p.stock?.trackInventory && p.stock?.isInStock).length,
         outOfStock:    invArr.filter((p: any) =>  p.stock?.trackInventory && !p.stock?.isInStock).length,
       });
-      setShortage(Array.isArray(stockShortage) ? stockShortage.slice(0, 5) : []);
+      setShortage(Array.isArray(stockShortage) ? stockShortage : []);
       // Pending sales (not yet confirmed) + confirmed orders (confirmed but not delivered)
       const pendingSalesArr = Array.isArray(pendingSales?.sales) ? pendingSales.sales : [];
       const confirmedOrders = (ordersData?.orders || [])
@@ -1132,7 +1133,7 @@ export function AdminPanel() {
                     <span className="ml-auto bg-yellow-100 text-yellow-700 text-xs font-black px-2 py-0.5 rounded-full">{shortage.length}</span>
                   </div>
                   <div className="space-y-2">
-                    {shortage.map((item: any, i: number) => (
+                    {(showAllShortage ? shortage : shortage.slice(0, 5)).map((item: any, i: number) => (
                       <div key={i} className="flex items-center gap-3 p-3 bg-yellow-50 rounded-xl">
                         {item.image && <img src={item.image} alt={item.productName} className="w-9 h-9 rounded-lg object-cover shrink-0" />}
                         <div className="flex-1 min-w-0">
@@ -1146,6 +1147,20 @@ export function AdminPanel() {
                       </div>
                     ))}
                   </div>
+                  {shortage.length > 5 && (
+                    <button
+                      onClick={() => setShowAllShortage(v => !v)}
+                      className="w-full mt-3 py-2 text-xs font-black uppercase tracking-widest text-yellow-600 bg-yellow-50 rounded-xl hover:bg-yellow-100 transition"
+                    >
+                      {showAllShortage ? '▲ Show Less' : `▼ Show All ${shortage.length} Items`}
+                    </button>
+                  )}
+                  <button
+                    onClick={() => setActiveSection('inventory')}
+                    className="w-full mt-2 py-2 text-xs font-black uppercase tracking-widest text-gray-500 border border-gray-200 rounded-xl hover:border-[#FA5600] hover:text-[#FA5600] transition"
+                  >
+                    → Go to Inventory
+                  </button>
                 </div>
               )}
 
