@@ -582,7 +582,14 @@ export function AdminPanel() {
   };
 
   // ── AUTH GUARD ───────────────────────────────────────────────────────────
-  // While AuthContext is verifying the saved token, show a neutral loading screen
+  // Redirect must be in useEffect — calling navigate() during render crashes React
+  useEffect(() => {
+    if (!authLoading && !canAccessAdmin) {
+      navigate('/login?redirect=/admin', { replace: true });
+    }
+  }, [authLoading, canAccessAdmin, navigate]);
+
+  // Show loading while token is being verified
   if (authLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-[#0F0F0F]">
@@ -591,11 +598,13 @@ export function AdminPanel() {
     );
   }
 
-  // Not logged in, or logged in with a role that cannot access admin → redirect to login
-  // Only fires AFTER authLoading is false — prevents premature redirect on first load
+  // Show loading briefly while redirect fires (prevents flash of blank)
   if (!canAccessAdmin) {
-    navigate('/login?redirect=/admin', { replace: true });
-    return null;
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-[#0F0F0F]">
+        <div className="text-white/40 text-sm font-bold uppercase tracking-widest animate-pulse">Redirecting…</div>
+      </div>
+    );
   }
 
   // ── MAIN LAYOUT ───────────────────────────────────────────────────────────
