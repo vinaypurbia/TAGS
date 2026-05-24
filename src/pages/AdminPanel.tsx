@@ -210,6 +210,7 @@ export function AdminPanel() {
   const navigate = useNavigate();
   const [activeSection, setActiveSection]     = useState<Section>('dashboard');
   const [showInventory, setShowInventory]     = useState(true); // collapsible inventory panel
+  const [showVisibility, setShowVisibility]   = useState(true); // collapsible visibility panel
   const [sidebarOpen,   setSidebarOpen]       = useState(false);
   const [idleWarning,   setIdleWarning]       = useState(false);
   const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1306,7 +1307,21 @@ export function AdminPanel() {
                 </div>
                 {showInventory && <div className="p-4"><InventoryEmbed /></div>}
               </div>
-              <StockVisibilityPanel />
+              {/* ── Collapsible Stock Visibility Panel ── */}
+              <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+                <div className="sticky top-[57px] z-20 bg-white flex items-center justify-between px-5 py-3 border-b border-gray-100 shadow-sm">
+                  <div className="flex items-center gap-2">
+                    <Eye className="w-4 h-4 text-gray-500" />
+                    <span className="font-black text-sm uppercase tracking-widest text-gray-700">Stock Visibility Control</span>
+                    <span className="text-[10px] text-gray-400 font-bold hidden sm:block">Control what customers see for low & out-of-stock products</span>
+                  </div>
+                  <button onClick={() => setShowVisibility(v => !v)}
+                    className={`flex items-center gap-1.5 text-xs font-black uppercase tracking-widest transition px-3 py-1.5 rounded-lg border ${showVisibility ? 'text-gray-400 border-gray-200 hover:text-[#FA5600] hover:border-[#FA5600]' : 'text-white bg-[#FA5600] border-[#FA5600]'}`}>
+                    {showVisibility ? '▲ Hide' : '▼ Show'}
+                  </button>
+                </div>
+                {showVisibility && <div className="p-4"><StockVisibilityPanel /></div>}
+              </div>
             </div>
           )}
           {activeSection === 'business'   && <div className="max-w-5xl mx-auto"><SectionHeader icon={BarChart2}  title="Business"   desc="Sales, PO, Cash Flow, Reports" /><BusinessEmbed /></div>}
