@@ -746,9 +746,54 @@ export function AdminPanel() {
           {/* ── DASHBOARD ── */}
           {activeSection === 'dashboard' && (
             <div className="space-y-6 max-w-5xl mx-auto">
-              <div>
-                <h2 className="text-2xl font-black text-gray-900 uppercase tracking-tight">Welcome back 👋</h2>
-                <p className="text-sm text-gray-400">Here's what's happening with TAGS this month</p>
+              <div className="flex items-start justify-between gap-4 flex-wrap">
+                <div>
+                  <h2 className="text-2xl font-black text-gray-900 uppercase tracking-tight">Welcome back 👋</h2>
+                  <p className="text-sm text-gray-400">Here's what's happening with TAGS this month</p>
+                </div>
+                {/* ── Compact storage badges top-right ── */}
+                <div className="flex items-center gap-2 shrink-0">
+                  {/* MongoDB badge */}
+                  <button
+                    onClick={() => setStoragePopup('mongo')}
+                    title="MongoDB Atlas Storage — click for details"
+                    className="flex items-center gap-1.5 bg-white border border-gray-200 rounded-xl px-2.5 py-1.5 hover:border-green-400 hover:bg-green-50 transition-all group shadow-sm"
+                  >
+                    <div className="w-5 h-5 bg-green-100 rounded-lg flex items-center justify-center shrink-0 group-hover:bg-green-200 transition">
+                      <Database className="w-3 h-3 text-green-600" />
+                    </div>
+                    <div className="text-left">
+                      <p className="text-[9px] font-black uppercase tracking-widest text-gray-400 leading-none">MongoDB</p>
+                      <p className="text-[10px] font-black text-gray-700 leading-tight">
+                        {dbStats ? `${(dbStats.storageSizeMB || 0).toFixed(1)} MB` : '—'}
+                      </p>
+                    </div>
+                    {dbStats && (() => {
+                      const pct = Math.min(100, ((dbStats.storageSizeMB || 0) / 512) * 100);
+                      return <div className={`w-1 h-4 rounded-full ml-0.5 ${pct > 80 ? 'bg-red-400' : pct > 60 ? 'bg-yellow-400' : 'bg-green-400'}`} />;
+                    })()}
+                  </button>
+                  {/* Cloudinary badge */}
+                  <button
+                    onClick={() => setStoragePopup('cloudinary')}
+                    title="Cloudinary Storage — click for details"
+                    className="flex items-center gap-1.5 bg-white border border-gray-200 rounded-xl px-2.5 py-1.5 hover:border-blue-400 hover:bg-blue-50 transition-all group shadow-sm"
+                  >
+                    <div className="w-5 h-5 bg-blue-100 rounded-lg flex items-center justify-center shrink-0 group-hover:bg-blue-200 transition">
+                      <svg className="w-3 h-3 text-blue-600" fill="currentColor" viewBox="0 0 24 24"><path d="M19.35 10.04A7.49 7.49 0 0 0 12 4C9.11 4 6.6 5.64 5.35 8.04A5.994 5.994 0 0 0 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z"/></svg>
+                    </div>
+                    <div className="text-left">
+                      <p className="text-[9px] font-black uppercase tracking-widest text-gray-400 leading-none">Cloudinary</p>
+                      <p className="text-[10px] font-black text-gray-700 leading-tight">
+                        {cloudStats ? `${(cloudStats.credits_usage_percent || 0).toFixed(1)}%` : '—'}
+                      </p>
+                    </div>
+                    {cloudStats && (() => {
+                      const pct = Math.min(100, cloudStats.credits_usage_percent || 0);
+                      return <div className={`w-1 h-4 rounded-full ml-0.5 ${pct > 80 ? 'bg-red-400' : pct > 60 ? 'bg-yellow-400' : 'bg-blue-400'}`} />;
+                    })()}
+                  </button>
+                </div>
               </div>
 
               {dashLoading ? (
@@ -792,73 +837,7 @@ export function AdminPanel() {
                 ))}
               </div>
 
-              {/* ── Storage Mini Widgets (click to expand) ── */}
-              <div className="grid grid-cols-2 gap-4">
-
-                {/* MongoDB mini widget */}
-                <button
-                  onClick={() => setStoragePopup('mongo')}
-                  className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 text-left hover:border-green-300 hover:shadow-md transition-all group"
-                >
-                  <div className="flex items-center gap-2 mb-3">
-                    <div className="w-8 h-8 bg-green-50 rounded-xl flex items-center justify-center group-hover:bg-green-100 transition">
-                      <Database className="w-4 h-4 text-green-600" />
-                    </div>
-                    <div>
-                      <p className="text-[10px] font-black uppercase tracking-widest text-gray-500">MongoDB Atlas</p>
-                      <p className="text-[9px] text-gray-400">Free tier · 512 MB</p>
-                    </div>
-                  </div>
-                  {dbLoading ? (
-                    <div className="h-6 bg-gray-100 rounded animate-pulse" />
-                  ) : dbStats ? (
-                    <>
-                      <p className="text-2xl font-black text-gray-900">{(dbStats.storageSizeMB || 0).toFixed(2)} <span className="text-sm font-bold text-gray-400">MB</span></p>
-                      <div className="mt-2 w-full bg-gray-100 rounded-full h-1.5 overflow-hidden">
-                        {(() => {
-                          const pct = Math.min(100, ((dbStats.storageSizeMB || 0) / 512) * 100);
-                          return <div className={`h-1.5 rounded-full ${pct > 80 ? 'bg-red-500' : pct > 60 ? 'bg-yellow-400' : 'bg-green-500'}`} style={{width: `${pct}%`}} />;
-                        })()}
-                      </div>
-                      <p className="text-[9px] text-gray-400 mt-1">{(512 - (dbStats.storageSizeMB || 0)).toFixed(1)} MB free · tap for details</p>
-                    </>
-                  ) : (
-                    <p className="text-xs text-gray-400 font-bold">Unavailable</p>
-                  )}
-                </button>
-
-                {/* Cloudinary mini widget */}
-                <button
-                  onClick={() => setStoragePopup('cloudinary')}
-                  className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 text-left hover:border-blue-300 hover:shadow-md transition-all group"
-                >
-                  <div className="flex items-center gap-2 mb-3">
-                    <div className="w-8 h-8 bg-blue-50 rounded-xl flex items-center justify-center group-hover:bg-blue-100 transition">
-                      <svg className="w-4 h-4 text-blue-600" fill="currentColor" viewBox="0 0 24 24"><path d="M19.35 10.04A7.49 7.49 0 0 0 12 4C9.11 4 6.6 5.64 5.35 8.04A5.994 5.994 0 0 0 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z"/></svg>
-                    </div>
-                    <div>
-                      <p className="text-[10px] font-black uppercase tracking-widest text-gray-500">Cloudinary</p>
-                      <p className="text-[9px] text-gray-400">Free tier · 25 Credits</p>
-                    </div>
-                  </div>
-                  {cloudLoading ? (
-                    <div className="h-6 bg-gray-100 rounded animate-pulse" />
-                  ) : cloudStats ? (
-                    <>
-                      <p className="text-2xl font-black text-gray-900">{((cloudStats.credits_usage_percent || 0)).toFixed(1)}<span className="text-sm font-bold text-gray-400">%</span></p>
-                      <div className="mt-2 w-full bg-gray-100 rounded-full h-1.5 overflow-hidden">
-                        {(() => {
-                          const pct = Math.min(100, cloudStats.credits_usage_percent || 0);
-                          return <div className={`h-1.5 rounded-full ${pct > 80 ? 'bg-red-500' : pct > 60 ? 'bg-yellow-400' : 'bg-blue-500'}`} style={{width: `${pct}%`}} />;
-                        })()}
-                      </div>
-                      <p className="text-[9px] text-gray-400 mt-1">{cloudStats.storage_used_mb?.toFixed(1) || 0} MB used · tap for details</p>
-                    </>
-                  ) : (
-                    <p className="text-xs text-gray-400 font-bold">Unavailable</p>
-                  )}
-                </button>
-              </div>
+              {/* Storage widgets moved to dashboard header as compact badges */}
 
               {/* ── Storage Detail Popup ── */}
               {storagePopup && (
