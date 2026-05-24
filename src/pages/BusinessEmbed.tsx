@@ -291,24 +291,55 @@ function DashboardModule({ showMsg }: any) {
 
   return (
     <div className="space-y-6">
+      {/* ── TOP ROW: Revenue + Customers ── */}
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-        {[
-          { label: 'Revenue (Month)', value: fmt(stats?.sales?.totalRevenue || 0), icon: TrendingUp, color: 'text-green-600 bg-green-50', sub: `${stats?.sales?.totalOrders || 0} orders` },
-          { label: 'Net Profit (Month)', value: fmt(stats?.cash?.profit || 0), icon: BarChart2, color: (stats?.cash?.profit || 0) >= 0 ? 'text-emerald-600 bg-emerald-50' : 'text-red-600 bg-red-50', sub: 'Revenue − Expenses' },
-          { label: 'Total Customers', value: fmtQty(stats?.customers?.totalCustomers || 0), icon: Users, color: 'text-purple-600 bg-purple-50', sub: `${stats?.customers?.repeatCustomers || 0} repeat buyers` },
-        ].map(card => (
-          <div key={card.label} className="bg-white rounded-xl border border-gray-200 p-4">
-            <div className={`w-8 h-8 rounded-lg flex items-center justify-center mb-2 ${card.color}`}>
-              <card.icon className="w-4 h-4" />
-            </div>
-            <p className="text-xl font-black text-gray-900">{card.value}</p>
-            <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mt-1">{card.label}</p>
-            {card.sub && <p className="text-[9px] text-gray-300 mt-0.5">{card.sub}</p>}
-          </div>
-        ))}
+        <div className="bg-white rounded-xl border border-gray-200 p-4">
+          <div className="w-8 h-8 rounded-lg flex items-center justify-center mb-2 text-green-600 bg-green-50"><TrendingUp className="w-4 h-4"/></div>
+          <p className="text-xl font-black text-gray-900">{fmt(stats?.cash?.revenue || stats?.sales?.totalRevenue || 0)}</p>
+          <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mt-1">Revenue</p>
+          <p className="text-[9px] text-gray-300">{stats?.sales?.totalOrders || 0} orders this month</p>
+        </div>
+        <div className="bg-white rounded-xl border border-gray-200 p-4">
+          <div className="w-8 h-8 rounded-lg flex items-center justify-center mb-2 text-purple-600 bg-purple-50"><Users className="w-4 h-4"/></div>
+          <p className="text-xl font-black text-gray-900">{fmtQty(stats?.customers?.totalCustomers || 0)}</p>
+          <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mt-1">Total Customers</p>
+          <p className="text-[9px] text-gray-300">{stats?.customers?.repeatCustomers || 0} repeat buyers</p>
+        </div>
+        <div className="bg-white rounded-xl border border-gray-200 p-4">
+          <div className="w-8 h-8 rounded-lg flex items-center justify-center mb-2 text-blue-600 bg-blue-50"><ShoppingCart className="w-4 h-4"/></div>
+          <p className="text-xl font-black text-gray-900">{fmt(stats?.cash?.cogs || 0)}</p>
+          <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mt-1">COGS</p>
+          <p className="text-[9px] text-gray-300">Cost of goods sold</p>
+        </div>
       </div>
 
-      {/* Cash Position — all-time balances */}
+      {/* ── P&L WATERFALL: Gross Profit → Net Profit ── */}
+      <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+        <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between">
+          <h3 className="font-black text-sm uppercase tracking-widest text-gray-700">Profit & Loss</h3>
+          <span className="text-[9px] text-gray-400 uppercase tracking-widest">This Month</span>
+        </div>
+        <div className="divide-y divide-gray-50">
+          {[
+            { label: 'Revenue',              value: stats?.cash?.revenue || 0,          color: 'text-green-700',  bg: 'bg-green-50',   bold: false, indent: false },
+            { label: '− Cost of Goods Sold', value: -(stats?.cash?.cogs || 0),          color: 'text-red-500',    bg: '',              bold: false, indent: true  },
+            { label: 'Gross Profit',         value: stats?.cash?.grossProfit || 0,       color: (stats?.cash?.grossProfit||0)>=0?'text-emerald-700':'text-red-600', bg: 'bg-emerald-50', bold: true, indent: false },
+            { label: '− Operating Expenses', value: -(stats?.cash?.operatingExpense||0), color: 'text-red-500',    bg: '',              bold: false, indent: true  },
+            { label: 'Net Profit',           value: stats?.cash?.netProfit || stats?.cash?.profit || 0, color: (stats?.cash?.netProfit||0)>=0?'text-emerald-800':'text-red-700', bg: (stats?.cash?.netProfit||0)>=0?'bg-emerald-100':'bg-red-50', bold: true, indent: false },
+          ].map(row => (
+            <div key={row.label} className={`flex items-center justify-between px-5 py-2.5 ${row.bg}`}>
+              <span className={`text-xs ${row.bold ? 'font-black uppercase tracking-widest' : 'font-semibold text-gray-500'} ${row.indent ? 'pl-4' : ''}`}>{row.label}</span>
+              <span className={`text-sm font-black ${row.color}`}>{row.value < 0 ? `−${fmt(Math.abs(row.value))}` : fmt(row.value)}</span>
+            </div>
+          ))}
+        </div>
+        <div className="px-5 py-2 bg-gray-50 flex justify-end gap-4">
+          <span className="text-[9px] text-gray-400">Gross Margin: <strong>{stats?.cash?.grossMargin || 0}%</strong></span>
+          <span className="text-[9px] text-gray-400">Net Margin: <strong>{stats?.cash?.netMargin || 0}%</strong></span>
+        </div>
+      </div>
+
+      {/* ── CASH POSITION ── */}
       <div className="grid grid-cols-2 gap-3">
         <div className="bg-yellow-50 border-2 border-yellow-200 rounded-xl p-4 flex items-center gap-3">
           <div className="text-2xl">💵</div>
