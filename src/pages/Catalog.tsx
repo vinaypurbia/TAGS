@@ -250,7 +250,9 @@ export function Catalog() {
   const handleAddItem = (e: React.MouseEvent, product: any) => {
     e.preventDefault();
     e.stopPropagation();
-    if (product.stock?.trackInventory && !product.stock?.isInStock) return;
+    // Respect admin's frontendStatus decision — not raw inventory count
+    const fs = product.stock?.frontendStatus || 'normal';
+    if (fs === 'out_of_stock' || fs === 'hidden') return;
     addItem(product);
     setAddedIds(prev => new Set(prev).add(product._id));
     setTimeout(() => {
