@@ -598,28 +598,34 @@ export function AdminPanel() {
   };
 
   // ── AUTH GUARD ───────────────────────────────────────────────────────────
-  // Redirect must be in useEffect — calling navigate() during render crashes React
+  // Read localStorage directly for instant check — avoids the React state
+  // batching delay that causes a grey flash on fresh login before user state
+  // has propagated to this component.
+  const savedUser = (() => {
+    try { return JSON.parse(localStorage.getItem('tags_user') || 'null'); } catch { return null; }
+  })();
+  const savedToken = localStorage.getItem('tags_token');
+  const immediateCanAccess = savedUser?.role === 'admin' || savedUser?.role === 'manager';
+
+  // Redirect in useEffect (never during render — that crashes React)
   useEffect(() => {
-    if (!authLoading && !canAccessAdmin) {
+    if (!authLoading && !canAccessAdmin && !immediateCanAccess) {
       navigate('/login?redirect=/admin', { replace: true });
     }
-  }, [authLoading, canAccessAdmin, navigate]);
+  }, [authLoading, canAccessAdmin, immediateCanAccess, navigate]);
 
-  // Only block render if we have no user at all — not during background token verify
-  if (authLoading && !user) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-[#0F0F0F]">
-        <div className="text-white/40 text-sm font-bold uppercase tracking-widest animate-pulse">Verifying session…</div>
-      </div>
-    );
-  }
-
-  if (!canAccessAdmin) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-[#0F0F0F]">
-        <div className="text-white/40 text-sm font-bold uppercase tracking-widest animate-pulse">Redirecting…</div>
-      </div>
-    );
+  // Block render only when we have absolutely no evidence of a valid session
+  if (!immediateCanAccess && !canAccessAdmin) {
+    // Still loading initial session from storage — show brief neutral screen
+    if (authLoading) {
+      return (
+        <div className="min-h-screen flex items-center justify-center bg-[#0F0F0F]">
+          <div className="text-white/40 text-sm font-bold uppercase tracking-widest animate-pulse">Loading…</div>
+        </div>
+      );
+    }
+    // No valid session at all — redirect effect will fire
+    return null;
   }
 
   // ── MAIN LAYOUT ───────────────────────────────────────────────────────────
