@@ -1,0 +1,493 @@
+import { MongoClient, ObjectId } from 'mongodb';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
+
+const uri = process.env.TAGS_MONGO;
+const JWT_SECRET = process.env.TAGS_JWT_SECRET || 'tags-secret-change-in-prod';
+
+let client;
+async function getClient() {
+  if (!client) { client = new MongoClient(uri); await client.connect(); }
+  return client;
+}
+
+// ─── JWT helpers ──────────────────────────────────────────────
+function signToken(payload) {
+  return jwt.sign(payload, JWT_SECRET, { expiresIn: '12h' });
+}
+function verifyToken(token) {
+  try { return jwt.verify(token, JWT_SECRET); }
+  catch { return null; }
+}
+function getTokenFromReq(req) {
+  const auth = req.headers.authorization;
+  if (auth?.startsWith('Bearer ')) return auth.slice(7);
+  return null;
+}
+function requireAuth(req, roles = []) {
+  // Primary: JWT token auth (for new auth system)
+  const token = getTokenFromReq(req);
+  if (token) {
+    const decoded = verifyToken(token);
+    if (decoded) {
+      if (roles.length && !roles.includes(decoded.role)) return null;
+      return decoded;
+    }
+  }
+  // Fallback: X-Admin-Key header (for old admin password system)
+  const adminKey = req.headers['x-admin-key'];
+  const ADMIN_PASSWORD = process.env.VITE_ADMIN_PASSWORD || process.env.ADMIN_PASSWORD || '';
+  if (adminKey && ADMIN_PASSWORD && adminKey === ADMIN_PASSWORD) {
+    // Treat as admin role — passes all role checks
+    if (roles.length && !roles.includes('admin')) return null;
+    return { userId: 'admin', role: 'admin', name: 'Admin' };
+  }
+  return null;
+}
+
+export default async function handler(req, res) {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  if (req.method === 'OPTIONS') return res.status(200).end();
+
+  const { module } = req.query;
+
+  try {
+    const dbClient = await getClient();
+    const db = dbClient.db('tagsdb');
+
+    // ─── AUTH ─────────────────────────────────────────────────────
+    if (module === 'auth') {
+      const { action } = req.query;
+
+      // Email + password login (admin, manager)
+      if (action === 'login' && req.method === 'POST') {
+        const { email, password } = req.body;
+        if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
+        const user = await db.collection('users').findOne({ email: email.toLowerCase(), active: true });
+        if (!user) return res.status(401).json({ error: 'Invalid credentials' });
+        if (!['admin', 'manager'].includes(user.role)) return res.status(403).json({ error: 'Use PIN login for your role' });
+        const valid = await bcrypt.compare(password, user.passwordHash);
+        if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
+        const token = signToken({ userId: user._id.toString(), name: user.name, email: user.email, role: user.role });
+        await db.collection('users').updateOne({ _id: user._id }, { $set: { lastLogin: new Date() } });
+        return res.status(200).json({ token, user: { id: user._id, name: user.name, email: user.email, role: user.role } });
+      }
+
+      // PIN login (associate, cashier)
+      if (action === 'pin' && req.method === 'POST') {
+        const { pin } = req.body;
+        if (!pin) return res.status(400).json({ error: 'PIN required' });
+        const allPinUsers = await db.collection('users').find({ role: { $in: ['associate', 'cashier'] }, active: true }).toArray();
+        let matched = null;
+        for (const u of allPinUsers) {
+          if (u.pinHash && await bcrypt.compare(String(pin), u.pinHash)) { matched = u; break; }
+        }
+        if (!matched) return res.status(401).json({ error: 'Invalid PIN' });
+        const token = signToken({ userId: matched._id.toString(), name: matched.name, role: matched.role });
+        await db.collection('users').updateOne({ _id: matched._id }, { $set: { lastLogin: new Date() } });
+        return res.status(200).json({ token, user: { id: matched._id, name: matched.name, role: matched.role } });
+      }
+
+      // Verify token
+      if (action === 'verify' && req.method === 'GET') {
+        const decoded = requireAuth(req);
+        if (!decoded) return res.status(401).json({ error: 'Unauthorized' });
+        return res.status(200).json({ valid: true, user: decoded });
+      }
+
+      return res.status(400).json({ error: 'Invalid auth action' });
+    }
+
+    // ─── USERS (admin only) ───────────────────────────────────────
+    if (module === 'users') {
+      const col = db.collection('users');
+
+      if (req.method === 'GET') {
+        const auth = requireAuth(req, ['admin']);
+        if (!auth) return res.status(403).json({ error: 'Admin access required' });
+        const users = await col.find({}, { projection: { passwordHash: 0, pinHash: 0 } }).sort({ createdAt: -1 }).toArray();
+        return res.status(200).json(users);
+      }
+
+      if (req.method === 'POST') {
+        const auth = requireAuth(req, ['admin']);
+        if (!auth) return res.status(403).json({ error: 'Admin access required' });
+        const { name, email, role, password, pin } = req.body;
+        if (!name || !role) return res.status(400).json({ error: 'Name and role required' });
+        const validRoles = ['admin', 'manager', 'associate', 'cashier'];
+        if (!validRoles.includes(role)) return res.status(400).json({ error: 'Invalid role' });
+        const doc = { name, role, active: true, createdAt: new Date(), updatedAt: new Date(), createdBy: auth.userId };
+        if (['admin', 'manager'].includes(role)) {
+          if (!email || !password) return res.status(400).json({ error: 'Email and password required for this role' });
+          const exists = await col.findOne({ email: email.toLowerCase() });
+          if (exists) return res.status(400).json({ error: 'Email already in use' });
+          doc.email = email.toLowerCase();
+          doc.passwordHash = await bcrypt.hash(password, 10);
+        }
+        if (['associate', 'cashier'].includes(role)) {
+          if (!pin || String(pin).length < 4) return res.status(400).json({ error: '4-digit PIN required' });
+          doc.pinHash = await bcrypt.hash(String(pin), 10);
+          if (email) doc.email = email.toLowerCase();
+        }
+        const result = await col.insertOne(doc);
+        return res.status(201).json({ success: true, _id: result.insertedId });
+      }
+
+      if (req.method === 'PUT') {
+        const auth = requireAuth(req, ['admin']);
+        if (!auth) return res.status(403).json({ error: 'Admin access required' });
+        const { id, name, email, role, active, password, pin } = req.body;
+        if (!id) return res.status(400).json({ error: 'ID required' });
+        const update = { updatedAt: new Date() };
+        if (name) update.name = name;
+        if (email) update.email = email.toLowerCase();
+        if (role) update.role = role;
+        if (typeof active === 'boolean') update.active = active;
+        if (password) update.passwordHash = await bcrypt.hash(password, 10);
+        if (pin) update.pinHash = await bcrypt.hash(String(pin), 10);
+        await col.updateOne({ _id: new ObjectId(id) }, { $set: update });
+        return res.status(200).json({ success: true });
+      }
+
+      if (req.method === 'DELETE') {
+        const auth = requireAuth(req, ['admin']);
+        if (!auth) return res.status(403).json({ error: 'Admin access required' });
+        const { id } = req.body;
+        if (!id) return res.status(400).json({ error: 'ID required' });
+        // Soft delete — never hard delete
+        await col.updateOne({ _id: new ObjectId(id) }, { $set: { active: false, updatedAt: new Date() } });
+        return res.status(200).json({ success: true });
+      }
+    }
+
+    // ─── SUPPLIERS ───────────────────────────────────────────────
+    if (module === 'suppliers') {
+      const col = db.collection('suppliers');
+      if (req.method === 'GET') {
+        const suppliers = await col.find({}).sort({ name: 1 }).toArray();
+        return res.status(200).json(suppliers);
+      }
+      if (req.method === 'POST') {
+        const { name, phone, email, address, gstin, notes } = req.body;
+        if (!name) return res.status(400).json({ error: 'Name is required' });
+        const result = await col.insertOne({ name, phone: phone || '', email: email || '', address: address || '', gstin: gstin || '', notes: notes || '', createdAt: new Date(), updatedAt: new Date() });
+        return res.status(201).json({ success: true, _id: result.insertedId });
+      }
+      if (req.method === 'PUT') {
+        const { id, ...data } = req.body;
+        if (!id) return res.status(400).json({ error: 'ID required' });
+        delete data._id; data.updatedAt = new Date();
+        await col.updateOne({ _id: new ObjectId(id) }, { $set: data });
+        return res.status(200).json({ success: true });
+      }
+      if (req.method === 'DELETE') {
+        const { id } = req.body;
+        if (!id) return res.status(400).json({ error: 'ID required' });
+        await col.deleteOne({ _id: new ObjectId(id) });
+        return res.status(200).json({ success: true });
+      }
+    }
+
+    // ─── EXPENSES ────────────────────────────────────────────────
+    if (module === 'expenses') {
+      const col = db.collection('expenses');
+      const cashFlow = db.collection('cashFlow');
+
+      if (req.method === 'GET') {
+        const { from, to, period } = req.query;
+        const filter = {};
+        let fromDate, toDate;
+        const now = new Date();
+        if (period === 'today') { fromDate = new Date(new Date().setHours(0,0,0,0)); toDate = new Date(); }
+        else if (period === 'week') { fromDate = new Date(now.setDate(now.getDate() - 7)); toDate = new Date(); }
+        else if (period === 'month') { fromDate = new Date(now.getFullYear(), now.getMonth(), 1); toDate = new Date(); }
+        else if (period === 'year') { fromDate = new Date(now.getFullYear(), 0, 1); toDate = new Date(); }
+        else { if (from) fromDate = new Date(from); if (to) toDate = new Date(to); }
+        if (fromDate || toDate) {
+          filter.date = {};
+          if (fromDate) filter.date.$gte = fromDate;
+          if (toDate) filter.date.$lte = toDate;
+        }
+        const expenses = await col.find(filter).sort({ date: -1 }).toArray();
+        return res.status(200).json(expenses);
+      }
+      if (req.method === 'POST') {
+        const { category, amount, description, date, paymentMode, notes } = req.body;
+        if (!amount || !category) return res.status(400).json({ error: 'Category and amount required' });
+        const result = await col.insertOne({ category, amount: Number(amount), description: description || '', date: date ? new Date(date) : new Date(), paymentMode: paymentMode || 'cash', notes: notes || '', createdAt: new Date() });
+        await cashFlow.insertOne({ type: 'expense', category, amount: Number(amount), description: description || category, date: date ? new Date(date) : new Date(), referenceId: result.insertedId.toString(), referenceType: 'expense', createdAt: new Date() });
+        return res.status(201).json({ success: true, _id: result.insertedId });
+      }
+      if (req.method === 'DELETE') {
+        const { id } = req.body;
+        if (!id) return res.status(400).json({ error: 'ID required' });
+        await col.deleteOne({ _id: new ObjectId(id) });
+        await cashFlow.deleteOne({ referenceId: id, referenceType: 'expense' });
+        return res.status(200).json({ success: true });
+      }
+    }
+
+    // ─── CASHFLOW ─────────────────────────────────────────────────
+    if (module === 'cashflow') {
+      const col = db.collection('cashFlow');
+
+      if (req.method === 'GET') {
+        const { from, to, type, period } = req.query;
+        let fromDate, toDate;
+        const now = new Date();
+        if (period === 'today') { fromDate = new Date(new Date().setHours(0,0,0,0)); toDate = new Date(); }
+        else if (period === 'week') { fromDate = new Date(now.setDate(now.getDate() - 7)); toDate = new Date(); }
+        else if (period === 'month') { fromDate = new Date(now.getFullYear(), now.getMonth(), 1); toDate = new Date(); }
+        else if (period === 'year') { fromDate = new Date(now.getFullYear(), 0, 1); toDate = new Date(); }
+        else { if (from) fromDate = new Date(from); if (to) toDate = new Date(to); }
+        const filter = {};
+        if (fromDate || toDate) { filter.date = {}; if (fromDate) filter.date.$gte = fromDate; if (toDate) filter.date.$lte = toDate; }
+        if (type) filter.type = type;
+        const entries = await col.find(filter).sort({ date: -1 }).toArray();
+        const income = entries.filter(e => e.type === 'income').reduce((s, e) => s + e.amount, 0);
+        const expense = entries.filter(e => e.type === 'expense').reduce((s, e) => s + e.amount, 0);
+        return res.status(200).json({ entries, summary: { income, expense, profit: income - expense } });
+      }
+      if (req.method === 'POST') {
+        const { type, category, amount, description, date, paymentMode, notes } = req.body;
+        if (!type || !amount) return res.status(400).json({ error: 'Type and amount required' });
+        const result = await col.insertOne({ type, category: category || 'other', amount: Number(amount), description: description || '', date: date ? new Date(date) : new Date(), paymentMode: paymentMode || 'cash', notes: notes || '', createdAt: new Date() });
+        return res.status(201).json({ success: true, _id: result.insertedId });
+      }
+      if (req.method === 'DELETE') {
+        const { id } = req.body;
+        if (!id) return res.status(400).json({ error: 'ID required' });
+        await col.deleteOne({ _id: new ObjectId(id) });
+        return res.status(200).json({ success: true });
+      }
+    }
+
+    // ─── REPORTS ─────────────────────────────────────────────────
+    if (module === 'reports') {
+      if (req.method === 'GET') {
+        const { type } = req.query;
+        const inventory = db.collection('inventory');
+        const products = db.collection('products');
+        const cashFlow = db.collection('cashFlow');
+        const movements = db.collection('stockMovements');
+
+        if (type === 'stock-shortage') {
+          const allInventory = await inventory.find({ trackInventory: true }).toArray();
+          const shortage = allInventory.filter(i => i.availableStock <= i.lowStockAlert).sort((a, b) => a.availableStock - b.availableStock);
+          const enriched = await Promise.all(shortage.map(async (inv) => {
+            const product = await products.findOne({ _id: new ObjectId(inv.productId) }).catch(() => null);
+            return { productId: inv.productId, productName: product?.name || 'Unknown', category: product?.category || '-', image: product?.image || '', sku: inv.sku, currentStock: inv.currentStock, availableStock: inv.availableStock, lowStockAlert: inv.lowStockAlert, isOutOfStock: inv.availableStock === 0, reorderNeeded: inv.lowStockAlert - inv.availableStock, frontendStatus: inv.frontendStatus || 'normal' };
+          }));
+          return res.status(200).json(enriched);
+        }
+
+        if (type === 'low-performing') {
+          const salesData = await movements.find({ type: 'out', reason: { $in: ['sale', 'website_order'] } }).toArray();
+          const salesMap = {};
+          salesData.forEach(m => { if (!salesMap[m.productId]) salesMap[m.productId] = 0; salesMap[m.productId] += m.quantity; });
+          const allProducts = await products.find({}).toArray();
+          const withSales = allProducts.map(p => ({ productId: p._id.toString(), productName: p.name, category: p.category, image: p.image, price: p.price, totalSold: salesMap[p._id.toString()] || 0 })).sort((a, b) => a.totalSold - b.totalSold);
+          return res.status(200).json(withSales.slice(0, 20));
+        }
+
+        if (type === 'best-selling') {
+          const salesData = await movements.find({ type: 'out' }).toArray();
+          const salesMap = {};
+          salesData.forEach(m => { if (!salesMap[m.productId]) salesMap[m.productId] = 0; salesMap[m.productId] += m.quantity; });
+          const allProducts = await products.find({}).toArray();
+          const withSales = allProducts.map(p => ({ productId: p._id.toString(), productName: p.name, category: p.category, image: p.image, price: p.price, totalSold: salesMap[p._id.toString()] || 0 })).sort((a, b) => b.totalSold - a.totalSold);
+          return res.status(200).json(withSales.slice(0, 20));
+        }
+
+        if (type === 'profit-margin') {
+          const allInventory = await inventory.find({}).toArray();
+          const invMap = {};
+          allInventory.forEach(i => { invMap[i.productId] = i; });
+          const allProducts = await products.find({}).toArray();
+          const withMargin = allProducts.map(p => {
+            const pid = p._id.toString(); const inv = invMap[pid];
+            const sellingPrice = parseFloat(p.discountedPrice || p.price || 0);
+            const costPrice = inv?.costPrice || 0; const margin = sellingPrice - costPrice;
+            const marginPct = costPrice > 0 ? ((margin / costPrice) * 100).toFixed(1) : null;
+            return { productId: pid, productName: p.name, category: p.category, image: p.image, sellingPrice, costPrice, margin, marginPct: marginPct ? parseFloat(marginPct) : null };
+          }).sort((a, b) => (b.margin || 0) - (a.margin || 0));
+          return res.status(200).json(withMargin);
+        }
+
+        if (type === 'pnl') {
+          const { from, to } = req.query;
+          const filter = {};
+          if (from || to) { filter.date = {}; if (from) filter.date.$gte = new Date(from); if (to) filter.date.$lte = new Date(to); }
+          // EXCLUDE financing entries — capital & loans are not revenue or operating expenses
+          filter.category = { $ne: 'financing' };
+          const allCashFlow = await cashFlow.find(filter).toArray();
+          const income = allCashFlow.filter(e => e.type === 'income').reduce((s, e) => s + e.amount, 0);
+          const expenses = allCashFlow.filter(e => e.type === 'expense').reduce((s, e) => s + e.amount, 0);
+          const byCategory = {};
+          allCashFlow.forEach(e => { const key = `${e.type}:${e.category || 'other'}`; if (!byCategory[key]) byCategory[key] = { type: e.type, category: e.category || 'other', total: 0, count: 0 }; byCategory[key].total += e.amount; byCategory[key].count += 1; });
+          return res.status(200).json({ income, expenses, profit: income - expenses, profitMargin: income > 0 ? ((income - expenses) / income * 100).toFixed(1) : 0, breakdown: Object.values(byCategory) });
+        }
+
+        if (type === 'stock-valuation') {
+          const allInventory = await inventory.find({}).toArray();
+          let totalValue = 0; let totalRetailValue = 0;
+          const enriched = await Promise.all(allInventory.map(async (inv) => {
+            const product = await products.findOne({ _id: new ObjectId(inv.productId) }).catch(() => null);
+            const costValue = (inv.currentStock || 0) * (inv.costPrice || 0);
+            const retailValue = (inv.currentStock || 0) * parseFloat(product?.price || 0);
+            totalValue += costValue; totalRetailValue += retailValue;
+            return { productId: inv.productId, productName: product?.name || 'Unknown', category: product?.category || '-', currentStock: inv.currentStock, unit: inv.unit, costPrice: inv.costPrice, retailPrice: parseFloat(product?.price || 0), costValue, retailValue };
+          }));
+          return res.status(200).json({ items: enriched, totalCostValue: totalValue, totalRetailValue, potentialProfit: totalRetailValue - totalValue });
+        }
+
+        return res.status(400).json({ error: 'Invalid report type' });
+      }
+    }
+
+    // ─── FINANCING ────────────────────────────────────────────────────────────
+    // Handles: opening capital, capital infusion, loans, repayments, withdrawals.
+    //
+    // Rules:
+    //   • Every financing entry writes a mirrored cashFlow entry so the ledger
+    //     is always complete (referenceType: 'financing').
+    //   • Editing rebuilds the cashFlow mirrors — no stale data possible.
+    //   • Deleting cascades: removes cashFlow mirrors first, then source record.
+    //   • P&L reports exclude category:'financing' so capital/loans don't inflate
+    //     revenue or operating expenses. Financing has its own summary view.
+    //
+    // cashFlow direction by type:
+    //   opening_capital / capital_infusion / loan_received → income
+    //   loan_repayment / owner_withdrawal                  → expense
+    if (module === 'financing') {
+      const auth = requireAuth(req, ['admin', 'manager']);
+      if (!auth) return res.status(403).json({ error: 'Access denied' });
+
+      const finCol   = db.collection('financing');
+      const cfCol    = db.collection('cashFlow');
+
+      const INCOME_TYPES  = ['opening_capital', 'capital_infusion', 'loan_received'];
+      const EXPENSE_TYPES = ['loan_repayment', 'owner_withdrawal'];
+      const ALL_TYPES     = [...INCOME_TYPES, ...EXPENSE_TYPES];
+      const TYPE_LABELS   = {
+        opening_capital:  'Opening Capital',
+        capital_infusion: 'Capital Infusion',
+        loan_received:    'Loan Received',
+        loan_repayment:   'Loan Repayment',
+        owner_withdrawal: 'Owner Withdrawal',
+      };
+
+      // Writes cashFlow mirror(s) for a financing entry.
+      // If amount is split across cash and bank, creates two entries.
+      async function writeMirrors(finId, type, amount, cashAmt, bankAmt, source, date) {
+        const cfType = INCOME_TYPES.includes(type) ? 'income' : 'expense';
+        const desc   = `${TYPE_LABELS[type]}${source ? ' — ' + source : ''}`;
+        if (cashAmt > 0 && bankAmt > 0) {
+          await cfCol.insertOne({ type: cfType, category: 'financing', amount: cashAmt,
+            paymentMode: 'cash', description: `${desc} (Cash)`,
+            referenceId: finId, referenceType: 'financing', date, createdAt: new Date() });
+          await cfCol.insertOne({ type: cfType, category: 'financing', amount: bankAmt,
+            paymentMode: 'bank', description: `${desc} (Bank)`,
+            referenceId: finId, referenceType: 'financing', date, createdAt: new Date() });
+        } else {
+          const paymentMode = bankAmt > 0 ? 'bank' : cashAmt > 0 ? 'cash' : 'other';
+          await cfCol.insertOne({ type: cfType, category: 'financing', amount,
+            paymentMode, description: desc,
+            referenceId: finId, referenceType: 'financing', date, createdAt: new Date() });
+        }
+      }
+
+      // GET — list entries + summary
+      if (req.method === 'GET') {
+        const { type, from, to } = req.query;
+        const filter = {};
+        if (type) filter.type = type;
+        if (from || to) {
+          filter.date = {};
+          if (from) filter.date.$gte = new Date(from);
+          if (to)   filter.date.$lte = new Date(to);
+        }
+        const entries = await finCol.find(filter).sort({ date: -1 }).toArray();
+        const totalCapital    = entries.filter(e => INCOME_TYPES.includes(e.type)).reduce((s, e) => s + e.amount, 0);
+        const totalWithdrawn  = entries.filter(e => EXPENSE_TYPES.includes(e.type)).reduce((s, e) => s + e.amount, 0);
+        const totalLoans      = entries.filter(e => e.type === 'loan_received').reduce((s, e) => s + e.amount, 0);
+        const totalRepaid     = entries.filter(e => e.type === 'loan_repayment').reduce((s, e) => s + e.amount, 0);
+        return res.status(200).json({
+          entries,
+          summary: {
+            totalCapital,
+            totalWithdrawn,
+            netCapital:      totalCapital - totalWithdrawn,
+            totalCash:       entries.reduce((s, e) => s + (e.cashAmount || 0), 0),
+            totalBank:       entries.reduce((s, e) => s + (e.bankAmount || 0), 0),
+            totalLoans,
+            totalRepaid,
+            outstandingLoan: Math.max(0, totalLoans - totalRepaid),
+          },
+        });
+      }
+
+      // POST — create
+      if (req.method === 'POST') {
+        const { type, amount, cashAmount, bankAmount, source, date, notes } = req.body;
+        if (!type || !ALL_TYPES.includes(type))
+          return res.status(400).json({ error: `type must be one of: ${ALL_TYPES.join(', ')}` });
+        if (!amount || isNaN(Number(amount)) || Number(amount) <= 0)
+          return res.status(400).json({ error: 'amount must be a positive number' });
+        const totalAmt  = Number(amount);
+        const cashAmt   = Number(cashAmount) || 0;
+        const bankAmt   = Number(bankAmount)  || 0;
+        if (cashAmt + bankAmt > 0 && Math.abs(cashAmt + bankAmt - totalAmt) > 1)
+          return res.status(400).json({ error: 'cashAmount + bankAmount must equal total amount' });
+        const entryDate = date ? new Date(date) : new Date();
+        const finResult = await finCol.insertOne({
+          type, amount: totalAmt, cashAmount: cashAmt, bankAmount: bankAmt,
+          source: source || '', notes: notes || '',
+          date: entryDate, createdAt: new Date(), updatedAt: new Date(),
+        });
+        await writeMirrors(finResult.insertedId.toString(), type, totalAmt, cashAmt, bankAmt, source || '', entryDate);
+        return res.status(201).json({ success: true, _id: finResult.insertedId });
+      }
+
+      // PUT — edit (rebuilds cashFlow mirrors to stay in sync)
+      if (req.method === 'PUT') {
+        const { id, type, amount, cashAmount, bankAmount, source, date, notes } = req.body;
+        if (!id) return res.status(400).json({ error: 'id is required' });
+        const existing = await finCol.findOne({ _id: new ObjectId(id) });
+        if (!existing) return res.status(404).json({ error: 'Entry not found' });
+        const newType   = type       || existing.type;
+        const newAmount = amount     !== undefined ? Number(amount)     : existing.amount;
+        const newCash   = cashAmount !== undefined ? Number(cashAmount) : existing.cashAmount;
+        const newBank   = bankAmount !== undefined ? Number(bankAmount) : existing.bankAmount;
+        const newSource = source     !== undefined ? source : existing.source;
+        const newNotes  = notes      !== undefined ? notes  : existing.notes;
+        const newDate   = date       ? new Date(date) : existing.date;
+        await finCol.updateOne({ _id: new ObjectId(id) },
+          { $set: { type: newType, amount: newAmount, cashAmount: newCash, bankAmount: newBank,
+                    source: newSource, notes: newNotes, date: newDate, updatedAt: new Date() } });
+        // Rebuild mirrors — wipe stale entries, write fresh
+        await cfCol.deleteMany({ referenceId: id, referenceType: 'financing' });
+        await writeMirrors(id, newType, newAmount, newCash, newBank, newSource, newDate);
+        return res.status(200).json({ success: true });
+      }
+
+      // DELETE — cascade to cashFlow mirrors
+      if (req.method === 'DELETE') {
+        const { id } = req.body;
+        if (!id) return res.status(400).json({ error: 'id is required' });
+        const existing = await finCol.findOne({ _id: new ObjectId(id) });
+        if (!existing) return res.status(404).json({ error: 'Entry not found' });
+        await cfCol.deleteMany({ referenceId: id, referenceType: 'financing' });
+        await finCol.deleteOne({ _id: new ObjectId(id) });
+        return res.status(200).json({ success: true });
+      }
+    }
+
+    return res.status(400).json({ error: 'Invalid module. Use ?module=auth|users|suppliers|expenses|cashflow|reports|financing' });
+  } catch (error) {
+    console.error('Business API error:', error);
+    return res.status(500).json({ error: 'Database error', details: error.message });
+  }
+}
