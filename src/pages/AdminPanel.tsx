@@ -624,7 +624,7 @@ export function AdminPanel() {
 
   // ── MAIN LAYOUT ───────────────────────────────────────────────────────────
   return (
-    <div className="min-h-screen bg-[#F0F2F5] flex">
+    <div className="h-screen bg-[#F0F2F5] flex overflow-hidden">
 
       {idleWarning && (
         <div className="fixed top-0 left-0 right-0 z-[200] bg-yellow-400 text-yellow-900 text-xs font-black uppercase tracking-widest px-4 py-2 flex items-center justify-center gap-3 shadow-lg">
@@ -716,7 +716,7 @@ export function AdminPanel() {
       </aside>
 
       {/* ── MAIN CONTENT ── */}
-      <div className={`flex-1 flex flex-col transition-all duration-300 ${sidebarOpen ? 'lg:ml-60' : 'lg:ml-[72px]'}`}>
+      <div className={`flex-1 flex flex-col transition-all duration-300 overflow-y-auto ${sidebarOpen ? 'lg:ml-60' : 'lg:ml-[72px]'}`}>
 
         <header className="bg-white border-b border-gray-200 px-4 py-3 flex items-center gap-4 sticky top-0 z-30 shadow-sm">
           <button onClick={() => setSidebarOpen(!sidebarOpen)}
