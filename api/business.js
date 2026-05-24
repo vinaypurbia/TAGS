@@ -246,8 +246,10 @@ export default async function handler(req, res) {
         if (fromDate || toDate) { filter.date = {}; if (fromDate) filter.date.$gte = fromDate; if (toDate) filter.date.$lte = toDate; }
         if (type) filter.type = type;
         const entries = await col.find(filter).sort({ date: -1 }).toArray();
-        const income = entries.filter(e => e.type === 'income').reduce((s, e) => s + e.amount, 0);
-        const expense = entries.filter(e => e.type === 'expense').reduce((s, e) => s + e.amount, 0);
+        // Exclude financing entries (capital, loans) from P&L — they are not operating income/expense
+        const operatingEntries = entries.filter(e => e.category !== 'financing');
+        const income = operatingEntries.filter(e => e.type === 'income').reduce((s, e) => s + e.amount, 0);
+        const expense = operatingEntries.filter(e => e.type === 'expense').reduce((s, e) => s + e.amount, 0);
         return res.status(200).json({ entries, summary: { income, expense, profit: income - expense } });
       }
       if (req.method === 'POST') {
