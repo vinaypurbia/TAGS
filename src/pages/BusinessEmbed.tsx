@@ -273,6 +273,7 @@ export function BusinessEmbed() {
 function DashboardModule({ showMsg }: any) {
   const [stats, setStats] = useState<any>(null);
   const [shortage, setShortage] = useState<any[]>([]);
+  const [showAllShortage, setShowAllShortage] = useState(false);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -283,7 +284,7 @@ function DashboardModule({ showMsg }: any) {
       fetch('/api/customers').then(r => r.json()),
     ]).then(([salesData, cashData, shortageData, custData]) => {
       setStats({ sales: salesData.summary, cash: cashData.summary, customers: custData.summary });
-      setShortage(Array.isArray(shortageData) ? shortageData.slice(0, 5) : []);
+      setShortage(Array.isArray(shortageData) ? shortageData : []);
     }).catch(() => {}).finally(() => setLoading(false));
   }, []);
 
@@ -367,7 +368,7 @@ function DashboardModule({ showMsg }: any) {
             <span className="ml-auto text-xs text-yellow-600 font-bold bg-yellow-50 px-2 py-0.5 rounded-full">{shortage.length} items</span>
           </div>
           <div className="space-y-2">
-            {shortage.map((item, i) => (
+            {(showAllShortage ? shortage : shortage.slice(0, 5)).map((item: any, i: number) => (
               <div key={i} className="flex items-center gap-3 p-2 bg-yellow-50 rounded-lg">
                 {item.image && <img src={item.image} alt={item.productName} className="w-8 h-8 rounded object-cover" />}
                 <div className="flex-1 min-w-0">
@@ -381,6 +382,21 @@ function DashboardModule({ showMsg }: any) {
               </div>
             ))}
           </div>
+          {shortage.length > 5 && (
+            <button
+              onClick={() => setShowAllShortage(v => !v)}
+              className="w-full mt-3 py-2 text-xs font-black uppercase tracking-widest text-yellow-600 bg-yellow-50 rounded-lg hover:bg-yellow-100 transition"
+            >
+              {showAllShortage ? `▲ Show Less` : `▼ Show All ${shortage.length} Items`}
+            </button>
+          )}
+          <a
+            href="/admin#inventory"
+            onClick={e => { e.preventDefault(); window.location.href = '/admin'; setTimeout(() => { const el = document.getElementById('inventory-section'); el?.scrollIntoView({ behavior: 'smooth' }); }, 500); }}
+            className="flex items-center justify-center gap-2 w-full mt-2 py-2 text-xs font-black uppercase tracking-widest text-gray-500 border border-gray-200 rounded-lg hover:border-[#FA5600] hover:text-[#FA5600] transition"
+          >
+            → Go to Inventory
+          </a>
         </div>
       )}
 
@@ -1127,7 +1143,7 @@ function SalesModule({ showMsg }: any) {
 
   useEffect(() => { fetchSales(); }, [period]);
   useEffect(() => {
-    fetch('/api/products').then(r => r.json()).then(data => setProducts(Array.isArray(data) ? data : (data.products || []))).catch(() => {});
+    fetch('/api/products?limit=500&adminView=true').then(r => r.json()).then(data => setProducts(Array.isArray(data) ? data : (data.products || []))).catch(() => {});
     fetch('/api/customers').then(r => r.json()).then(data => setCustomers(data.customers || [])).catch(() => {}); // FIX #7
   }, []);
 
@@ -1314,7 +1330,7 @@ function PurchaseOrdersModule({ showMsg }: any) {
   const fetchPOs = () => { setLoading(true); fetch('/api/purchase-orders').then(r => r.json()).then(data => setPos(Array.isArray(data) ? data : [])).catch(() => {}).finally(() => setLoading(false)); };
   useEffect(() => {
     fetchPOs();
-    fetch('/api/products').then(r => r.json()).then(data => setProducts(Array.isArray(data) ? data : (data.products || []))).catch(() => {});
+    fetch('/api/products?limit=500&adminView=true').then(r => r.json()).then(data => setProducts(Array.isArray(data) ? data : (data.products || []))).catch(() => {});
     fetch('/api/business?module=suppliers').then(r => r.json()).then(data => setSuppliers(Array.isArray(data) ? data : [])).catch(() => {}); // FIX #1
   }, []);
 
