@@ -59,7 +59,7 @@ export default async function handler(req, res) {
             // FIX: compute and persist stockStatus
             let stockStatus = 'in_stock';
             if (available === 0) stockStatus = 'out_of_stock';
-            else if (available <= (inv.lowStockAlert || 10)) stockStatus = 'low_stock';
+            else if (available <= (inv.lowStockAlert || 5)) stockStatus = 'low_stock';
 
             await inventoryCol.updateOne(
               { productId: pid },
@@ -85,6 +85,15 @@ export default async function handler(req, res) {
           message: `Backfill complete. ${totalDeducted} deduction(s) applied, ${skipped} skipped.`,
           totalDeducted, skipped, log,
         });
+      }
+
+      // ── BULK UPDATE lowStockAlert from 10 → 5 for all existing records ──
+      if (action === 'fixAlerts') {
+        const result = await inventoryCol.updateMany(
+          { lowStockAlert: 10 },
+          { $set: { lowStockAlert: 5, updatedAt: new Date() } }
+        );
+        return res.status(200).json({ success: true, updated: result.modifiedCount });
       }
 
       // ── ENABLE ALL TRACKING ───────────────────────────────────────────────
@@ -201,12 +210,12 @@ export default async function handler(req, res) {
             currentStock: stock.currentStock || 0,
             reservedStock: stock.reservedStock || 0,
             availableStock: stock.availableStock || 0,
-            lowStockAlert: stock.lowStockAlert || 10,
+            lowStockAlert: stock.lowStockAlert || 5,
             costPrice: stock.costPrice || 0,
             unit: stock.unit || 'pcs',
             trackInventory: stock.trackInventory !== false,
             isInStock: (stock.availableStock || 0) > 0,
-            isLowStock: stock.trackInventory && (stock.availableStock || 0) <= (stock.lowStockAlert || 10) && (stock.availableStock || 0) > 0,
+            isLowStock: stock.trackInventory && (stock.availableStock || 0) <= (stock.lowStockAlert || 5) && (stock.availableStock || 0) > 0,
             stockStatus: stock.stockStatus || 'in_stock',           // FIX: persisted
             frontendStatus: stock.frontendStatus || 'normal',       // FIX: admin visibility
             adjustmentLog: stock.adjustmentLog || [],
@@ -216,7 +225,7 @@ export default async function handler(req, res) {
             currentStock: 0,
             reservedStock: 0,
             availableStock: 0,
-            lowStockAlert: 10,
+            lowStockAlert: 5,
             costPrice: 0,
             unit: 'pcs',
             trackInventory: false,
@@ -240,7 +249,7 @@ export default async function handler(req, res) {
       const cs = Number(currentStock) || 0;
       const rs = Number(reservedStock) || 0;
       const available = Math.max(0, cs - rs);
-      const alert = Number(lowStockAlert) || 10;
+      const alert = Number(lowStockAlert) || 5;
       const existing = await inventoryCol.findOne({ productId });
 
       // FIX: compute and persist stockStatus on create/update
@@ -289,7 +298,7 @@ export default async function handler(req, res) {
       // FIX: persist stockStatus on every adjustment
       let stockStatus = 'in_stock';
       if (available === 0) stockStatus = 'out_of_stock';
-      else if (existing.trackInventory && available <= (existing.lowStockAlert || 10)) stockStatus = 'low_stock';
+      else if (existing.trackInventory && available <= (existing.lowStockAlert || 5)) stockStatus = 'low_stock';
 
       await inventoryCol.updateOne(
         { productId },
