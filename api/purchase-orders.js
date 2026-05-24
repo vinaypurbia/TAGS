@@ -229,13 +229,14 @@ export default async function handler(req, res) {
           { $set: { status: 'received', receivedDate: new Date(), updatedAt: new Date() } }
         );
 
-        // Auto-create cash flow expense entry
+        // Auto-create cash flow expense entry — linked by referenceType so deleting PO cascades
         await cashFlow.insertOne({
           type: 'expense',
           category: 'purchase',
           amount: po.totalAmount,
           description: `Purchase Order ${po.poNumber} — ${po.supplier?.name || 'Supplier'}`,
           referenceId: id,
+          referenceType: 'purchase_order',
           date: new Date(),
           createdAt: new Date(),
         });
@@ -286,6 +287,8 @@ export default async function handler(req, res) {
         return res.status(400).json({ error: 'Only draft POs can be deleted' });
       }
 
+      // Cascade: also remove any cashFlow entries linked to this PO
+      await cashFlow.deleteMany({ referenceId: id, referenceType: 'purchase_order' });
       await orders.deleteOne({ _id: new ObjectId(id) });
       return res.status(200).json({ success: true });
     }
