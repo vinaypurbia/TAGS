@@ -604,7 +604,8 @@ export function AdminPanel() {
     }
   }, [authLoading, canAccessAdmin, navigate]);
 
-  if (authLoading) {
+  // Only block render if we have no user at all — not during background token verify
+  if (authLoading && !user) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-[#0F0F0F]">
         <div className="text-white/40 text-sm font-bold uppercase tracking-widest animate-pulse">Verifying session…</div>
