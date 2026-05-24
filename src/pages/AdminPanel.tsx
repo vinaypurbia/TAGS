@@ -290,6 +290,10 @@ export function AdminPanel() {
   const [dashLoading,   setDashLoading]   = useState(true);
   const [dbStats,       setDbStats]       = useState<any>(null);
   const [dbLoading,     setDbLoading]     = useState(true);
+  const [cloudStats,    setCloudStats]    = useState<any>(null);
+  const [cloudLoading,  setCloudLoading]  = useState(true);
+  // Storage popup state: null | 'mongo' | 'cloudinary'
+  const [storagePopup,  setStoragePopup]  = useState<null | 'mongo' | 'cloudinary'>(null);
   const [shortage,      setShortage]      = useState<any[]>([]);
   const [pendingOrders, setPendingOrders] = useState<any[]>([]);
 
@@ -485,6 +489,17 @@ export function AdminPanel() {
       .finally(() => setDbLoading(false));
   }, [canAccessAdmin]);
 
+  // Fetch Cloudinary storage stats
+  useEffect(() => {
+    if (!canAccessAdmin) return;
+    setCloudLoading(true);
+    fetch('/api/banner?module=cloudinarystats')
+      .then(r => r.json())
+      .then(data => { if (!data.error) setCloudStats(data); })
+      .catch(() => {})
+      .finally(() => setCloudLoading(false));
+  }, [canAccessAdmin]);
+
   const openPayModal = (order: any) => {
     setPayModal({
       open: true, order,
@@ -589,7 +604,6 @@ export function AdminPanel() {
     }
   }, [authLoading, canAccessAdmin, navigate]);
 
-  // Show loading while token is being verified
   if (authLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-[#0F0F0F]">
@@ -598,7 +612,6 @@ export function AdminPanel() {
     );
   }
 
-  // Show loading briefly while redirect fires (prevents flash of blank)
   if (!canAccessAdmin) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-[#0F0F0F]">
@@ -779,72 +792,222 @@ export function AdminPanel() {
                 ))}
               </div>
 
-              {/* MongoDB Storage Widget */}
-              <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
-                <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
-                  <div className="flex items-center gap-2">
-                    <div className="w-8 h-8 bg-green-50 rounded-xl flex items-center justify-center">
+              {/* ── Storage Mini Widgets (click to expand) ── */}
+              <div className="grid grid-cols-2 gap-4">
+
+                {/* MongoDB mini widget */}
+                <button
+                  onClick={() => setStoragePopup('mongo')}
+                  className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 text-left hover:border-green-300 hover:shadow-md transition-all group"
+                >
+                  <div className="flex items-center gap-2 mb-3">
+                    <div className="w-8 h-8 bg-green-50 rounded-xl flex items-center justify-center group-hover:bg-green-100 transition">
                       <Database className="w-4 h-4 text-green-600" />
                     </div>
                     <div>
-                      <h3 className="font-black text-sm uppercase tracking-widest text-gray-800">MongoDB Atlas Storage</h3>
-                      <p className="text-[10px] text-gray-400">Free tier · 512 MB limit</p>
+                      <p className="text-[10px] font-black uppercase tracking-widest text-gray-500">MongoDB Atlas</p>
+                      <p className="text-[9px] text-gray-400">Free tier · 512 MB</p>
                     </div>
                   </div>
-                  <button onClick={() => { setDbLoading(true); fetch('/api/banner?module=dbstats').then(r=>r.json()).then(d=>{if(!d.error)setDbStats(d)}).finally(()=>setDbLoading(false)); }}
-                    className="text-[10px] font-black uppercase tracking-widest text-gray-400 hover:text-[#FA5600] transition">
-                    Refresh
-                  </button>
-                </div>
-                {dbLoading ? (
-                  <div className="p-5 space-y-3">
-                    <div className="h-4 bg-gray-100 rounded-full animate-pulse" />
-                    <div className="grid grid-cols-4 gap-3">{[...Array(4)].map((_,i)=><div key={i} className="h-16 bg-gray-100 rounded-xl animate-pulse"/>)}</div>
-                  </div>
-                ) : !dbStats ? (
-                  <div className="p-6 text-center text-xs text-gray-400 font-bold uppercase tracking-widest">
-                    Storage stats unavailable — deploy dbstats API
-                  </div>
-                ) : (
-                  <div className="p-5 space-y-4">
-                    {/* Storage bar */}
-                    {(() => {
-                      const usedMB  = dbStats.storageSizeMB || 0;
-                      const limitMB = 512;
-                      const pct     = Math.min(100, (usedMB / limitMB) * 100);
-                      const color   = pct > 80 ? 'bg-red-500' : pct > 60 ? 'bg-yellow-400' : 'bg-green-500';
-                      return (
-                        <div>
-                          <div className="flex justify-between text-xs font-black text-gray-700 mb-1.5">
-                            <span>{usedMB.toFixed(2)} MB used</span>
-                            <span className={pct > 80 ? 'text-red-500' : 'text-gray-400'}>{pct.toFixed(1)}% of 512 MB</span>
-                          </div>
-                          <div className="w-full bg-gray-100 rounded-full h-3 overflow-hidden">
-                            <div className={`h-3 rounded-full transition-all ${color}`} style={{width: `${pct}%`}} />
-                          </div>
-                          <p className="text-[10px] text-gray-400 mt-1">{(limitMB - usedMB).toFixed(2)} MB remaining</p>
-                        </div>
-                      );
-                    })()}
-                    {/* Collection breakdown */}
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                      {(dbStats.collections || []).map((col: any) => (
-                        <div key={col.name} className="bg-gray-50 rounded-xl p-3 border border-gray-100">
-                          <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 truncate">{col.name}</p>
-                          <p className="text-lg font-black text-gray-900 mt-1">{col.count.toLocaleString()}</p>
-                          <p className="text-[9px] text-gray-400">{col.sizeMB.toFixed(3)} MB</p>
-                        </div>
-                      ))}
+                  {dbLoading ? (
+                    <div className="h-6 bg-gray-100 rounded animate-pulse" />
+                  ) : dbStats ? (
+                    <>
+                      <p className="text-2xl font-black text-gray-900">{(dbStats.storageSizeMB || 0).toFixed(2)} <span className="text-sm font-bold text-gray-400">MB</span></p>
+                      <div className="mt-2 w-full bg-gray-100 rounded-full h-1.5 overflow-hidden">
+                        {(() => {
+                          const pct = Math.min(100, ((dbStats.storageSizeMB || 0) / 512) * 100);
+                          return <div className={`h-1.5 rounded-full ${pct > 80 ? 'bg-red-500' : pct > 60 ? 'bg-yellow-400' : 'bg-green-500'}`} style={{width: `${pct}%`}} />;
+                        })()}
+                      </div>
+                      <p className="text-[9px] text-gray-400 mt-1">{(512 - (dbStats.storageSizeMB || 0)).toFixed(1)} MB free · tap for details</p>
+                    </>
+                  ) : (
+                    <p className="text-xs text-gray-400 font-bold">Unavailable</p>
+                  )}
+                </button>
+
+                {/* Cloudinary mini widget */}
+                <button
+                  onClick={() => setStoragePopup('cloudinary')}
+                  className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 text-left hover:border-blue-300 hover:shadow-md transition-all group"
+                >
+                  <div className="flex items-center gap-2 mb-3">
+                    <div className="w-8 h-8 bg-blue-50 rounded-xl flex items-center justify-center group-hover:bg-blue-100 transition">
+                      <svg className="w-4 h-4 text-blue-600" fill="currentColor" viewBox="0 0 24 24"><path d="M19.35 10.04A7.49 7.49 0 0 0 12 4C9.11 4 6.6 5.64 5.35 8.04A5.994 5.994 0 0 0 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z"/></svg>
                     </div>
-                    {dbStats.storageSizeMB > 400 && (
-                      <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-2 flex items-center gap-2">
-                        <AlertTriangle className="w-4 h-4 text-red-500 shrink-0" />
-                        <p className="text-xs font-black text-red-600">Storage above 80% — consider cleaning old data or upgrading Atlas plan</p>
+                    <div>
+                      <p className="text-[10px] font-black uppercase tracking-widest text-gray-500">Cloudinary</p>
+                      <p className="text-[9px] text-gray-400">Free tier · 25 Credits</p>
+                    </div>
+                  </div>
+                  {cloudLoading ? (
+                    <div className="h-6 bg-gray-100 rounded animate-pulse" />
+                  ) : cloudStats ? (
+                    <>
+                      <p className="text-2xl font-black text-gray-900">{((cloudStats.credits_usage_percent || 0)).toFixed(1)}<span className="text-sm font-bold text-gray-400">%</span></p>
+                      <div className="mt-2 w-full bg-gray-100 rounded-full h-1.5 overflow-hidden">
+                        {(() => {
+                          const pct = Math.min(100, cloudStats.credits_usage_percent || 0);
+                          return <div className={`h-1.5 rounded-full ${pct > 80 ? 'bg-red-500' : pct > 60 ? 'bg-yellow-400' : 'bg-blue-500'}`} style={{width: `${pct}%`}} />;
+                        })()}
+                      </div>
+                      <p className="text-[9px] text-gray-400 mt-1">{cloudStats.storage_used_mb?.toFixed(1) || 0} MB used · tap for details</p>
+                    </>
+                  ) : (
+                    <p className="text-xs text-gray-400 font-bold">Unavailable</p>
+                  )}
+                </button>
+              </div>
+
+              {/* ── Storage Detail Popup ── */}
+              {storagePopup && (
+                <div className="fixed inset-0 z-[100] bg-black/50 flex items-center justify-center px-4" onClick={() => setStoragePopup(null)}>
+                  <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[80vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+
+                    {/* MongoDB detail */}
+                    {storagePopup === 'mongo' && (
+                      <div>
+                        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+                          <div className="flex items-center gap-3">
+                            <div className="w-9 h-9 bg-green-50 rounded-xl flex items-center justify-center">
+                              <Database className="w-4 h-4 text-green-600" />
+                            </div>
+                            <div>
+                              <h3 className="font-black text-sm uppercase tracking-widest text-gray-800">MongoDB Atlas Storage</h3>
+                              <p className="text-[10px] text-gray-400">Free tier · 512 MB limit</p>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-3">
+                            <button onClick={() => { setDbLoading(true); fetch('/api/banner?module=dbstats').then(r=>r.json()).then(d=>{if(!d.error)setDbStats(d)}).finally(()=>setDbLoading(false)); }}
+                              className="text-[10px] font-black uppercase tracking-widest text-gray-400 hover:text-[#FA5600] transition">Refresh</button>
+                            <button onClick={() => setStoragePopup(null)} className="text-gray-400 hover:text-gray-600">
+                              <X className="w-5 h-5" />
+                            </button>
+                          </div>
+                        </div>
+                        {dbLoading ? (
+                          <div className="p-6 space-y-3">
+                            <div className="h-4 bg-gray-100 rounded-full animate-pulse" />
+                            <div className="grid grid-cols-2 gap-3">{[...Array(4)].map((_,i)=><div key={i} className="h-16 bg-gray-100 rounded-xl animate-pulse"/>)}</div>
+                          </div>
+                        ) : !dbStats ? (
+                          <div className="p-8 text-center text-xs text-gray-400 font-bold uppercase tracking-widest">Stats unavailable</div>
+                        ) : (
+                          <div className="p-6 space-y-4">
+                            {(() => {
+                              const usedMB = dbStats.storageSizeMB || 0;
+                              const limitMB = 512;
+                              const pct = Math.min(100, (usedMB / limitMB) * 100);
+                              const color = pct > 80 ? 'bg-red-500' : pct > 60 ? 'bg-yellow-400' : 'bg-green-500';
+                              return (
+                                <div>
+                                  <div className="flex justify-between text-xs font-black text-gray-700 mb-1.5">
+                                    <span>{usedMB.toFixed(2)} MB used</span>
+                                    <span className={pct > 80 ? 'text-red-500' : 'text-gray-400'}>{pct.toFixed(1)}% of 512 MB</span>
+                                  </div>
+                                  <div className="w-full bg-gray-100 rounded-full h-3 overflow-hidden">
+                                    <div className={`h-3 rounded-full transition-all ${color}`} style={{width: `${pct}%`}} />
+                                  </div>
+                                  <p className="text-[10px] text-gray-400 mt-1">{(limitMB - usedMB).toFixed(2)} MB remaining</p>
+                                </div>
+                              );
+                            })()}
+                            <div className="grid grid-cols-2 gap-3">
+                              {(dbStats.collections || []).map((col: any) => (
+                                <div key={col.name} className="bg-gray-50 rounded-xl p-3 border border-gray-100">
+                                  <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 truncate">{col.name}</p>
+                                  <p className="text-lg font-black text-gray-900 mt-1">{col.count.toLocaleString()}</p>
+                                  <p className="text-[9px] text-gray-400">{col.sizeMB.toFixed(3)} MB</p>
+                                </div>
+                              ))}
+                            </div>
+                            {dbStats.storageSizeMB > 400 && (
+                              <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-2 flex items-center gap-2">
+                                <AlertTriangle className="w-4 h-4 text-red-500 shrink-0" />
+                                <p className="text-xs font-black text-red-600">Storage above 80% — consider cleaning old data or upgrading</p>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Cloudinary detail */}
+                    {storagePopup === 'cloudinary' && (
+                      <div>
+                        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+                          <div className="flex items-center gap-3">
+                            <div className="w-9 h-9 bg-blue-50 rounded-xl flex items-center justify-center">
+                              <svg className="w-4 h-4 text-blue-600" fill="currentColor" viewBox="0 0 24 24"><path d="M19.35 10.04A7.49 7.49 0 0 0 12 4C9.11 4 6.6 5.64 5.35 8.04A5.994 5.994 0 0 0 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z"/></svg>
+                            </div>
+                            <div>
+                              <h3 className="font-black text-sm uppercase tracking-widest text-gray-800">Cloudinary Storage</h3>
+                              <p className="text-[10px] text-gray-400">Free tier · 25 Credits</p>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-3">
+                            <button onClick={() => { setCloudLoading(true); fetch('/api/banner?module=cloudinarystats').then(r=>r.json()).then(d=>{if(!d.error)setCloudStats(d)}).finally(()=>setCloudLoading(false)); }}
+                              className="text-[10px] font-black uppercase tracking-widest text-gray-400 hover:text-[#FA5600] transition">Refresh</button>
+                            <button onClick={() => setStoragePopup(null)} className="text-gray-400 hover:text-gray-600">
+                              <X className="w-5 h-5" />
+                          </button>
+                          </div>
+                        </div>
+                        {cloudLoading ? (
+                          <div className="p-6 space-y-3">
+                            <div className="h-4 bg-gray-100 rounded-full animate-pulse" />
+                            <div className="grid grid-cols-2 gap-3">{[...Array(4)].map((_,i)=><div key={i} className="h-16 bg-gray-100 rounded-xl animate-pulse"/>)}</div>
+                          </div>
+                        ) : !cloudStats ? (
+                          <div className="p-8 text-center text-xs text-gray-400 font-bold uppercase tracking-widest">Stats unavailable — add CLOUDINARY_URL to env vars</div>
+                        ) : (
+                          <div className="p-6 space-y-4">
+                            {/* Credits bar */}
+                            {(() => {
+                              const pct = Math.min(100, cloudStats.credits_usage_percent || 0);
+                              const color = pct > 80 ? 'bg-red-500' : pct > 60 ? 'bg-yellow-400' : 'bg-blue-500';
+                              return (
+                                <div>
+                                  <div className="flex justify-between text-xs font-black text-gray-700 mb-1.5">
+                                    <span>{pct.toFixed(1)}% credits used</span>
+                                    <span className={pct > 80 ? 'text-red-500' : 'text-gray-400'}>{cloudStats.credits_used?.toFixed(2) || 0} / {cloudStats.credits_limit || 25} credits</span>
+                                  </div>
+                                  <div className="w-full bg-gray-100 rounded-full h-3 overflow-hidden">
+                                    <div className={`h-3 rounded-full transition-all ${color}`} style={{width: `${pct}%`}} />
+                                  </div>
+                                  <p className="text-[10px] text-gray-400 mt-1">{((cloudStats.credits_limit || 25) - (cloudStats.credits_used || 0)).toFixed(2)} credits remaining</p>
+                                </div>
+                              );
+                            })()}
+                            {/* Stats grid */}
+                            <div className="grid grid-cols-2 gap-3">
+                              {[
+                                { label: 'Storage Used',    value: `${(cloudStats.storage_used_mb || 0).toFixed(1)} MB`,    sub: `of ${cloudStats.storage_limit_mb || 0} MB` },
+                                { label: 'Bandwidth Used',  value: `${(cloudStats.bandwidth_used_mb || 0).toFixed(1)} MB`,   sub: `of ${cloudStats.bandwidth_limit_mb || 0} MB` },
+                                { label: 'Total Images',    value: (cloudStats.resources || 0).toLocaleString(),             sub: 'files stored' },
+                                { label: 'Transformations', value: (cloudStats.transformations || 0).toLocaleString(),        sub: 'this month' },
+                              ].map(s => (
+                                <div key={s.label} className="bg-gray-50 rounded-xl p-3 border border-gray-100">
+                                  <p className="text-[10px] font-black uppercase tracking-widest text-gray-400">{s.label}</p>
+                                  <p className="text-lg font-black text-gray-900 mt-1">{s.value}</p>
+                                  <p className="text-[9px] text-gray-400">{s.sub}</p>
+                                </div>
+                              ))}
+                            </div>
+                            {(cloudStats.credits_usage_percent || 0) > 80 && (
+                              <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-2 flex items-center gap-2">
+                                <AlertTriangle className="w-4 h-4 text-red-500 shrink-0" />
+                                <p className="text-xs font-black text-red-600">Credits above 80% — consider upgrading your Cloudinary plan</p>
+                              </div>
+                            )}
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
-                )}
-              </div>
+                </div>
+              )}
 
               <div className="bg-white rounded-2xl border-2 border-orange-200 shadow-sm overflow-hidden">
                 <div className="flex items-center justify-between px-5 py-4 bg-orange-50 border-b border-orange-100">
