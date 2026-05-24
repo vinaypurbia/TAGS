@@ -1127,29 +1127,32 @@ export function AdminPanel() {
 
               {shortage.length > 0 && (
                 <div className="bg-white rounded-2xl border border-yellow-200 shadow-sm overflow-hidden">
-                  {/* Sticky header */}
-                  <div className="sticky top-0 z-20 bg-white flex items-center gap-2 px-5 py-3 border-b border-yellow-100 rounded-t-2xl">
+                  {/* Header */}
+                  <div className="flex items-center gap-2 px-5 py-3 border-b border-yellow-100">
                     <AlertTriangle className="w-5 h-5 text-yellow-500 shrink-0" />
                     <h3 className="font-black text-sm uppercase tracking-widest text-gray-800">Low Stock Alerts</h3>
                     <span className="ml-auto bg-yellow-100 text-yellow-700 text-xs font-black px-2 py-0.5 rounded-full">{shortage.length}</span>
                   </div>
-                  <div className="space-y-2 p-5">
-                    {(showAllShortage ? shortage : shortage.slice(0, 5)).map((item: any, i: number) => (
-                      <div key={i} className="flex items-center gap-3 p-3 bg-yellow-50 rounded-xl">
-                        {item.image && <img src={item.image} alt={item.productName} className="w-9 h-9 rounded-lg object-cover shrink-0" />}
-                        <div className="flex-1 min-w-0">
-                          <p className="text-sm font-bold text-gray-900 truncate">{item.productName}</p>
-                          <p className="text-xs text-gray-400">{item.category}</p>
+                  {/* Scrollable list — fixed height so buttons always show below */}
+                  <div className={`overflow-y-auto ${showAllShortage ? 'max-h-[600px]' : ''}`}>
+                    <div className="space-y-2 p-5">
+                      {(showAllShortage ? shortage : shortage.slice(0, 5)).map((item: any, i: number) => (
+                        <div key={i} className="flex items-center gap-3 p-3 bg-yellow-50 rounded-xl">
+                          {item.image && <img src={item.image} alt={item.productName} className="w-9 h-9 rounded-lg object-cover shrink-0" />}
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-bold text-gray-900 truncate">{item.productName}</p>
+                            <p className="text-xs text-gray-400">{item.category}</p>
+                          </div>
+                          <div className="text-right shrink-0">
+                            <p className={`font-black text-sm ${item.isOutOfStock ? 'text-red-600' : 'text-yellow-600'}`}>{item.availableStock} left</p>
+                            <p className="text-[10px] text-gray-400">min {item.lowStockAlert}</p>
+                          </div>
                         </div>
-                        <div className="text-right shrink-0">
-                          <p className={`font-black text-sm ${item.isOutOfStock ? 'text-red-600' : 'text-yellow-600'}`}>{item.availableStock} left</p>
-                          <p className="text-[10px] text-gray-400">min {item.lowStockAlert}</p>
-                        </div>
-                      </div>
-                    ))}
+                      ))}
+                    </div>
                   </div>
-                  {/* Sticky footer with action buttons */}
-                  <div className="sticky bottom-0 z-20 bg-white border-t border-yellow-100 p-3 flex gap-2 rounded-b-2xl">
+                  {/* Always-visible footer buttons — outside the scroll area */}
+                  <div className="border-t border-yellow-100 p-3 flex gap-2 bg-white">
                     {shortage.length > 5 && (
                       <button
                         onClick={() => setShowAllShortage(v => !v)}
