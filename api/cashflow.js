@@ -96,16 +96,41 @@ export default async function handler(req, res) {
         if (to) filter.date.$lte = new Date(to);
       }
 
-      // Summary mode — return totals
-      // Financing entries (capital, loans) are excluded from operating P&L
+      // Summary mode — proper 3-tier P&L
+      // Excluded from P&L: 'financing' (capital/loans) and 'inventory_asset' (PO purchases)
+      // COGS is included as it's the direct cost of goods sold
       if (summary === 'true') {
-        const all = await cashFlow.find({ ...filter, category: { $ne: 'financing' } }).toArray();
-        const totalIncome = all
-          .filter((e) => e.type === 'income')
+        const P&L_EXCLUDE = ['financing', 'inventory_asset'];
+        const all = await cashFlow.find({ ...filter, category: { $nin: P&L_EXCLUDE } }).toArray();
+
+        // Revenue = sales income only
+        const revenue = all
+          .filter((e) => e.type === 'income' && e.category === 'sales')
           .reduce((s, e) => s + e.amount, 0);
-        const totalExpense = all
-          .filter((e) => e.type === 'expense')
+
+        // COGS = cost of goods sold (recorded per sale)
+        const cogs = all
+          .filter((e) => e.type === 'expense' && e.category === 'cogs')
           .reduce((s, e) => s + e.amount, 0);
+
+        // Gross Profit = Revenue - COGS
+        const grossProfit = revenue - cogs;
+
+        // Operating Expenses = all expenses EXCEPT cogs, financing, inventory_asset
+        const operatingExpenses = all
+          .filter((e) => e.type === 'expense' && e.category !== 'cogs')
+          .reduce((s, e) => s + e.amount, 0);
+
+        // Net Profit = Gross Profit - Operating Expenses
+        const netProfit = grossProfit - operatingExpenses;
+
+        // Other income (non-sales)
+        const otherIncome = all
+          .filter((e) => e.type === 'income' && e.category !== 'sales')
+          .reduce((s, e) => s + e.amount, 0);
+
+        const totalIncome  = revenue + otherIncome;
+        const totalExpense = cogs + operatingExpenses;
 
         // Category breakdown
         const breakdown = {};
@@ -114,11 +139,11 @@ export default async function handler(req, res) {
           breakdown[key] = (breakdown[key] || 0) + e.amount;
         });
 
-        // Monthly trend (last 6 months)
+        // Monthly trend (last 6 months) — operating only
         const sixMonthsAgo = new Date();
         sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
         const trend = await cashFlow
-          .find({ date: { $gte: sixMonthsAgo } })
+          .find({ date: { $gte: sixMonthsAgo }, category: { $nin: P&L_EXCLUDE } })
           .sort({ date: 1 })
           .toArray();
 
@@ -126,14 +151,23 @@ export default async function handler(req, res) {
         trend.forEach((e) => {
           const d = new Date(e.date);
           const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-          if (!monthlyMap[key]) monthlyMap[key] = { income: 0, expense: 0 };
-          monthlyMap[key][e.type] += e.amount;
+          if (!monthlyMap[key]) monthlyMap[key] = { income: 0, expense: 0, grossProfit: 0 };
+          if (e.type === 'income') monthlyMap[key].income += e.amount;
+          if (e.type === 'expense') monthlyMap[key].expense += e.amount;
+          monthlyMap[key].grossProfit = monthlyMap[key].income - monthlyMap[key].expense;
         });
 
         return res.status(200).json({
+          revenue,
+          cogs,
+          grossProfit,
+          operatingExpenses,
+          netProfit,
+          otherIncome,
           totalIncome,
           totalExpense,
-          netProfit: totalIncome - totalExpense,
+          grossMargin: revenue > 0 ? ((grossProfit / revenue) * 100).toFixed(1) : 0,
+          netMargin:   revenue > 0 ? ((netProfit   / revenue) * 100).toFixed(1) : 0,
           breakdown,
           monthlyTrend: monthlyMap,
           count: all.length,
