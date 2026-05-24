@@ -8,8 +8,78 @@ import {
 import { useAuth, authHeaders } from '../context/AuthContext';
 import type { UserRole } from '../context/AuthContext';
 
-type Module = 'dashboard' | 'orders' | 'sales' | 'purchase-orders' | 'cashflow' | 'expenses' | 'suppliers' | 'customers' | 'reports' | 'users';
+type Module = 'dashboard' | 'orders' | 'sales' | 'purchase-orders' | 'cashflow' | 'expenses' | 'suppliers' | 'customers' | 'reports' | 'users' | 'financing';
 type ReportType = 'stock-shortage' | 'low-performing' | 'best-selling' | 'profit-margin' | 'pnl' | 'stock-valuation';
+
+// ─── DUPLICATE DETECTION ─────────────────────────────────────────────────────
+const DUPLICATE_WINDOW_MS = 10000; // 10 seconds
+const recentActions = new Map<string, number>();
+
+function isDuplicate(key: string): boolean {
+  const last = recentActions.get(key);
+  if (!last) return false;
+  return Date.now() - last < DUPLICATE_WINDOW_MS;
+}
+
+function recordAction(key: string) {
+  recentActions.set(key, Date.now());
+}
+
+let _setDupModal: ((s: DupModalState) => void) | null = null;
+
+interface DupModalState {
+  open: boolean;
+  message: string;
+  onConfirm: () => void;
+}
+
+function withDupCheck(key: string, label: string, action: () => void) {
+  if (isDuplicate(key)) {
+    _setDupModal?.({
+      open: true,
+      message: `A "${label}" was just submitted a few seconds ago. Are you sure you want to submit again?`,
+      onConfirm: () => { recordAction(key); action(); },
+    });
+  } else {
+    recordAction(key);
+    action();
+  }
+}
+
+function DuplicateModal() {
+  const [state, setState] = useState<DupModalState>({ open: false, message: '', onConfirm: () => {} });
+  _setDupModal = setState;
+  if (!state.open) return null;
+  return (
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/50 px-4">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 space-y-4">
+        <div className="flex items-start gap-3">
+          <div className="w-10 h-10 bg-orange-100 rounded-xl flex items-center justify-center shrink-0">
+            <span className="text-xl">⚠️</span>
+          </div>
+          <div>
+            <p className="font-black text-sm text-gray-900 uppercase tracking-widest">Duplicate Entry Detected</p>
+            <p className="text-sm text-gray-500 mt-1 leading-relaxed">{state.message}</p>
+          </div>
+        </div>
+        <div className="flex gap-3">
+          <button
+            onClick={() => setState(s => ({ ...s, open: false }))}
+            className="flex-1 py-3 rounded-xl border-2 border-gray-200 text-sm font-black text-gray-600 hover:border-gray-300 transition"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={() => { setState(s => ({ ...s, open: false })); state.onConfirm(); }}
+            className="flex-1 py-3 rounded-xl bg-[#FA5600] text-white text-sm font-black uppercase tracking-widest hover:bg-[#E04A00] transition"
+          >
+            Yes, Submit
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 const fmt = (n: number) => `₹${Number(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const fmtQty = (n: number) => Number(n || 0).toLocaleString('en-IN');
@@ -160,6 +230,7 @@ export function BusinessEmbed() {
     { id: 'purchase-orders', label: 'Purchase Orders', icon: Package },
     { id: 'cashflow', label: 'Cash Flow', icon: DollarSign },
     { id: 'expenses', label: 'Expenses', icon: TrendingDown },
+    { id: 'financing', label: 'Financing', icon: TrendingUp },
     { id: 'customers', label: 'Customers', icon: Users },
     { id: 'suppliers', label: 'Suppliers', icon: Users },
     { id: 'reports', label: 'Reports', icon: FileText },
@@ -168,6 +239,7 @@ export function BusinessEmbed() {
 
   return (
     <div className="space-y-4">
+      <DuplicateModal />
       {message.text && (
         <div className={`p-3 rounded-xl text-center font-semibold text-sm ${message.type === 'success' ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-red-50 text-red-700 border border-red-200'}`}>
           {message.text}
@@ -188,6 +260,7 @@ export function BusinessEmbed() {
       {module === 'purchase-orders' && <PurchaseOrdersModule showMsg={showMsg} />}
       {module === 'cashflow' && <CashflowModule showMsg={showMsg} />}
       {module === 'expenses' && <ExpensesModule showMsg={showMsg} />}
+      {module === 'financing' && <FinancingModule showMsg={showMsg} />}
       {module === 'customers' && <CustomersModule showMsg={showMsg} />}
       {module === 'suppliers' && <SuppliersModule showMsg={showMsg} />}
       {module === 'reports' && <ReportsModule showMsg={showMsg} />}
@@ -826,7 +899,7 @@ function OrdersModule({ showMsg }: any) {
                             )}
                           </div>
                         )}
-                        <button onClick={() => confirmOrder(order)}
+                        <button onClick={() => withDupCheck(`confirm-${order._id}`, 'Confirm Order', () => confirmOrder(order))}
                           className="w-full bg-green-500 hover:bg-green-600 text-white font-black text-xs uppercase tracking-widest py-2.5 rounded-lg transition flex items-center justify-center gap-2">
                           <Check className="w-4 h-4" /> Confirm Order & WhatsApp Customer
                         </button>
@@ -970,7 +1043,9 @@ function OrdersModule({ showMsg }: any) {
                 className="flex-1 py-2.5 rounded-xl border-2 border-gray-200 text-xs font-black text-gray-500 hover:border-gray-300 transition">
                 Cancel
               </button>
-              <button onClick={handleDelivered} disabled={payModal.submitting}
+              <button
+                onClick={() => withDupCheck(`deliver-${payModal.order?._id}`, 'Confirm Delivery', handleDelivered)}
+                disabled={payModal.submitting}
                 className="flex-1 py-2.5 rounded-xl bg-[#FA5600] text-white text-xs font-black uppercase tracking-widest hover:bg-[#E04A00] transition disabled:opacity-60">
                 {payModal.submitting ? 'Saving...' : '✓ Confirm Delivery'}
               </button>
@@ -1136,7 +1211,7 @@ function SalesModule({ showMsg }: any) {
           </div>
 
           <div className="flex gap-2">
-            <button onClick={handleSubmit} className="flex-1 bg-[#FA5600] text-white font-black text-sm uppercase tracking-widest py-3 rounded-xl hover:bg-[#E04A00] transition">Save Sale</button>
+            <button onClick={() => withDupCheck(`sale-${form.customerPhone}-${form.items.map(i=>i.productName).join('|')}`, 'Record Sale', handleSubmit)} className="flex-1 bg-[#FA5600] text-white font-black text-sm uppercase tracking-widest py-3 rounded-xl hover:bg-[#E04A00] transition">Save Sale</button>
             <button onClick={() => setShowForm(false)} className="px-4 bg-gray-100 text-gray-600 font-bold text-sm rounded-xl">Cancel</button>
           </div>
         </div>
@@ -1290,7 +1365,7 @@ function PurchaseOrdersModule({ showMsg }: any) {
             <input value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} placeholder="Any notes for this PO..." className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none" />
           </div>
           <div className="flex gap-2">
-            <button onClick={handleCreate} className="flex-1 bg-[#FA5600] text-white font-black text-sm uppercase tracking-widest py-3 rounded-xl hover:bg-[#E04A00] transition">Create PO</button>
+            <button onClick={() => withDupCheck(`po-create-${form.supplierName}-${form.items.map(i=>i.productName).join('|')}`, 'Create PO', handleCreate)} className="flex-1 bg-[#FA5600] text-white font-black text-sm uppercase tracking-widest py-3 rounded-xl hover:bg-[#E04A00] transition">Create PO</button>
             <button onClick={() => setShowForm(false)} className="px-4 bg-gray-100 text-gray-600 font-bold text-sm rounded-xl">Cancel</button>
           </div>
         </div>
@@ -1312,8 +1387,8 @@ function PurchaseOrdersModule({ showMsg }: any) {
                 </div>
               </div>
               <div className="flex gap-2 flex-wrap">
-                {po.status === 'draft' && (<><button onClick={() => handleAction(po._id, 'order')} className="text-xs bg-blue-500 text-white font-bold px-3 py-1 rounded-full hover:bg-blue-600 transition">Mark Ordered</button><button onClick={() => deletePO(po._id)} className="text-xs bg-red-50 text-red-500 font-bold px-3 py-1 rounded-full hover:bg-red-100 transition">Delete</button></>)}
-                {po.status === 'ordered' && (<><button onClick={() => handleAction(po._id, 'receive')} className="text-xs bg-green-500 text-white font-bold px-3 py-1 rounded-full hover:bg-green-600 transition">✓ Receive Stock</button><button onClick={() => handleAction(po._id, 'cancel')} className="text-xs bg-gray-100 text-gray-600 font-bold px-3 py-1 rounded-full hover:bg-gray-200 transition">Cancel</button></>)}
+                {po.status === 'draft' && (<><button onClick={() => withDupCheck(`po-order-${po._id}`, 'Mark Ordered', () => handleAction(po._id, 'order'))} className="text-xs bg-blue-500 text-white font-bold px-3 py-1 rounded-full hover:bg-blue-600 transition">Mark Ordered</button><button onClick={() => deletePO(po._id)} className="text-xs bg-red-50 text-red-500 font-bold px-3 py-1 rounded-full hover:bg-red-100 transition">Delete</button></>)}
+                {po.status === 'ordered' && (<><button onClick={() => withDupCheck(`po-receive-${po._id}`, 'Receive Stock', () => handleAction(po._id, 'receive'))} className="text-xs bg-green-500 text-white font-bold px-3 py-1 rounded-full hover:bg-green-600 transition">✓ Receive Stock</button><button onClick={() => handleAction(po._id, 'cancel')} className="text-xs bg-gray-100 text-gray-600 font-bold px-3 py-1 rounded-full hover:bg-gray-200 transition">Cancel</button></>)}
               </div>
             </div>
           ))}
@@ -1403,7 +1478,7 @@ function CashflowModule({ showMsg }: any) {
             </div>
           </div>
           <div className="flex gap-2">
-            <button onClick={handleSubmit} className="flex-1 bg-[#FA5600] text-white font-black text-sm uppercase tracking-widest py-3 rounded-xl hover:bg-[#E04A00] transition">Add Entry</button>
+            <button onClick={() => withDupCheck(`cashflow-${form.type}-${form.category}-${form.amount}`, 'Cash Flow Entry', handleSubmit)} className="flex-1 bg-[#FA5600] text-white font-black text-sm uppercase tracking-widest py-3 rounded-xl hover:bg-[#E04A00] transition">Add Entry</button>
             <button onClick={() => setShowForm(false)} className="px-4 bg-gray-100 text-gray-600 font-bold text-sm rounded-xl">Cancel</button>
           </div>
         </div>
@@ -1499,7 +1574,7 @@ function ExpensesModule({ showMsg }: any) {
             </div>
           </div>
           <div className="flex gap-2">
-            <button onClick={handleSubmit} className="flex-1 bg-[#FA5600] text-white font-black text-sm uppercase tracking-widest py-3 rounded-xl hover:bg-[#E04A00] transition">Save Expense</button>
+            <button onClick={() => withDupCheck(`expense-${form.category}-${form.amount}`, 'Save Expense', handleSubmit)} className="flex-1 bg-[#FA5600] text-white font-black text-sm uppercase tracking-widest py-3 rounded-xl hover:bg-[#E04A00] transition">Save Expense</button>
             <button onClick={() => setShowForm(false)} className="px-4 bg-gray-100 text-gray-600 font-bold text-sm rounded-xl">Cancel</button>
           </div>
         </div>
@@ -1577,7 +1652,7 @@ function SuppliersModule({ showMsg }: any) {
             </div>
           </div>
           <div className="flex gap-2">
-            <button onClick={handleSubmit} className="flex-1 bg-[#FA5600] text-white font-black text-sm uppercase tracking-widest py-3 rounded-xl hover:bg-[#E04A00] transition">{editId ? 'Update' : 'Add'}</button>
+            <button onClick={() => withDupCheck(`supplier-${form.name}-${form.phone}`, editId ? 'Update Supplier' : 'Add Supplier', handleSubmit)} className="flex-1 bg-[#FA5600] text-white font-black text-sm uppercase tracking-widest py-3 rounded-xl hover:bg-[#E04A00] transition">{editId ? 'Update' : 'Add'}</button>
             <button onClick={() => setShowForm(false)} className="px-4 bg-gray-100 text-gray-600 font-bold text-sm rounded-xl">Cancel</button>
           </div>
         </div>
@@ -1715,6 +1790,346 @@ function ReportsModule({ showMsg }: any) {
               <div className="text-right shrink-0"><p className="font-black text-sm text-[#FA5600]">{fmt(item.costValue)}</p><p className="text-[10px] text-gray-400">Retail: {fmt(item.retailValue)}</p></div>
             </div>
           ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── FINANCING ───────────────────────────────────────────────────────────────
+const FINANCING_TYPES = [
+  { value: 'opening_capital',  label: 'Opening Capital',  desc: 'Initial money you put in',     color: 'bg-green-100 text-green-700',  dir: 'income'  },
+  { value: 'capital_infusion', label: 'Capital Infusion', desc: 'Adding more money later',       color: 'bg-green-100 text-green-700',  dir: 'income'  },
+  { value: 'loan_received',    label: 'Loan Received',    desc: 'Borrowed money',                color: 'bg-blue-100 text-blue-700',    dir: 'income'  },
+  { value: 'loan_repayment',   label: 'Loan Repayment',   desc: 'Paying back a loan',            color: 'bg-red-100 text-red-600',      dir: 'expense' },
+  { value: 'owner_withdrawal', label: 'Owner Withdrawal', desc: 'Taking money out for yourself', color: 'bg-orange-100 text-orange-700',dir: 'expense' },
+];
+
+function FinancingModule({ showMsg }: any) {
+  const [entries, setEntries]   = useState<any[]>([]);
+  const [summary, setSummary]   = useState<any>({});
+  const [loading, setLoading]   = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [editId, setEditId]     = useState<string | null>(null);
+  const [formLoading, setFormLoading] = useState(false);
+
+  const [form, setForm] = useState({
+    type: 'capital_infusion',
+    amount: '',
+    cashAmount: '',
+    bankAmount: '',
+    source: '',
+    date: new Date().toISOString().split('T')[0],
+    notes: '',
+  });
+
+  const isSplit = Number(form.cashAmount) > 0 || Number(form.bankAmount) > 0;
+
+  const fetchData = () => {
+    setLoading(true);
+    fetch('/api/business?module=financing')
+      .then(r => r.json())
+      .then(d => { setEntries(d.entries || []); setSummary(d.summary || {}); })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => { fetchData(); }, []);
+
+  const resetForm = () => {
+    setForm({ type: 'capital_infusion', amount: '', cashAmount: '', bankAmount: '', source: '', date: new Date().toISOString().split('T')[0], notes: '' });
+    setEditId(null);
+    setShowForm(false);
+  };
+
+  const openEdit = (e: any) => {
+    setEditId(e._id);
+    setForm({
+      type: e.type,
+      amount: String(e.amount),
+      cashAmount: String(e.cashAmount || ''),
+      bankAmount: String(e.bankAmount || ''),
+      source: e.source || '',
+      date: new Date(e.date).toISOString().split('T')[0],
+      notes: e.notes || '',
+    });
+    setShowForm(true);
+  };
+
+  const handleSubmit = async () => {
+    if (!form.amount || isNaN(Number(form.amount)) || Number(form.amount) <= 0) {
+      showMsg('Please enter a valid amount.', 'error'); return;
+    }
+    const cashAmt = Number(form.cashAmount) || 0;
+    const bankAmt = Number(form.bankAmount) || 0;
+    if (cashAmt + bankAmt > 0 && Math.abs(cashAmt + bankAmt - Number(form.amount)) > 1) {
+      showMsg('Cash + Bank amounts must equal the total amount.', 'error'); return;
+    }
+
+    setFormLoading(true);
+    try {
+      const body: any = {
+        type: form.type,
+        amount: Number(form.amount),
+        cashAmount: cashAmt,
+        bankAmount: bankAmt,
+        source: form.source,
+        date: form.date,
+        notes: form.notes,
+      };
+      if (editId) body.id = editId;
+
+      const res = await fetch('/api/business?module=financing', {
+        method: editId ? 'PUT' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (data.success || data._id) {
+        showMsg(editId ? '✅ Entry updated!' : '✅ Entry recorded!', 'success');
+        resetForm();
+        fetchData();
+      } else {
+        showMsg(data.error || 'Failed.', 'error');
+      }
+    } catch { showMsg('Network error.', 'error'); }
+    finally { setFormLoading(false); }
+  };
+
+  const deleteEntry = async (id: string) => {
+    if (!confirm('Delete this financing entry? This will also remove it from Cash Flow.')) return;
+    await fetch('/api/business?module=financing', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
+    });
+    showMsg('Entry deleted.', 'success');
+    fetchData();
+  };
+
+  const selectedType = FINANCING_TYPES.find(t => t.value === form.type);
+
+  return (
+    <div className="space-y-4">
+
+      {/* ── Summary Cards ── */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div className="bg-green-50 rounded-xl border border-green-200 p-3 text-center">
+          <p className="text-lg font-black text-green-700">{fmt(summary.netCapital || 0)}</p>
+          <p className="text-[10px] font-bold text-green-600 uppercase">Net Capital</p>
+        </div>
+        <div className="bg-blue-50 rounded-xl border border-blue-200 p-3 text-center">
+          <p className="text-lg font-black text-blue-700">{fmt(summary.totalCapital || 0)}</p>
+          <p className="text-[10px] font-bold text-blue-600 uppercase">Total Invested</p>
+        </div>
+        <div className="bg-red-50 rounded-xl border border-red-200 p-3 text-center">
+          <p className="text-lg font-black text-red-700">{fmt(summary.totalWithdrawn || 0)}</p>
+          <p className="text-[10px] font-bold text-red-600 uppercase">Withdrawn</p>
+        </div>
+        <div className={`rounded-xl border p-3 text-center ${(summary.outstandingLoan || 0) > 0 ? 'bg-orange-50 border-orange-200' : 'bg-gray-50 border-gray-200'}`}>
+          <p className={`text-lg font-black ${(summary.outstandingLoan || 0) > 0 ? 'text-orange-700' : 'text-gray-500'}`}>{fmt(summary.outstandingLoan || 0)}</p>
+          <p className="text-[10px] font-bold text-gray-500 uppercase">Loan Balance</p>
+        </div>
+      </div>
+
+      {/* ── Cash vs Bank split ── */}
+      {(summary.totalCash > 0 || summary.totalBank > 0) && (
+        <div className="grid grid-cols-2 gap-3">
+          <div className="bg-white rounded-xl border border-gray-200 p-3 flex items-center gap-3">
+            <div className="w-8 h-8 bg-green-100 rounded-full flex items-center justify-center shrink-0">
+              <span className="text-sm">💵</span>
+            </div>
+            <div>
+              <p className="font-black text-sm text-gray-900">{fmt(summary.totalCash || 0)}</p>
+              <p className="text-[10px] text-gray-400 font-bold uppercase">Cash In Hand</p>
+            </div>
+          </div>
+          <div className="bg-white rounded-xl border border-gray-200 p-3 flex items-center gap-3">
+            <div className="w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center shrink-0">
+              <span className="text-sm">🏦</span>
+            </div>
+            <div>
+              <p className="font-black text-sm text-gray-900">{fmt(summary.totalBank || 0)}</p>
+              <p className="text-[10px] text-gray-400 font-bold uppercase">In Bank</p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Add Entry Button ── */}
+      <div className="flex justify-end">
+        <button
+          onClick={() => { resetForm(); setShowForm(true); }}
+          className="flex items-center gap-2 bg-[#FA5600] text-white font-black text-xs uppercase tracking-widest px-4 py-2 rounded-xl hover:bg-[#E04A00] transition"
+        >
+          <Plus className="w-4 h-4" /> Add Entry
+        </button>
+      </div>
+
+      {/* ── Form ── */}
+      {showForm && (
+        <div className="bg-white rounded-2xl border-2 border-[#FA5600] p-5 space-y-4">
+          <div className="flex items-center justify-between">
+            <h3 className="font-black text-sm uppercase tracking-widest text-gray-800">
+              {editId ? 'Edit Entry' : 'New Financing Entry'}
+            </h3>
+            <button onClick={resetForm} className="text-gray-400 hover:text-gray-600">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+
+          {/* Type selector */}
+          <div>
+            <label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-2">Entry Type *</label>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {FINANCING_TYPES.map(t => (
+                <button key={t.value} type="button"
+                  onClick={() => setForm(f => ({ ...f, type: t.value }))}
+                  className={`text-left px-3 py-2.5 rounded-xl border-2 transition ${form.type === t.value ? 'border-[#FA5600] bg-orange-50' : 'border-gray-200 hover:border-gray-300'}`}
+                >
+                  <div className="flex items-center gap-2">
+                    <span className={`text-[10px] font-black uppercase px-2 py-0.5 rounded-full ${t.color}`}>
+                      {t.dir === 'income' ? '↑ IN' : '↓ OUT'}
+                    </span>
+                    <span className="text-sm font-black text-gray-800">{t.label}</span>
+                  </div>
+                  <p className="text-[10px] text-gray-400 mt-0.5 ml-0">{t.desc}</p>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {/* Total Amount */}
+            <div>
+              <label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">Total Amount (₹) *</label>
+              <input type="number" min="0" value={form.amount}
+                onChange={e => setForm(f => ({ ...f, amount: e.target.value }))}
+                placeholder="e.g. 10000"
+                className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none" />
+            </div>
+
+            {/* Source */}
+            <div>
+              <label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">
+                Source / Reference
+              </label>
+              <input value={form.source}
+                onChange={e => setForm(f => ({ ...f, source: e.target.value }))}
+                placeholder={form.type === 'loan_received' ? 'Bank name or lender' : 'e.g. Personal savings'}
+                className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none" />
+            </div>
+
+            {/* Date */}
+            <div>
+              <label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">Date</label>
+              <input type="date" value={form.date}
+                onChange={e => setForm(f => ({ ...f, date: e.target.value }))}
+                className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none" />
+            </div>
+
+            {/* Notes */}
+            <div>
+              <label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">Notes</label>
+              <input value={form.notes}
+                onChange={e => setForm(f => ({ ...f, notes: e.target.value }))}
+                placeholder="Optional notes..."
+                className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none" />
+            </div>
+          </div>
+
+          {/* Cash / Bank split — optional */}
+          <div>
+            <p className="text-xs font-black uppercase tracking-widest text-gray-500 mb-2">
+              Split by Mode <span className="text-gray-300 font-bold normal-case tracking-normal">(optional — leave blank if all cash or all bank)</span>
+            </p>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-[10px] font-black uppercase tracking-widest text-gray-400 mb-1">💵 Cash Amount</label>
+                <input type="number" min="0" value={form.cashAmount}
+                  onChange={e => setForm(f => ({ ...f, cashAmount: e.target.value }))}
+                  placeholder="0"
+                  className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none" />
+              </div>
+              <div>
+                <label className="block text-[10px] font-black uppercase tracking-widest text-gray-400 mb-1">🏦 Bank Amount</label>
+                <input type="number" min="0" value={form.bankAmount}
+                  onChange={e => setForm(f => ({ ...f, bankAmount: e.target.value }))}
+                  placeholder="0"
+                  className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none" />
+              </div>
+            </div>
+            {isSplit && Number(form.amount) > 0 && (
+              <div className={`mt-2 px-3 py-2 rounded-xl text-xs font-bold ${Math.abs((Number(form.cashAmount) || 0) + (Number(form.bankAmount) || 0) - Number(form.amount)) <= 1 ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-600'}`}>
+                {Math.abs((Number(form.cashAmount) || 0) + (Number(form.bankAmount) || 0) - Number(form.amount)) <= 1
+                  ? `✅ Cash + Bank = ₹${((Number(form.cashAmount) || 0) + (Number(form.bankAmount) || 0)).toLocaleString('en-IN')} — matches total`
+                  : `⚠️ Cash (₹${Number(form.cashAmount || 0).toLocaleString('en-IN')}) + Bank (₹${Number(form.bankAmount || 0).toLocaleString('en-IN')}) = ₹${((Number(form.cashAmount) || 0) + (Number(form.bankAmount) || 0)).toLocaleString('en-IN')} — must equal ₹${Number(form.amount).toLocaleString('en-IN')}`
+                }
+              </div>
+            )}
+          </div>
+
+          {/* Preview */}
+          {form.amount && selectedType && (
+            <div className={`rounded-xl px-4 py-3 text-xs font-bold ${selectedType.dir === 'income' ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-600'}`}>
+              {selectedType.dir === 'income' ? '↑ Income' : '↓ Expense'}: {selectedType.label}
+              {form.source ? ` — ${form.source}` : ''} · ₹{Number(form.amount || 0).toLocaleString('en-IN')}
+              <span className="text-gray-400 font-normal ml-1">(will sync to Cash Flow automatically)</span>
+            </div>
+          )}
+
+          <div className="flex gap-2">
+            <button onClick={() => withDupCheck(`financing-${form.type}-${form.amount}-${form.source}`, 'Financing Entry', handleSubmit)} disabled={formLoading}
+              className="flex-1 bg-[#FA5600] text-white font-black text-sm uppercase tracking-widest py-3 rounded-xl hover:bg-[#E04A00] transition disabled:opacity-60">
+              {formLoading ? 'Saving...' : editId ? 'Update Entry' : 'Record Entry'}
+            </button>
+            <button onClick={resetForm} className="px-4 bg-gray-100 text-gray-600 font-bold text-sm rounded-xl hover:bg-gray-200 transition">
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Entry List ── */}
+      {loading ? <LoadingCards count={3} /> : entries.length === 0 ? (
+        <EmptyState icon="💼" text="No financing entries yet — record your opening capital to get started" />
+      ) : (
+        <div className="space-y-2">
+          {entries.map((e: any) => {
+            const typeInfo = FINANCING_TYPES.find(t => t.value === e.type);
+            return (
+              <div key={e._id} className="bg-white rounded-xl border border-gray-200 p-4 flex items-center gap-3">
+                <div className={`w-9 h-9 rounded-full flex items-center justify-center shrink-0 text-sm ${typeInfo?.dir === 'income' ? 'bg-green-100' : 'bg-red-100'}`}>
+                  {typeInfo?.dir === 'income' ? '↑' : '↓'}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <p className="font-black text-sm text-gray-900">{typeInfo?.label || e.type}</p>
+                    <span className={`text-[10px] font-black uppercase px-2 py-0.5 rounded-full ${typeInfo?.color || 'bg-gray-100 text-gray-500'}`}>
+                      {typeInfo?.dir === 'income' ? 'Money In' : 'Money Out'}
+                    </span>
+                  </div>
+                  <p className="text-[10px] text-gray-400 mt-0.5">
+                    {e.source ? `${e.source} · ` : ''}
+                    {new Date(e.date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+                    {e.cashAmount > 0 && e.bankAmount > 0 && ` · 💵 ₹${e.cashAmount?.toLocaleString('en-IN')} + 🏦 ₹${e.bankAmount?.toLocaleString('en-IN')}`}
+                    {e.notes ? ` · ${e.notes}` : ''}
+                  </p>
+                </div>
+                <p className={`font-black text-sm shrink-0 ${typeInfo?.dir === 'income' ? 'text-green-600' : 'text-red-500'}`}>
+                  {typeInfo?.dir === 'income' ? '+' : '-'}{fmt(e.amount)}
+                </p>
+                <div className="flex gap-2 shrink-0">
+                  <button onClick={() => openEdit(e)} className="text-blue-400 hover:text-blue-600 transition">
+                    <Edit2 className="w-3.5 h-3.5" />
+                  </button>
+                  <button onClick={() => deleteEntry(e._id)} className="text-gray-300 hover:text-red-400 transition">
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
@@ -1909,7 +2324,7 @@ function UsersModule({ showMsg }: any) {
             )}
           </div>
           <div className="flex gap-2">
-            <button onClick={handleSubmit} disabled={formLoading}
+            <button onClick={() => withDupCheck(`user-${form.name}-${form.role}`, editUser ? 'Update User' : 'Create User', handleSubmit)} disabled={formLoading}
               className="flex-1 bg-[#FA5600] text-white font-black text-sm uppercase tracking-widest py-3 rounded-xl hover:bg-[#E04A00] transition disabled:opacity-60">
               {formLoading ? 'Saving...' : editUser ? 'Update User' : 'Create User'}
             </button>
