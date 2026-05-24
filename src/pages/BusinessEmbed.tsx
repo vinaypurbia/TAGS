@@ -1806,6 +1806,7 @@ const FINANCING_TYPES = [
 ];
 
 function FinancingModule({ showMsg }: any) {
+  const { token } = useAuth();
   const [entries, setEntries]   = useState<any[]>([]);
   const [summary, setSummary]   = useState<any>({});
   const [loading, setLoading]   = useState(true);
@@ -1827,7 +1828,7 @@ function FinancingModule({ showMsg }: any) {
 
   const fetchData = () => {
     setLoading(true);
-    fetch('/api/business?module=financing')
+    fetch('/api/business?module=financing', { headers: authHeaders(token) })
       .then(r => r.json())
       .then(d => { setEntries(d.entries || []); setSummary(d.summary || {}); })
       .catch(() => {})
@@ -1881,7 +1882,7 @@ function FinancingModule({ showMsg }: any) {
 
       const res = await fetch('/api/business?module=financing', {
         method: editId ? 'PUT' : 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders(token) },
         body: JSON.stringify(body),
       });
       const data = await res.json();
@@ -1900,7 +1901,7 @@ function FinancingModule({ showMsg }: any) {
     if (!confirm('Delete this financing entry? This will also remove it from Cash Flow.')) return;
     await fetch('/api/business?module=financing', {
       method: 'DELETE',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...authHeaders(token) },
       body: JSON.stringify({ id }),
     });
     showMsg('Entry deleted.', 'success');
