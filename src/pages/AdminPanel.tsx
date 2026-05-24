@@ -1292,9 +1292,9 @@ export function AdminPanel() {
             <div className="max-w-5xl mx-auto space-y-4">
               <SectionHeader icon={ShoppingBag} title="Inventory" desc="Track stock levels" />
               {/* ── Collapsible Inventory Panel ── */}
-              <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
-                {/* Sticky header — stays visible as you scroll through inventory list */}
-                <div className="sticky top-[57px] z-20 bg-white flex items-center justify-between px-5 py-3 border-b border-gray-100 shadow-sm">
+              <div className="bg-white rounded-2xl border border-gray-200 shadow-sm">
+                {/* Sticky header — overflow-hidden removed so sticky works */}
+                <div className="sticky top-0 z-20 bg-white flex items-center justify-between px-5 py-3 border-b border-gray-100 shadow-sm rounded-t-2xl">
                   <div className="flex items-center gap-2">
                     <ShoppingBag className="w-4 h-4 text-gray-500" />
                     <span className="font-black text-sm uppercase tracking-widest text-gray-700">Stock Levels</span>
@@ -1308,8 +1308,8 @@ export function AdminPanel() {
                 {showInventory && <div className="p-4"><InventoryEmbed /></div>}
               </div>
               {/* ── Collapsible Stock Visibility Panel ── */}
-              <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
-                <div className="sticky top-[57px] z-20 bg-white flex items-center justify-between px-5 py-3 border-b border-gray-100 shadow-sm">
+              <div className="bg-white rounded-2xl border border-gray-200 shadow-sm">
+                <div className="sticky top-0 z-20 bg-white flex items-center justify-between px-5 py-3 border-b border-gray-100 shadow-sm rounded-t-2xl">
                   <div className="flex items-center gap-2">
                     <Eye className="w-4 h-4 text-gray-500" />
                     <span className="font-black text-sm uppercase tracking-widest text-gray-700">Stock Visibility Control</span>
