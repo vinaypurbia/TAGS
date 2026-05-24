@@ -296,7 +296,8 @@ function DashboardModule({ showMsg }: any) {
           { label: 'Revenue (Month)', value: fmt(stats?.sales?.totalRevenue || 0), icon: TrendingUp, color: 'text-green-600 bg-green-50' },
           { label: 'Orders (Month)', value: fmtQty(stats?.sales?.totalOrders || 0), icon: ShoppingCart, color: 'text-blue-600 bg-blue-50' },
           { label: 'Total Customers', value: fmtQty(stats?.customers?.totalCustomers || 0), icon: Users, color: 'text-purple-600 bg-purple-50' },
-          { label: 'Net Profit', value: fmt(stats?.cash?.profit || 0), icon: DollarSign, color: 'text-[#FA5600] bg-orange-50' },
+          { label: 'Cash in Hand', value: fmt(stats?.cash?.cashInHand || 0), icon: DollarSign, color: 'text-yellow-600 bg-yellow-50' },
+          { label: 'Cash at Bank', value: fmt(stats?.cash?.cashAtBank || 0), icon: DollarSign, color: 'text-blue-600 bg-blue-50' },
         ].map(card => (
           <div key={card.label} className="bg-white rounded-xl border border-gray-200 p-4">
             <div className={`w-8 h-8 rounded-lg flex items-center justify-center mb-2 ${card.color}`}>
@@ -1427,14 +1428,44 @@ function CashflowModule({ showMsg }: any) {
     showMsg('Entry deleted.', 'success'); fetchData();
   };
 
-  const { income = 0, expense = 0, profit = 0 } = data.summary || {};
+  const { income = 0, expense = 0, profit = 0, cashInHand = 0, cashAtBank = 0 } = data.summary || {};
 
   return (
     <div className="space-y-4">
+      {/* Top row — Income / Expense / Profit */}
       <div className="grid grid-cols-3 gap-3">
-        <div className="bg-green-50 rounded-xl border border-green-200 p-3 text-center"><p className="text-lg font-black text-green-700">{fmt(income)}</p><p className="text-[10px] font-bold text-green-600 uppercase">Income</p></div>
-        <div className="bg-red-50 rounded-xl border border-red-200 p-3 text-center"><p className="text-lg font-black text-red-700">{fmt(expense)}</p><p className="text-[10px] font-bold text-red-600 uppercase">Expenses</p></div>
-        <div className={`rounded-xl border p-3 text-center ${profit >= 0 ? 'bg-orange-50 border-orange-200' : 'bg-red-50 border-red-200'}`}><p className={`text-lg font-black ${profit >= 0 ? 'text-[#FA5600]' : 'text-red-700'}`}>{fmt(profit)}</p><p className="text-[10px] font-bold text-gray-500 uppercase">Net Profit</p></div>
+        <div className="bg-green-50 rounded-xl border border-green-200 p-3 text-center">
+          <p className="text-lg font-black text-green-700">{fmt(income)}</p>
+          <p className="text-[10px] font-bold text-green-600 uppercase">Income</p>
+        </div>
+        <div className="bg-red-50 rounded-xl border border-red-200 p-3 text-center">
+          <p className="text-lg font-black text-red-700">{fmt(expense)}</p>
+          <p className="text-[10px] font-bold text-red-600 uppercase">Expenses</p>
+        </div>
+        <div className={`rounded-xl border p-3 text-center ${profit >= 0 ? 'bg-orange-50 border-orange-200' : 'bg-red-50 border-red-200'}`}>
+          <p className={`text-lg font-black ${profit >= 0 ? 'text-[#FA5600]' : 'text-red-700'}`}>{fmt(profit)}</p>
+          <p className="text-[10px] font-bold text-gray-500 uppercase">Net Profit</p>
+        </div>
+      </div>
+
+      {/* Cash in Hand + Cash at Bank */}
+      <div className="grid grid-cols-2 gap-3">
+        <div className="bg-yellow-50 rounded-xl border border-yellow-200 p-4 flex items-center gap-3">
+          <div className="w-10 h-10 bg-yellow-100 rounded-xl flex items-center justify-center shrink-0 text-xl">💵</div>
+          <div>
+            <p className={`text-xl font-black ${cashInHand >= 0 ? 'text-yellow-800' : 'text-red-600'}`}>{fmt(cashInHand)}</p>
+            <p className="text-[10px] font-bold text-yellow-600 uppercase tracking-widest">Cash in Hand</p>
+            <p className="text-[9px] text-yellow-500 mt-0.5">Cash & UPI transactions</p>
+          </div>
+        </div>
+        <div className="bg-blue-50 rounded-xl border border-blue-200 p-4 flex items-center gap-3">
+          <div className="w-10 h-10 bg-blue-100 rounded-xl flex items-center justify-center shrink-0 text-xl">🏦</div>
+          <div>
+            <p className={`text-xl font-black ${cashAtBank >= 0 ? 'text-blue-800' : 'text-red-600'}`}>{fmt(cashAtBank)}</p>
+            <p className="text-[10px] font-bold text-blue-600 uppercase tracking-widest">Cash at Bank</p>
+            <p className="text-[9px] text-blue-500 mt-0.5">Bank, Card & NEFT</p>
+          </div>
+        </div>
       </div>
 
       <div className="flex gap-2 flex-wrap">
