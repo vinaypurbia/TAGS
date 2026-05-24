@@ -209,6 +209,7 @@ export function AdminPanel() {
   const { user, token, isLoading: authLoading, logout, canAccessAdmin } = useAuth();
   const navigate = useNavigate();
   const [activeSection, setActiveSection]     = useState<Section>('dashboard');
+  const [showInventory, setShowInventory]     = useState(true); // collapsible inventory panel
   const [sidebarOpen,   setSidebarOpen]       = useState(false);
   const [idleWarning,   setIdleWarning]       = useState(false);
   const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -707,8 +708,8 @@ export function AdminPanel() {
               ${sidebarOpen ? 'flex items-center gap-3 px-2.5 py-2.5' : 'flex flex-col items-center justify-center py-2 px-1'}`}>
             <LogOut className={sidebarOpen ? 'w-5 h-5 shrink-0' : 'w-4 h-4'} />
             {sidebarOpen
-              ? <span className="text-xs font-black uppercase tracking-widest whitespace-nowrap">Lock</span>
-              : <span className="text-[8px] font-black uppercase tracking-wide mt-1">Lock</span>
+              ? <span className="text-xs font-black uppercase tracking-widest whitespace-nowrap">Logout</span>
+              : <span className="text-[8px] font-black uppercase tracking-wide mt-1">Out</span>
             }
           </button>
         </div>
@@ -1280,7 +1281,27 @@ export function AdminPanel() {
 
           {activeSection === 'products'   && <div className="max-w-5xl mx-auto"><SectionHeader icon={Package}    title="Products"   desc="Browse, filter & edit all your products" /><ProductManagerEmbed /></div>}
           {activeSection === 'categories' && <div className="max-w-2xl mx-auto"><SectionHeader icon={FolderTree} title="Categories" desc="Add, edit or delete categories and subcategories" /><ManageCategoriesEmbed /></div>}
-         {activeSection === 'inventory' && <div className="max-w-5xl mx-auto"><SectionHeader icon={ShoppingBag} title="Inventory" desc="Track stock levels" /><InventoryEmbed /><StockVisibilityPanel /></div>}
+         {activeSection === 'inventory' && (
+            <div className="max-w-5xl mx-auto space-y-4">
+              <SectionHeader icon={ShoppingBag} title="Inventory" desc="Track stock levels" />
+              {/* ── Collapsible Inventory Panel ── */}
+              <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+                <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
+                  <div className="flex items-center gap-2">
+                    <ShoppingBag className="w-4 h-4 text-gray-500" />
+                    <span className="font-black text-sm uppercase tracking-widest text-gray-700">Stock Levels</span>
+                    <span className="text-[10px] text-gray-400 font-bold">Manage quantities, cost prices & SKUs</span>
+                  </div>
+                  <button onClick={() => setShowInventory(v => !v)}
+                    className="flex items-center gap-1.5 text-xs font-black uppercase tracking-widest text-gray-400 hover:text-[#FA5600] transition px-3 py-1.5 rounded-lg border border-gray-200 hover:border-[#FA5600]">
+                    {showInventory ? '▲ Hide' : '▼ Show'}
+                  </button>
+                </div>
+                {showInventory && <div className="p-4"><InventoryEmbed /></div>}
+              </div>
+              <StockVisibilityPanel />
+            </div>
+          )}
           {activeSection === 'business'   && <div className="max-w-5xl mx-auto"><SectionHeader icon={BarChart2}  title="Business"   desc="Sales, PO, Cash Flow, Reports" /><BusinessEmbed /></div>}
           {activeSection === 'import'     && <div className="max-w-2xl mx-auto"><ImportProductsSection /></div>}
 
