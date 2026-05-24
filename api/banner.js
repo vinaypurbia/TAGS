@@ -373,7 +373,49 @@ export default async function handler(req, res) {
       }
     }
 
-    return res.status(400).json({ error: 'Invalid module. Use ?module=auth|users|suppliers|expenses|cashflow|reports' });
+    // ── CLOUDINARY STATS (?module=cloudinarystats) ─────────────
+    if (req.query.module === 'cloudinarystats') {
+      if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
+      try {
+        const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
+        const apiKey    = process.env.CLOUDINARY_API_KEY;
+        const apiSecret = process.env.CLOUDINARY_API_SECRET;
+
+        if (!cloudName || !apiKey || !apiSecret) {
+          return res.status(200).json({ error: 'Cloudinary env vars not set. Add CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET to Vercel.' });
+        }
+
+        const credentials = Buffer.from(`${apiKey}:${apiSecret}`).toString('base64');
+        const response = await fetch(`https://api.cloudinary.com/v1_1/${cloudName}/usage`, {
+          headers: { Authorization: `Basic ${credentials}` }
+        });
+
+        if (!response.ok) {
+          return res.status(200).json({ error: `Cloudinary API error: ${response.status}` });
+        }
+
+        const usage = await response.json();
+        const credits = usage.credits || {};
+
+        return res.status(200).json({
+          credits_used:           credits.usage                                          || 0,
+          credits_limit:          credits.limit                                          || 25,
+          credits_usage_percent:  credits.limit > 0 ? (credits.usage / credits.limit) * 100 : 0,
+          storage_used_mb:        (usage.storage?.usage    || 0) / (1024 * 1024),
+          storage_limit_mb:       (usage.storage?.limit    || 0) / (1024 * 1024),
+          bandwidth_used_mb:      (usage.bandwidth?.usage  || 0) / (1024 * 1024),
+          bandwidth_limit_mb:     (usage.bandwidth?.limit  || 0) / (1024 * 1024),
+          resources:              usage.resources                                        || 0,
+          transformations:        usage.transformations?.usage                           || 0,
+          plan:                   usage.plan                                             || 'Free',
+          last_updated:           usage.last_updated                                     || null,
+        });
+      } catch (e) {
+        return res.status(500).json({ error: 'Failed to fetch Cloudinary stats', details: e.message });
+      }
+    }
+
+    return res.status(400).json({ error: 'Invalid module. Use ?module=auth|users|suppliers|expenses|cashflow|reports|dbstats|cloudinarystats' });
   } catch (error) {
     console.error('Business API error:', error);
     return res.status(500).json({ error: 'Database error', details: error.message });
