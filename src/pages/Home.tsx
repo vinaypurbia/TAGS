@@ -40,9 +40,6 @@ export function Home() {
       {/* ===== HERO BANNER ===== */}
       <section className="relative border-b-4 border-[#FA5600] min-h-[400px] lg:min-h-[500px] flex items-center">
 
-        {/* background layer — clipped independently so mascot can overflow */}
-        <div className="absolute inset-0 overflow-hidden">
-
         {!isLoaded && (
           <div className="absolute inset-0 bg-[#1A1A1A] flex items-center justify-center">
             <div className="w-10 h-10 border-4 border-white/20 border-t-[#FA5600] rounded-full animate-spin" />
@@ -50,7 +47,8 @@ export function Home() {
         )}
 
         {isLoaded && (
-          activeBanners.length > 0 ? (
+          <div className="absolute inset-0 overflow-hidden rounded-none">
+          {activeBanners.length > 0 ? (
             activeBanners.map((slide, i) => (
               <div
                 key={i}
@@ -67,12 +65,11 @@ export function Home() {
                   : 'linear-gradient(135deg, #1A1A1A 0%, #2d2d2d 100%)',
               }}
             />
-          )
+          )}
+          </div>
         )}
 
         {isLoaded && <div className="absolute inset-0 bg-black/50" />}
-
-        </div>{/* end background clipping layer */}
 
         {isLoaded && (
           <div className="relative z-10 w-full max-w-5xl mx-auto px-8 py-20 lg:py-28 text-center flex flex-col items-center animate-fade-in">
