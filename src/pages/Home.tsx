@@ -38,7 +38,7 @@ export function Home() {
   return (
     <div>
       {/* ===== HERO BANNER ===== */}
-      <section className="relative border-b-4 border-[#FA5600] min-h-[400px] lg:min-h-[500px] flex items-center">
+      <section className="relative min-h-[400px] lg:min-h-[500px] flex items-center">
 
         {!isLoaded && (
           <div className="absolute inset-0 bg-[#1A1A1A] flex items-center justify-center">
@@ -72,7 +72,7 @@ export function Home() {
         {isLoaded && <div className="absolute inset-0 bg-black/50" />}
 
         {isLoaded && (
-          <div className="relative z-10 w-full max-w-5xl mx-auto px-8 py-20 lg:py-28 text-center flex flex-col items-center animate-fade-in">
+          <div className="relative z-10 w-full max-w-5xl mx-auto px-8 pt-16 pb-28 lg:pt-20 lg:pb-36 text-center flex flex-col items-center animate-fade-in">
 
             <Link
               to="/products"
@@ -134,6 +134,8 @@ export function Home() {
           </div>
         )}
       </section>
+      {/* Orange border OUTSIDE section so it never clips mascot */}
+      <div className="h-1 bg-[#FA5600] w-full" />
 
       {/* ===== HOW IT WORKS ===== */}
       <section className="py-20 bg-white">
