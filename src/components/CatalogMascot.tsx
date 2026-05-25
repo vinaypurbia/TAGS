@@ -85,18 +85,18 @@ export function CatalogMascot() {
 
         @keyframes tagsMascotDrop {
           /* idle float */
-          0%,15%  { bottom: 64px; transform: translateX(-50%) scaleY(1)    scaleX(1);    }
-          22%     { bottom: 68px; transform: translateX(-50%) scaleY(1)    scaleX(1);    }
-          32%     { bottom: 64px; transform: translateX(-50%) scaleY(1)    scaleX(1);    }
+          0%,15%  { bottom: 60px; transform: translateX(-50%) scaleY(1)    scaleX(1);    }
+          22%     { bottom: 64px; transform: translateX(-50%) scaleY(1)    scaleX(1);    }
+          32%     { bottom: 60px; transform: translateX(-50%) scaleY(1)    scaleX(1);    }
           /* wait then fall */
-          52%     { bottom: 64px; transform: translateX(-50%) scaleY(1)    scaleX(1);    }
-          62%     { bottom: 40px; transform: translateX(-50%) scaleY(1)    scaleX(1);    }
+          52%     { bottom: 60px; transform: translateX(-50%) scaleY(1)    scaleX(1);    }
+          62%     { bottom: 38px; transform: translateX(-50%) scaleY(1)    scaleX(1);    }
           /* squash on impact */
-          65%     { bottom: 38px; transform: translateX(-50%) scaleY(0.74) scaleX(1.22); }
+          65%     { bottom: 36px; transform: translateX(-50%) scaleY(0.74) scaleX(1.22); }
           /* spring launch */
-          73%     { bottom: 70px; transform: translateX(-50%) scaleY(1.10) scaleX(0.92); }
-          80%     { bottom: 64px; transform: translateX(-50%) scaleY(0.97) scaleX(1.03); }
-          100%    { bottom: 64px; transform: translateX(-50%) scaleY(1)    scaleX(1);    }
+          73%     { bottom: 60px; transform: translateX(-50%) scaleY(1.10) scaleX(0.92); }
+          80%     { bottom: 60px; transform: translateX(-50%) scaleY(0.97) scaleX(1.03); }
+          100%    { bottom: 60px; transform: translateX(-50%) scaleY(1)    scaleX(1);    }
         }
 
         /* ── ARM WAVE ── */
@@ -167,9 +167,9 @@ export function CatalogMascot() {
         @keyframes tagsFloatUp {
           0%,61%  { opacity: 0;   transform: translate(var(--sx),  0px)   scale(0.5);  }
           64%     { opacity: 1;   transform: translate(var(--sx),  0px)   scale(1.15); }
-          70%     { opacity: 1;   transform: translate(var(--sx), -18px)  scale(1);    }
-          85%     { opacity: 0.9; transform: translate(var(--sx2),-54px)  scale(0.95); }
-          98%     { opacity: 0;   transform: translate(var(--sx2),-80px)  scale(0.8);  }
+          70%     { opacity: 1;   transform: translate(var(--sx), -14px)  scale(1);    }
+          85%     { opacity: 0.9; transform: translate(var(--sx2),-36px)  scale(0.95); }
+          98%     { opacity: 0;   transform: translate(var(--sx2),-50px)  scale(0.8);  }
           100%    { opacity: 0; }
         }
 
