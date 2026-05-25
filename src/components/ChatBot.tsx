@@ -254,13 +254,14 @@ export function ChatBot() {
 
   // Scroll to bottom on new messages
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (!messagesEndRef.current) return;
+    messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
   }, [messages, typing]);
 
   // Focus input when opened
   useEffect(() => {
     if (open) {
-      setTimeout(() => inputRef.current?.focus(), 300);
+      setTimeout(() => { if (inputRef.current) inputRef.current.focus(); }, 300);
       setUnread(0);
     }
   }, [open]);
