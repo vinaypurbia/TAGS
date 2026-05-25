@@ -5,6 +5,7 @@ import { useCart } from '../context/CartContext';
 import { CustomerRegistrationModal } from './CustomerRegistrationModal';
 import { User } from 'lucide-react';
 import { useAppData } from '../context/AppDataContext';
+import { ChatBot } from './ChatBot';
 
 export function Layout({ children }: { children: ReactNode }) {
   const { totalItems, customer, setShowSignIn, setRedirectAfterAuth } = useCart();
@@ -217,6 +218,7 @@ export function Layout({ children }: { children: ReactNode }) {
         </div>
       </footer>
       <CustomerRegistrationModal />
+      <ChatBot />
     </div>
   );
 }
