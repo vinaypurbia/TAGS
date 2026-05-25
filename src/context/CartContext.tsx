@@ -26,6 +26,8 @@ interface CartContextType {
   setCustomer: (details: CustomerDetails) => void;
   showSignIn: boolean;
   setShowSignIn: (show: boolean) => void;
+  redirectAfterAuth: string | null;
+  setRedirectAfterAuth: (path: string | null) => void;
 }
 
 const CartContext = createContext<CartContextType | undefined>(undefined);
@@ -42,6 +44,7 @@ export function CartProvider({ children }: { children: ReactNode }) {
     return [];
   });
   const [showSignIn, setShowSignIn] = useState(false);
+  const [redirectAfterAuth, setRedirectAfterAuth] = useState<string | null>(null);
   const [customer, setCustomerState] = useState<CustomerDetails>({ name: '', phone: '' });
 
   // Load saved customer from localStorage on mount
@@ -109,6 +112,7 @@ export function CartProvider({ children }: { children: ReactNode }) {
       items, addItem, removeItem, updateQuantity, clearCart, totalItems,
       customer, setCustomer,
       showSignIn, setShowSignIn,
+      redirectAfterAuth, setRedirectAfterAuth,
     }}>
       {children}
     </CartContext.Provider>
