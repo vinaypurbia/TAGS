@@ -242,20 +242,21 @@ export default async function handler(req, res) {
     }
 
     if (req.method === 'POST') {
-      const { name, phone, email, address, notes } = req.body;
+      const { name, phone, whatsapp, email, address, notes } = req.body;
       if (!name || !phone) return res.status(400).json({ error: 'Name and phone are required' });
 
       const existing = await customers.findOne({ phone });
       if (existing) {
         await customers.updateOne(
           { phone },
-          { $set: { name, email: email || existing.email, address: address || existing.address, notes: notes || existing.notes, updatedAt: new Date() } }
+          { $set: { name, whatsapp: whatsapp || existing.whatsapp || phone, email: email || existing.email, address: address || existing.address, notes: notes || existing.notes, updatedAt: new Date() } }
         );
         return res.status(200).json({ success: true, _id: existing._id, updated: true });
       }
 
       const result = await customers.insertOne({
         name, phone,
+        whatsapp: whatsapp || phone,
         email: email || '',
         address: address || '',
         notes: notes || '',
