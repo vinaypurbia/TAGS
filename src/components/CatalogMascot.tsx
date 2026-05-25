@@ -145,7 +145,7 @@ export function CatalogMascot() {
         */
         .tags-floaters {
           position: absolute;
-          bottom: 22px;
+          bottom: 14px;
           left: 50%;
           width: 0;
           height: 0;
@@ -167,9 +167,9 @@ export function CatalogMascot() {
         @keyframes tagsFloatUp {
           0%,61%  { opacity: 0;   transform: translate(var(--sx),  0px)   scale(0.5);  }
           64%     { opacity: 1;   transform: translate(var(--sx),  0px)   scale(1.15); }
-          70%     { opacity: 1;   transform: translate(var(--sx), -14px)  scale(1);    }
-          85%     { opacity: 0.9; transform: translate(var(--sx2),-36px)  scale(0.95); }
-          98%     { opacity: 0;   transform: translate(var(--sx2),-50px)  scale(0.8);  }
+          70%     { opacity: 1;   transform: translate(var(--sx), -10px)  scale(1);    }
+          85%     { opacity: 0.9; transform: translate(var(--sx2),-24px)  scale(0.95); }
+          98%     { opacity: 0;   transform: translate(var(--sx2),-34px)  scale(0.8);  }
           100%    { opacity: 0; }
         }
 
