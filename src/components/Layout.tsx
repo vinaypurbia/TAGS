@@ -7,7 +7,7 @@ import { User } from 'lucide-react';
 import { useAppData } from '../context/AppDataContext';
 
 export function Layout({ children }: { children: ReactNode }) {
-  const { totalItems, customer, setShowSignIn } = useCart();
+  const { totalItems, customer, setShowSignIn, setRedirectAfterAuth } = useCart();
   const { categories, banner, isLoaded } = useAppData();
   const navigate = useNavigate();
   const [searchQuery, setSearchQuery] = useState('');
@@ -109,7 +109,17 @@ export function Layout({ children }: { children: ReactNode }) {
             )}
           </nav>
 
-          <Link to="/order" className="relative flex items-center bg-[#FA5600] text-white px-4 py-2 rounded-full hover:bg-[#E04A00] transition-colors">
+          <button
+            onClick={() => {
+              if (customer.customerId) {
+                navigate('/order');
+              } else {
+                setRedirectAfterAuth('/order');
+                setShowSignIn(true);
+              }
+            }}
+            className="relative flex items-center bg-[#FA5600] text-white px-4 py-2 rounded-full hover:bg-[#E04A00] transition-colors"
+          >
             <ShoppingBag className="w-4 h-4 mr-2" />
             <span className="text-xs font-bold uppercase tracking-widest hidden sm:inline">Order List</span>
             {totalItems > 0 && (
@@ -117,7 +127,7 @@ export function Layout({ children }: { children: ReactNode }) {
                 {totalItems}
               </span>
             )}
-          </Link>
+          </button>
         </div>
       </header>
 
