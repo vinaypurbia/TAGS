@@ -86,18 +86,18 @@ export function CatalogMascot() {
 
         @keyframes tagsMascotDrop {
           /* idle float */
-          0%,15%  { bottom: 64px; transform: translateX(-50%) scaleY(1)    scaleX(1);    }
-          22%     { bottom: 68px; transform: translateX(-50%) scaleY(1)    scaleX(1);    }
-          32%     { bottom: 64px; transform: translateX(-50%) scaleY(1)    scaleX(1);    }
+          0%,15%  { bottom: 50px; transform: translateX(-50%) scaleY(1)    scaleX(1);    }
+          22%     { bottom: 54px; transform: translateX(-50%) scaleY(1)    scaleX(1);    }
+          32%     { bottom: 50px; transform: translateX(-50%) scaleY(1)    scaleX(1);    }
           /* wait then fall */
-          52%     { bottom: 64px; transform: translateX(-50%) scaleY(1)    scaleX(1);    }
-          62%     { bottom: 40px; transform: translateX(-50%) scaleY(1)    scaleX(1);    }
+          52%     { bottom: 50px; transform: translateX(-50%) scaleY(1)    scaleX(1);    }
+          62%     { bottom: 28px; transform: translateX(-50%) scaleY(1)    scaleX(1);    }
           /* squash on impact */
-          65%     { bottom: 38px; transform: translateX(-50%) scaleY(0.74) scaleX(1.22); }
+          65%     { bottom: 26px; transform: translateX(-50%) scaleY(0.74) scaleX(1.22); }
           /* spring launch */
-          73%     { bottom: 70px; transform: translateX(-50%) scaleY(1.10) scaleX(0.92); }
-          80%     { bottom: 64px; transform: translateX(-50%) scaleY(0.97) scaleX(1.03); }
-          100%    { bottom: 64px; transform: translateX(-50%) scaleY(1)    scaleX(1);    }
+          73%     { bottom: 56px; transform: translateX(-50%) scaleY(1.10) scaleX(0.92); }
+          80%     { bottom: 50px; transform: translateX(-50%) scaleY(0.97) scaleX(1.03); }
+          100%    { bottom: 50px; transform: translateX(-50%) scaleY(1)    scaleX(1);    }
         }
 
         /* ── ARM WAVE ── */
