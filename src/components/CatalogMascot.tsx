@@ -16,6 +16,7 @@ export function CatalogMascot() {
           justify-content: center;
           width: 220px;
           height: 130px;
+          overflow: visible;
         }
 
         /* ── BUTTON ── */
