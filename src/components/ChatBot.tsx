@@ -94,13 +94,14 @@ function detectIntent(text: string): { intent: Intent; data?: any } {
 }
 
 // ─── Response Builder ─────────────────────────────────────────────────────────
-async function buildResponse(text: string): Promise<Partial<Message>> {
+async function buildResponse(text: string, originalText?: string): Promise<Partial<Message>> {
   const { intent, data } = detectIntent(text);
+  const queryText = originalText || text;
 
   switch (intent) {
     case 'greeting':
       return {
-        text: `👋 Hello! Welcome to TAGS — Toys, Adventure, Gadgets & Sports!\n\nHow can I help you today?`,
+        text: `👋 Hello! Welcome to **TAGS** — Toys, Adventure, Gadgets & Sports!\n\nI'm your virtual assistant. Here's what I can help you with:\n\n🕐 Store hours & timings\n📍 Store location & directions\n🚚 Delivery info & charges\n💳 Payment options\n🧸 Browse products by category\n💰 Find products by budget\n↩️ Return & exchange policy\n📞 Connect to our team\n\nPlease let us know if you have a query related to any of these topics — or anything else! 😊`,
         options: ['🕐 Store Hours', '📍 Location', '🚚 Delivery Info', '💳 Payment', '🛍️ Browse Products', '📞 Contact Us'],
       };
 
@@ -205,11 +206,13 @@ async function buildResponse(text: string): Promise<Partial<Message>> {
         options: ['🕐 Store Hours', '📍 Location', '🚚 Delivery', '🛍️ Products', '💳 Payment'],
       };
 
-    default:
+    default: {
+      const encodedQuery = encodeURIComponent(`Hi TAGS! I have a query: "${queryText}"`);
       return {
-        text: `I'm not sure about that, but I can connect you to our team on WhatsApp for a quick answer! 😊`,
-        options: ['💬 Chat on WhatsApp', '🕐 Store Hours', '📍 Location', '🚚 Delivery Info'],
+        text: `🤔 I couldn't find an answer for that, but don't worry!\n\nTap the button below to send your exact query directly to our team on WhatsApp — we'll reply right away! 💬`,
+        options: [`📲 Send My Query to WhatsApp::https://wa.me/${KB.whatsapp}?text=${encodedQuery}`, '🕐 Store Hours', '📍 Location', '🚚 Delivery Info'],
       };
+    }
   }
 }
 
@@ -245,7 +248,7 @@ export function ChatBot() {
   const [input, setInput] = useState('');
   const [typing, setTyping] = useState(false);
   const [unread, setUnread] = useState(0);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [peekDismissed, setPeekDismissed] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const initialized = useRef(false);
 
@@ -278,10 +281,10 @@ export function ChatBot() {
     return () => clearTimeout(t);
   }, []);
 
-  const addBotMessage = async (text: string) => {
+  const addBotMessage = async (text: string, originalText?: string) => {
     setTyping(true);
     await new Promise(r => setTimeout(r, 600 + Math.random() * 400));
-    const response = await buildResponse(text);
+    const response = await buildResponse(text, originalText);
     setTyping(false);
     const msg: Message = {
       id: Date.now().toString(),
@@ -299,6 +302,13 @@ export function ChatBot() {
     const msg = (text || input).trim();
     if (!msg) return;
     setInput('');
+
+    // Handle buttons with embedded URL (format: "Label::https://...")
+    if (msg.includes('::https://')) {
+      const [, url] = msg.split('::');
+      window.open(url, '_blank');
+      return;
+    }
 
     // Handle special option actions
     if (msg === '🗺️ Open Google Maps') {
@@ -351,7 +361,8 @@ export function ChatBot() {
     const userMsg: Message = { id: Date.now().toString(), from: 'user', text: msg, time: new Date() };
     setMessages(prev => [...prev, userMsg]);
 
-    await addBotMessage(processText);
+    // Pass original msg so unknown intent can relay it verbatim to WhatsApp
+    await addBotMessage(processText, msg);
   };
 
   const formatTime = (d: Date) =>
@@ -407,12 +418,19 @@ export function ChatBot() {
                 {/* Quick option buttons */}
                 {msg.options && msg.options.length > 0 && (
                   <div className="flex flex-wrap gap-1.5 mt-1 max-w-[90%]">
-                    {msg.options.map(opt => (
-                      <button key={opt} onClick={() => handleSend(opt)}
-                        className="text-[10px] font-black uppercase tracking-wide bg-white border border-[#FA5600] text-[#FA5600] px-2.5 py-1 rounded-full hover:bg-[#FA5600] hover:text-white transition-all whitespace-nowrap">
-                        {opt}
-                      </button>
-                    ))}
+                    {msg.options.map(opt => {
+                      const label = opt.includes('::') ? opt.split('::')[0] : opt;
+                      const isRelay = opt.startsWith('📲 Send My Query');
+                      return (
+                        <button key={opt} onClick={() => handleSend(opt)}
+                          className={`text-[10px] font-black uppercase tracking-wide px-2.5 py-1 rounded-full transition-all whitespace-nowrap
+                            ${isRelay
+                              ? 'bg-[#25D366] border border-[#25D366] text-white hover:bg-[#1ebe5d]'
+                              : 'bg-white border border-[#FA5600] text-[#FA5600] hover:bg-[#FA5600] hover:text-white'}`}>
+                          {label}
+                        </button>
+                      );
+                    })}
                   </div>
                 )}
 
@@ -457,9 +475,59 @@ export function ChatBot() {
         </div>
       </div>
 
+      {/* ── Idle Peek Card ── */}
+      {!open && !peekDismissed && unread > 0 && (
+        <div className="fixed bottom-24 right-4 z-[9998] w-[280px] animate-[slideUp_0.4s_ease-out]"
+          style={{ animation: 'slideUp 0.4s ease-out' }}>
+          <style>{`
+            @keyframes slideUp {
+              from { opacity: 0; transform: translateY(16px); }
+              to   { opacity: 1; transform: translateY(0); }
+            }
+          `}</style>
+          <div className="bg-white rounded-2xl shadow-2xl border border-gray-100 overflow-hidden">
+            {/* Peek header */}
+            <div className="bg-[#FA5600] px-3 py-2.5 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="w-7 h-7 bg-white rounded-full flex items-center justify-center shadow">
+                  <span className="text-[#FA5600] font-black text-xs">T</span>
+                </div>
+                <div>
+                  <p className="text-white font-black text-xs leading-tight">TAGS Assistant</p>
+                  <div className="flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 bg-green-400 rounded-full animate-pulse" />
+                    <span className="text-white/80 text-[9px] font-bold">Online — reply in seconds</span>
+                  </div>
+                </div>
+              </div>
+              <button onClick={() => setPeekDismissed(true)}
+                className="text-white/70 hover:text-white transition p-0.5 rounded hover:bg-white/20">
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            {/* Peek body */}
+            <div className="px-3 py-3">
+              <p className="text-xs font-bold text-gray-800 mb-2">👋 Hi! I can help you with:</p>
+              <ul className="space-y-1 text-[11px] text-gray-600 mb-3">
+                <li>🕐 Store hours &amp; timings</li>
+                <li>🚚 Delivery info &amp; charges</li>
+                <li>🧸 Browse products by category</li>
+                <li>💳 Payment options</li>
+                <li>📍 Location &amp; directions</li>
+              </ul>
+              <button
+                onClick={() => { setPeekDismissed(true); setOpen(true); }}
+                className="w-full bg-[#FA5600] text-white text-[11px] font-black uppercase tracking-widest py-2 rounded-full hover:bg-[#E04A00] transition-colors">
+                Start Chat →
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ── Bubble Button ── */}
       <button
-        onClick={() => setOpen(v => !v)}
+        onClick={() => { setOpen(v => !v); setPeekDismissed(true); }}
         className="fixed bottom-6 right-4 z-[9999] w-14 h-14 bg-[#FA5600] rounded-full shadow-lg hover:bg-[#E04A00] transition-all hover:scale-110 active:scale-95 flex items-center justify-center"
         aria-label="Open chat">
         <div className="relative">
