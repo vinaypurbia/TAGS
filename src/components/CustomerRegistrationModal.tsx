@@ -1,9 +1,11 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useCart } from '../context/CartContext';
 import { X, Phone, User, Mail, MapPin, MessageCircle, Loader } from 'lucide-react';
 
 export function CustomerRegistrationModal() {
-  const { showSignIn, setShowSignIn, setCustomer } = useCart();
+  const { showSignIn, setShowSignIn, setCustomer, redirectAfterAuth, setRedirectAfterAuth } = useCart();
+  const navigate = useNavigate();
 
   const [mode, setMode] = useState<'lookup' | 'register' | 'found'>('lookup');
   const [phone, setPhone] = useState('');
@@ -14,13 +16,18 @@ export function CustomerRegistrationModal() {
 
   if (!showSignIn) return null;
 
-  function close() {
+  function close(shouldRedirect = false) {
     setShowSignIn(false);
     setMode('lookup');
     setPhone('');
     setForm({ name: '', whatsapp: '', email: '', address: '' });
     setFoundCustomer(null);
     setError('');
+    if (shouldRedirect && redirectAfterAuth) {
+      const path = redirectAfterAuth;
+      setRedirectAfterAuth(null);
+      navigate(path);
+    }
   }
 
   // Step 1: Look up by phone
@@ -82,7 +89,7 @@ export function CustomerRegistrationModal() {
           address: form.address.trim(),
           customerId: data._id?.toString(),
         });
-        close();
+        close(true);
       } else {
         setError(data.error || 'Registration failed');
       }
@@ -245,10 +252,10 @@ export function CustomerRegistrationModal() {
               )}
 
               <button
-                onClick={close}
+                onClick={() => close(true)}
                 className="w-full bg-[#FA5600] text-white font-black text-sm uppercase tracking-widest py-3 rounded-xl hover:bg-[#E04A00] transition"
               >
-                Continue Shopping
+                {redirectAfterAuth ? 'Continue to Checkout →' : 'Continue Shopping'}
               </button>
             </>
           )}
