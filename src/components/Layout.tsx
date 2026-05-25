@@ -2,10 +2,12 @@ import { ReactNode, useState, useEffect, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { ShoppingBag, Phone, Mail, MapPin, Search } from 'lucide-react';
 import { useCart } from '../context/CartContext';
+import { CustomerRegistrationModal } from './CustomerRegistrationModal';
+import { User } from 'lucide-react';
 import { useAppData } from '../context/AppDataContext';
 
 export function Layout({ children }: { children: ReactNode }) {
-  const { totalItems } = useCart();
+  const { totalItems, customer, setShowSignIn } = useCart();
   const { categories, banner, isLoaded } = useAppData();
   const navigate = useNavigate();
   const [searchQuery, setSearchQuery] = useState('');
@@ -94,6 +96,17 @@ export function Layout({ children }: { children: ReactNode }) {
             <Link to="/" className="hover:text-[#FA5600] transition-colors">Home</Link>
             <Link to="/products" className="hover:text-[#FA5600] transition-colors">Catalog</Link>
             <Link to="/contact" className="hover:text-[#FA5600] transition-colors">Contact</Link>
+            {customer.name && customer.name !== 'Guest' && customer.customerId ? (
+              <a href="/account" className="flex items-center gap-1.5 hover:text-[#FA5600] transition-colors">
+                <User className="w-3.5 h-3.5" />
+                <span>{customer.name.split(' ')[0]}</span>
+              </a>
+            ) : (
+              <button onClick={() => setShowSignIn(true)} className="flex items-center gap-1.5 hover:text-[#FA5600] transition-colors">
+                <User className="w-3.5 h-3.5" />
+                <span>Sign In</span>
+              </button>
+            )}
           </nav>
 
           <Link to="/order" className="relative flex items-center bg-[#FA5600] text-white px-4 py-2 rounded-full hover:bg-[#E04A00] transition-colors">
@@ -193,6 +206,7 @@ export function Layout({ children }: { children: ReactNode }) {
           © 2025 TAGS. All rights reserved.
         </div>
       </footer>
+      <CustomerRegistrationModal />
     </div>
   );
 }
