@@ -17,8 +17,13 @@ const resolvePrice = (product: any): number => {
 };
 
 export function OrderSummary() {
-  const { items, updateQuantity, removeItem, clearCart } = useCart();
-  const [formData, setFormData] = useState({ name: '', phone: '', email: '', address: '' });
+  const { items, updateQuantity, removeItem, clearCart, customer, setShowSignIn } = useCart();
+  const [formData, setFormData] = useState(() => ({
+    name: customer.name && customer.name !== 'Guest' ? customer.name : '',
+    phone: customer.phone || '',
+    email: customer.email || '',
+    address: customer.address || '',
+  }));
   const [isSending, setIsSending] = useState(false);
   const [orderDone, setOrderDone] = useState<{ orderId: string; name: string } | null>(null);
 
