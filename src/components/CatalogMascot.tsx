@@ -17,6 +17,7 @@ export function CatalogMascot() {
           width: 220px;
           height: 130px;
           overflow: visible;
+          padding-top: 80px;
         }
 
         /* ── BUTTON ── */
