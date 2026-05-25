@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { MessageCircle, X, Send, ChevronDown } from 'lucide-react';
+import { MessageCircle, X, Send, ChevronDown, Headphones } from 'lucide-react';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface Message {
@@ -537,7 +537,7 @@ export function ChatBot() {
         <div className="relative">
           {open
             ? <X className="w-6 h-6 text-white" />
-            : <MessageCircle className="w-6 h-6 text-white" />}
+            : <Headphones className="w-6 h-6 text-white" />}
           {!open && unread > 0 && (
             <span className="absolute -top-2 -right-2 w-5 h-5 bg-green-500 text-white text-[10px] font-black rounded-full flex items-center justify-center animate-bounce">
               {unread}
