@@ -38,7 +38,10 @@ export function Home() {
   return (
     <div>
       {/* ===== HERO BANNER ===== */}
-      <section className="relative overflow-hidden border-b-4 border-[#FA5600] min-h-[400px] lg:min-h-[500px] flex items-center">
+      <section className="relative border-b-4 border-[#FA5600] min-h-[400px] lg:min-h-[500px] flex items-center">
+
+        {/* background layer — clipped independently so mascot can overflow */}
+        <div className="absolute inset-0 overflow-hidden">
 
         {!isLoaded && (
           <div className="absolute inset-0 bg-[#1A1A1A] flex items-center justify-center">
@@ -68,6 +71,8 @@ export function Home() {
         )}
 
         {isLoaded && <div className="absolute inset-0 bg-black/50" />}
+
+        </div>{/* end background clipping layer */}
 
         {isLoaded && (
           <div className="relative z-10 w-full max-w-5xl mx-auto px-8 py-20 lg:py-28 text-center flex flex-col items-center animate-fade-in">
