@@ -59,13 +59,13 @@ export function Contact() {
             </div>
           </a>
 
-          <a href="mailto:tags.udr@gmail.com" className="flex items-start gap-4 bg-white rounded-xl border border-gray-200 p-5 hover:border-[#FA5600] hover:shadow-md transition-all group">
+          <a href="mailto:support@ta-gs.online" className="flex items-start gap-4 bg-white rounded-xl border border-gray-200 p-5 hover:border-[#FA5600] hover:shadow-md transition-all group">
             <div className="bg-[#FA5600] text-white p-2 shrink-0 rounded-lg">
               <Mail className="w-5 h-5" />
             </div>
             <div>
               <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-1">Email</p>
-              <p className="font-black text-sm group-hover:text-[#FA5600] transition-colors">tags.udr@gmail.com</p>
+              <p className="font-black text-sm group-hover:text-[#FA5600] transition-colors">support@ta-gs.online</p>
             </div>
           </a>
 
