@@ -110,10 +110,10 @@ export default async function handler(req, res) {
       const po = await orders.findOne({ _id: new ObjectId(id) });
       if (!po) return res.status(404).json({ error: 'Purchase order not found' });
 
-      // ── Edit draft PO ──
+      // ── Edit draft or ordered PO ──
       if (action === 'update' || !action) {
-        if (po.status !== 'draft') {
-          return res.status(400).json({ error: 'Only draft POs can be edited' });
+        if (!['draft', 'ordered'].includes(po.status)) {
+          return res.status(400).json({ error: 'Only draft or ordered POs can be edited' });
         }
         const { supplier, items, notes, expectedDate } = req.body;
         const updateFields = { updatedAt: new Date() };
@@ -147,105 +147,120 @@ export default async function handler(req, res) {
         return res.status(200).json({ success: true });
       }
 
-      // ── Mark as received → THIS IS THE AUTO-SYNC MAGIC ──
-      // When you receive stock, inventory auto-updates → website shows new availability
+      // ── Advance Payment ──
+      if (action === 'advance_payment') {
+        const { amount, paymentMode: pmMode, notes: pmNotes } = req.body;
+        const paid = Number(amount);
+        if (!paid || paid <= 0) return res.status(400).json({ error: 'Valid amount required' });
+        const newPaid = (po.paidAmount || 0) + paid;
+        const newDue = Math.max(0, po.totalAmount - newPaid);
+        await orders.updateOne({ _id: new ObjectId(id) }, { $set: { paidAmount: newPaid, dueAmount: newDue, updatedAt: new Date() } });
+        await cashFlow.insertOne({
+          type: 'expense', category: 'advance_payment', amount: paid,
+          paymentMode: pmMode || 'cash',
+          description: `Advance Payment — PO ${po.poNumber} — ${po.supplier?.name || 'Supplier'}${pmNotes ? ` — ${pmNotes}` : ''}`,
+          referenceId: id, referenceType: 'po_advance',
+          supplierName: po.supplier?.name || '', poNumber: po.poNumber,
+          date: new Date(), createdAt: new Date(),
+        });
+        return res.status(200).json({ success: true, paidAmount: newPaid, dueAmount: newDue });
+      }
+
+      // ── Mark as received with per-item quantities + shortage/damage detection ──
       if (action === 'receive') {
         if (!['ordered', 'draft'].includes(po.status)) {
           return res.status(400).json({ error: 'PO cannot be received in current status' });
         }
+        const receivedItems = req.body.receivedItems || po.items.map(i => ({ ...i, quantityReceived: i.quantity, damageNotes: '' }));
+        const { paymentMode: poPaymentMode } = req.body;
+        let totalOrdered = 0, totalReceived = 0, totalReceivedValue = 0, totalShortageValue = 0;
+        const shortageItems = [];
 
-        const receivedItems = req.body.receivedItems || po.items; // allow partial receive
-
-        // Update inventory for each item
         for (const item of receivedItems) {
-          const qty = Number(item.quantityReceived || item.quantity);
-          if (qty <= 0) continue;
-
+          const orderedQty = Number(item.quantity);
+          const receivedQty = Number(item.quantityReceived ?? item.quantity);
+          const shortageQty = orderedQty - receivedQty;
+          const costP = Number(item.costPrice) || 0;
+          totalOrdered += orderedQty; totalReceived += receivedQty;
+          totalReceivedValue += receivedQty * costP;
+          if (shortageQty > 0) {
+            totalShortageValue += shortageQty * costP;
+            shortageItems.push({ productId: item.productId, productName: item.productName, orderedQty, receivedQty, shortageQty, costPrice: costP, shortageValue: shortageQty * costP, damageNotes: item.damageNotes || '' });
+          }
+          if (receivedQty <= 0) continue;
           const existing = await inventory.findOne({ productId: item.productId });
-
           if (existing) {
-            // Update existing inventory
             const balanceBefore = existing.currentStock;
-            const newStock = existing.currentStock + qty;
-            const newAvailable = existing.availableStock + qty;
-
-            await inventory.updateOne(
-              { productId: item.productId },
-              {
-                $set: {
-                  currentStock: newStock,
-                  availableStock: newAvailable,
-                  costPrice: Number(item.costPrice) || existing.costPrice,
-                  updatedAt: new Date(),
-                },
-              }
-            );
-
-            // Log stock movement
-            await movements.insertOne({
-              productId: item.productId,
-              type: 'in',
-              quantity: qty,
-              reason: 'purchase_order',
-              referenceId: id,
-              balanceBefore,
-              balanceAfter: newStock,
-              note: `Received from PO ${po.poNumber}`,
-              createdAt: new Date(),
-            });
+            const newStock = existing.currentStock + receivedQty;
+            await inventory.updateOne({ productId: item.productId }, { $set: { currentStock: newStock, availableStock: existing.availableStock + receivedQty, costPrice: costP || existing.costPrice, updatedAt: new Date() } });
+            await movements.insertOne({ productId: item.productId, type: 'in', quantity: receivedQty, reason: 'purchase_order', referenceId: id, balanceBefore, balanceAfter: newStock, note: `Received from PO ${po.poNumber}${item.damageNotes ? ` — ${item.damageNotes}` : ''}`, createdAt: new Date() });
           } else {
-            // Create new inventory entry
-            await inventory.insertOne({
-              productId: item.productId,
-              sku: item.sku || '',
-              currentStock: qty,
-              reservedStock: 0,
-              availableStock: qty,
-              lowStockAlert: 10,
-              costPrice: Number(item.costPrice) || 0,
-              unit: 'pcs',
-              trackInventory: true,
-              createdAt: new Date(),
-              updatedAt: new Date(),
-            });
-
-            await movements.insertOne({
-              productId: item.productId,
-              type: 'in',
-              quantity: qty,
-              reason: 'purchase_order',
-              referenceId: id,
-              balanceBefore: 0,
-              balanceAfter: qty,
-              note: `First stock from PO ${po.poNumber}`,
-              createdAt: new Date(),
-            });
+            await inventory.insertOne({ productId: item.productId, sku: item.sku || '', currentStock: receivedQty, reservedStock: 0, availableStock: receivedQty, lowStockAlert: 10, costPrice: costP, unit: 'pcs', trackInventory: true, createdAt: new Date(), updatedAt: new Date() });
+            await movements.insertOne({ productId: item.productId, type: 'in', quantity: receivedQty, reason: 'purchase_order', referenceId: id, balanceBefore: 0, balanceAfter: receivedQty, note: `First stock from PO ${po.poNumber}`, createdAt: new Date() });
           }
         }
 
-        // Mark PO as received
-        await orders.updateOne(
-          { _id: new ObjectId(id) },
-          { $set: { status: 'received', receivedDate: new Date(), updatedAt: new Date() } }
-        );
-
-        // Record PO as inventory asset acquisition (NOT an expense — it's a balance sheet entry)
-        // This reduces cash/bank but increases inventory asset value
-        // Category 'inventory_asset' is excluded from P&L — only COGS hits the income statement
-        const { paymentMode: poPaymentMode } = req.body;
+        const advanceAlreadyPaid = po.paidAmount || 0;
+        const balanceDue = Math.max(0, totalReceivedValue - advanceAlreadyPaid);
         await cashFlow.insertOne({
-          type: 'expense',
-          category: 'inventory_asset',
-          amount: po.totalAmount,
+          type: 'expense', category: 'inventory_asset', amount: totalReceivedValue,
           paymentMode: poPaymentMode || 'cash',
-          description: `Inventory Purchase — PO ${po.poNumber} — ${po.supplier?.name || 'Supplier'}`,
-          referenceId: id,
-          referenceType: 'purchase_order',
-          date: new Date(),
-          createdAt: new Date(),
+          description: `Stock Received — PO ${po.poNumber} — ${po.supplier?.name || 'Supplier'} (${totalReceived}/${totalOrdered} units)`,
+          referenceId: id, referenceType: 'purchase_order',
+          poNumber: po.poNumber, supplierName: po.supplier?.name || '',
+          advancePaid: advanceAlreadyPaid, balancePaid: balanceDue,
+          date: new Date(), createdAt: new Date(),
         });
 
-        return res.status(200).json({ success: true, message: 'Stock updated across all products' });
+        const shortageStatus = shortageItems.length > 0 ? 'has_shortage' : 'complete';
+        await orders.updateOne({ _id: new ObjectId(id) }, { $set: { status: 'received', receivedDate: new Date(), updatedAt: new Date(), receivedItems, shortageStatus, shortageItems: shortageItems.length > 0 ? shortageItems : [], shortageValue: totalShortageValue, shortageResolved: shortageItems.length === 0, paidAmount: advanceAlreadyPaid + balanceDue, dueAmount: 0 } });
+
+        if (shortageItems.length > 0) {
+          await cashFlow.insertOne({
+            type: 'income', category: 'po_shortage_receivable', amount: totalShortageValue,
+            description: `Shortage / Damage — PO ${po.poNumber} — ${po.supplier?.name || 'Supplier'} — ${shortageItems.map(s => `${s.productName}: ${s.shortageQty} missing`).join(', ')}`,
+            referenceId: id, referenceType: 'po_shortage',
+            poNumber: po.poNumber, supplierName: po.supplier?.name || '',
+            shortageItems, resolved: false, date: new Date(), createdAt: new Date(),
+          });
+        }
+
+        return res.status(200).json({ success: true, message: shortageItems.length > 0 ? `Stock updated. ⚠️ Shortage of ₹${totalShortageValue.toFixed(2)} recorded against ${po.supplier?.name || 'supplier'}.` : 'Stock fully received and inventory updated.', shortageItems, totalShortageValue });
+      }
+
+      // ── Supplier Resolution ──
+      if (action === 'resolve_shortage') {
+        if (po.status !== 'received') return res.status(400).json({ error: 'PO must be received first' });
+        if (!po.shortageItems?.length) return res.status(400).json({ error: 'No shortage to resolve' });
+        const { resolveType, amount, paymentMode: rMode, resolvedItems, notes: rNotes } = req.body;
+
+        if (resolveType === 'refund') {
+          const refundAmt = Number(amount) || po.shortageValue || 0;
+          await cashFlow.insertOne({ type: 'income', category: 'po_shortage_refund', amount: refundAmt, paymentMode: rMode || 'cash', description: `Shortage Refund — PO ${po.poNumber} — ${po.supplier?.name || 'Supplier'}${rNotes ? ` — ${rNotes}` : ''}`, referenceId: id, referenceType: 'po_resolution', poNumber: po.poNumber, supplierName: po.supplier?.name || '', date: new Date(), createdAt: new Date() });
+          await cashFlow.updateMany({ referenceId: id, referenceType: 'po_shortage' }, { $set: { resolved: true, resolvedAt: new Date(), resolvedAmount: refundAmt } });
+          await orders.updateOne({ _id: new ObjectId(id) }, { $set: { shortageResolved: true, shortageResolvedAt: new Date(), shortageResolveType: 'refund', shortageRefundAmount: refundAmt, updatedAt: new Date() } });
+          return res.status(200).json({ success: true, message: `Refund of ₹${refundAmt} recorded.` });
+        }
+
+        if (resolveType === 'goods') {
+          const itemsToReceive = resolvedItems || po.shortageItems;
+          for (const item of itemsToReceive) {
+            const qty = Number(item.resolvedQty || item.shortageQty);
+            if (qty <= 0) continue;
+            const existing = await inventory.findOne({ productId: item.productId });
+            if (existing) {
+              const balanceBefore = existing.currentStock;
+              const newStock = existing.currentStock + qty;
+              await inventory.updateOne({ productId: item.productId }, { $set: { currentStock: newStock, availableStock: existing.availableStock + qty, updatedAt: new Date() } });
+              await movements.insertOne({ productId: item.productId, type: 'in', quantity: qty, reason: 'shortage_resolution', referenceId: id, balanceBefore, balanceAfter: newStock, note: `Shortage resolved — PO ${po.poNumber}`, createdAt: new Date() });
+            }
+          }
+          await cashFlow.updateMany({ referenceId: id, referenceType: 'po_shortage' }, { $set: { resolved: true, resolvedAt: new Date(), resolveType: 'goods' } });
+          await orders.updateOne({ _id: new ObjectId(id) }, { $set: { shortageResolved: true, shortageResolvedAt: new Date(), shortageResolveType: 'goods', updatedAt: new Date() } });
+          return res.status(200).json({ success: true, message: 'Missing goods received. Stock updated.' });
+        }
+
+        return res.status(400).json({ error: 'resolveType must be "goods" or "refund"' });
       }
 
       // ── Record payment ──
@@ -267,10 +282,8 @@ export default async function handler(req, res) {
         if (po.status === 'received') {
           return res.status(400).json({ error: 'Cannot cancel a received PO' });
         }
-        await orders.updateOne(
-          { _id: new ObjectId(id) },
-          { $set: { status: 'cancelled', updatedAt: new Date() } }
-        );
+        await cashFlow.deleteMany({ referenceId: id, referenceType: 'po_advance' });
+        await orders.updateOne({ _id: new ObjectId(id) }, { $set: { status: 'cancelled', updatedAt: new Date() } });
         return res.status(200).json({ success: true });
       }
 
