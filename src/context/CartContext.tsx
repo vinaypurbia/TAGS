@@ -9,6 +9,10 @@ export interface CartItem {
 export interface CustomerDetails {
   name: string;
   phone: string;
+  whatsapp?: string;
+  email?: string;
+  address?: string;
+  customerId?: string; // MongoDB _id after registration
 }
 
 interface CartContextType {
@@ -20,15 +24,13 @@ interface CartContextType {
   totalItems: number;
   customer: CustomerDetails;
   setCustomer: (details: CustomerDetails) => void;
-  showRegistration: boolean;
-  setShowRegistration: (show: boolean) => void;
-  pendingProduct: Product | null;
-  setPendingProduct: (product: Product | null) => void;
+  showSignIn: boolean;
+  setShowSignIn: (show: boolean) => void;
 }
 
 const CartContext = createContext<CartContextType | undefined>(undefined);
 
-const STORAGE_KEY = 'playandgear_customer';
+const STORAGE_KEY = 'tags_customer';
 const CART_KEY = 'tags_cart';
 
 export function CartProvider({ children }: { children: ReactNode }) {
@@ -39,8 +41,7 @@ export function CartProvider({ children }: { children: ReactNode }) {
     } catch {}
     return [];
   });
-  const [showRegistration, setShowRegistration] = useState(false);
-  const [pendingProduct, setPendingProduct] = useState<Product | null>(null);
+  const [showSignIn, setShowSignIn] = useState(false);
   const [customer, setCustomerState] = useState<CustomerDetails>({ name: '', phone: '' });
 
   // Load saved customer from localStorage on mount
@@ -107,8 +108,7 @@ export function CartProvider({ children }: { children: ReactNode }) {
     <CartContext.Provider value={{
       items, addItem, removeItem, updateQuantity, clearCart, totalItems,
       customer, setCustomer,
-      showRegistration, setShowRegistration,
-      pendingProduct, setPendingProduct,
+      showSignIn, setShowSignIn,
     }}>
       {children}
     </CartContext.Provider>
