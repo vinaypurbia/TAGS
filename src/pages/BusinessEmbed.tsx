@@ -1323,53 +1323,66 @@ function PurchaseOrdersModule({ showMsg }: any) {
   const [pos, setPos] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
+  const [editingPO, setEditingPO] = useState<any>(null);
   const [products, setProducts] = useState<any[]>([]);
-  const [suppliers, setSuppliers] = useState<any[]>([]); // FIX #1
+  const [suppliers, setSuppliers] = useState<any[]>([]);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
   const [form, setForm] = useState({ supplierName: '', supplierContact: '', notes: '', expectedDate: '', items: [{ productId: '', productName: '', sku: '', quantity: '1', costPrice: '' }] });
+  const [advModal, setAdvModal] = useState<{ open: boolean; po: any | null }>({ open: false, po: null });
+  const [advForm, setAdvForm] = useState({ amount: '', paymentMode: 'cash', notes: '' });
+  const [recvModal, setRecvModal] = useState<{ open: boolean; po: any | null }>({ open: false, po: null });
+  const [recvItems, setRecvItems] = useState<any[]>([]);
+  const [recvPayMode, setRecvPayMode] = useState('cash');
+  const [resolveModal, setResolveModal] = useState<{ open: boolean; po: any | null }>({ open: false, po: null });
+  const [resolveForm, setResolveForm] = useState({ resolveType: 'refund', amount: '', paymentMode: 'cash', notes: '' });
 
   const fetchPOs = () => { setLoading(true); fetch('/api/purchase-orders').then(r => r.json()).then(data => setPos(Array.isArray(data) ? data : [])).catch(() => {}).finally(() => setLoading(false)); };
   useEffect(() => {
     fetchPOs();
     fetch('/api/products?limit=500&adminView=true').then(r => r.json()).then(data => setProducts(Array.isArray(data) ? data : (data.products || []))).catch(() => {});
-    fetch('/api/business?module=suppliers').then(r => r.json()).then(data => setSuppliers(Array.isArray(data) ? data : [])).catch(() => {}); // FIX #1
+    fetch('/api/business?module=suppliers').then(r => r.json()).then(data => setSuppliers(Array.isArray(data) ? data : [])).catch(() => {});
   }, []);
 
   const addItem = () => setForm(f => ({ ...f, items: [...f.items, { productId: '', productName: '', sku: '', quantity: '1', costPrice: '' }] }));
   const removeItem = (i: number) => setForm(f => ({ ...f, items: f.items.filter((_, idx) => idx !== i) }));
-  // FIX #3: handle __product__ key from ProductSearchRow
   const updateItem = (i: number, field: string, value: string) => {
     setForm(f => {
       const items = [...f.items];
-      if (field === '__product__') {
-        const p = JSON.parse(value);
-        items[i] = { ...items[i], productId: p._id, productName: p.name, sku: p.sku || '' };
-      } else {
-        items[i] = { ...items[i], [field]: value };
-      }
+      if (field === '__product__') { const p = JSON.parse(value); items[i] = { ...items[i], productId: p._id, productName: p.name, sku: p.sku || '' }; }
+      else { items[i] = { ...items[i], [field]: value }; }
       return { ...f, items };
     });
+  };
+
+  const openEdit = (po: any) => {
+    setEditingPO(po);
+    setForm({ supplierName: po.supplier?.name || '', supplierContact: po.supplier?.contact || '', notes: po.notes || '', expectedDate: po.expectedDate ? new Date(po.expectedDate).toISOString().split('T')[0] : '', items: po.items.map((i: any) => ({ productId: i.productId || '', productName: i.productName || '', sku: i.sku || '', quantity: String(i.quantity), costPrice: String(i.costPrice) })) });
+    setShowForm(true); setExpandedId(null);
   };
 
   const handleCreate = async () => {
     const validItems = form.items.filter(i => i.productName && i.quantity && i.costPrice);
     if (validItems.length === 0) { showMsg('Add at least one item with cost price.', 'error'); return; }
-    const payload = {
-      supplier: { name: form.supplierName, contact: form.supplierContact },
-      items: validItems.map(i => ({ productId: i.productId, productName: i.productName, sku: i.sku, quantity: parseInt(i.quantity), costPrice: parseFloat(i.costPrice) })),
-      notes: form.notes, expectedDate: form.expectedDate,
-    };
-    const res = await fetch('/api/purchase-orders', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-    const data = await res.json();
-    if (data.success) { showMsg(`✅ ${data.poNumber} created!`, 'success'); setShowForm(false); setForm({ supplierName: '', supplierContact: '', notes: '', expectedDate: '', items: [{ productId: '', productName: '', sku: '', quantity: '1', costPrice: '' }] }); fetchPOs(); }
-    else showMsg(data.error || 'Failed.', 'error');
+    const payload = { supplier: { name: form.supplierName, contact: form.supplierContact }, items: validItems.map(i => ({ productId: i.productId, productName: i.productName, sku: i.sku, quantity: parseInt(i.quantity), costPrice: parseFloat(i.costPrice) })), notes: form.notes, expectedDate: form.expectedDate };
+    if (editingPO) {
+      const res = await fetch('/api/purchase-orders', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: editingPO._id, action: 'update', ...payload }) });
+      const data = await res.json();
+      if (data.success) { showMsg('✅ PO updated!', 'success'); setShowForm(false); setEditingPO(null); setForm({ supplierName: '', supplierContact: '', notes: '', expectedDate: '', items: [{ productId: '', productName: '', sku: '', quantity: '1', costPrice: '' }] }); fetchPOs(); }
+      else showMsg(data.error || 'Failed.', 'error');
+    } else {
+      const res = await fetch('/api/purchase-orders', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      const data = await res.json();
+      if (data.success) { showMsg(`✅ ${data.poNumber} created!`, 'success'); setShowForm(false); setForm({ supplierName: '', supplierContact: '', notes: '', expectedDate: '', items: [{ productId: '', productName: '', sku: '', quantity: '1', costPrice: '' }] }); fetchPOs(); }
+      else showMsg(data.error || 'Failed.', 'error');
+    }
   };
 
-  const handleAction = async (id: string, action: string) => {
-    const res = await fetch('/api/purchase-orders', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id, action }) });
+  const handleAction = async (id: string, action: string, extra: any = {}) => {
+    const res = await fetch('/api/purchase-orders', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id, action, ...extra }) });
     const data = await res.json();
-    const msgs: any = { order: 'PO marked as ordered!', receive: '✅ Stock received & inventory updated!', cancel: 'PO cancelled.' };
-    if (data.success) { showMsg(msgs[action] || 'Updated!', 'success'); fetchPOs(); }
+    if (data.success) { showMsg(data.message || ({ order: 'PO marked as ordered!', cancel: 'PO cancelled.' } as any)[action] || 'Updated!', 'success'); fetchPOs(); }
     else showMsg(data.error || 'Failed.', 'error');
+    return data;
   };
 
   const deletePO = async (id: string) => {
@@ -1378,47 +1391,61 @@ function PurchaseOrdersModule({ showMsg }: any) {
     showMsg('PO deleted.', 'success'); fetchPOs();
   };
 
+  const submitAdvance = async () => {
+    if (!advForm.amount || Number(advForm.amount) <= 0) { showMsg('Enter a valid amount.', 'error'); return; }
+    const data = await handleAction(advModal.po._id, 'advance_payment', { amount: Number(advForm.amount), paymentMode: advForm.paymentMode, notes: advForm.notes });
+    if (data.success) { setAdvModal({ open: false, po: null }); setAdvForm({ amount: '', paymentMode: 'cash', notes: '' }); }
+  };
+
+  const openReceive = (po: any) => {
+    setRecvItems(po.items.map((i: any) => ({ ...i, quantityReceived: i.quantity, damageNotes: '' })));
+    setRecvPayMode('cash'); setRecvModal({ open: true, po });
+  };
+
+  const submitReceive = async () => {
+    const data = await handleAction(recvModal.po._id, 'receive', { receivedItems: recvItems, paymentMode: recvPayMode });
+    if (data.success) {
+      setRecvModal({ open: false, po: null });
+      if (data.shortageItems?.length > 0) showMsg(`⚠️ Stock received with shortage of ₹${Number(data.totalShortageValue || 0).toFixed(2)} — recorded against ${recvModal.po?.supplier?.name || 'supplier'}.`, 'error');
+    }
+  };
+
+  const submitResolve = async () => {
+    const data = await handleAction(resolveModal.po._id, 'resolve_shortage', { resolveType: resolveForm.resolveType, amount: Number(resolveForm.amount), paymentMode: resolveForm.paymentMode, notes: resolveForm.notes });
+    if (data.success) { setResolveModal({ open: false, po: null }); setResolveForm({ resolveType: 'refund', amount: '', paymentMode: 'cash', notes: '' }); }
+  };
+
   const poStatusColor: any = { draft: 'bg-gray-100 text-gray-600', ordered: 'bg-blue-100 text-blue-700', received: 'bg-green-100 text-green-700', cancelled: 'bg-red-100 text-red-600' };
 
   return (
     <div className="space-y-4">
       <div className="flex justify-between items-center">
         <p className="text-sm text-gray-500 font-bold">{pos.length} purchase orders</p>
-        <button onClick={() => setShowForm(!showForm)} className="flex items-center gap-2 bg-[#FA5600] text-white font-black text-xs uppercase tracking-widest px-4 py-2 rounded-xl hover:bg-[#E04A00] transition">
+        <button onClick={() => { setShowForm(!showForm); setEditingPO(null); setForm({ supplierName: '', supplierContact: '', notes: '', expectedDate: '', items: [{ productId: '', productName: '', sku: '', quantity: '1', costPrice: '' }] }); }}
+          className="flex items-center gap-2 bg-[#FA5600] text-white font-black text-xs uppercase tracking-widest px-4 py-2 rounded-xl hover:bg-[#E04A00] transition">
           <Plus className="w-4 h-4" /> New PO
         </button>
       </div>
 
       {showForm && (
         <div className="bg-white rounded-2xl border-2 border-[#FA5600] p-5 space-y-4">
-          <h3 className="font-black text-sm uppercase tracking-widest text-gray-800">New Purchase Order</h3>
+          <h3 className="font-black text-sm uppercase tracking-widest text-gray-800">{editingPO ? `Edit ${editingPO.poNumber}` : 'New Purchase Order'}</h3>
+          {editingPO && <p className="text-xs text-blue-600 font-bold bg-blue-50 rounded-lg px-3 py-2">✏️ Editing an {editingPO.status} PO — changes will update items and totals.</p>}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <div>
-              <label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">Supplier Name</label>
-              {/* FIX #1+2: supplier autocomplete, auto-fills contact */}
-              <SupplierSearchInput
-                value={form.supplierName}
-                suppliers={suppliers}
-                onChange={(name, contact) => setForm(f => ({ ...f, supplierName: name, supplierContact: contact || f.supplierContact }))}
-              />
+            <div><label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">Supplier Name</label>
+              <SupplierSearchInput value={form.supplierName} suppliers={suppliers} onChange={(name, contact) => setForm(f => ({ ...f, supplierName: name, supplierContact: contact || f.supplierContact }))} />
             </div>
-            <div>
-              <label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">Contact</label>
+            <div><label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">Contact</label>
               <input value={form.supplierContact} onChange={e => setForm(f => ({ ...f, supplierContact: e.target.value }))} placeholder="Phone" className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none" />
             </div>
-            <div>
-              <label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">Expected Date</label>
+            <div><label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">Expected Date</label>
               <input type="date" value={form.expectedDate} onChange={e => setForm(f => ({ ...f, expectedDate: e.target.value }))} className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none" />
             </div>
           </div>
           <div>
             <label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-2">Items *</label>
             <div className="space-y-2">
-              {/* FIX #3+4: searchable product picker, removes redundant Name input */}
-              {form.items.map((item, i) => (
-                <ProductSearchRow key={i} item={item} index={i} products={products}
-                  onUpdate={updateItem} onRemove={removeItem} showCost={true} />
-              ))}
+              {form.items.map((item, i) => (<ProductSearchRow key={i} item={item} index={i} products={products} onUpdate={updateItem} onRemove={removeItem} showCost={true} />))}
             </div>
             <button onClick={addItem} className="mt-2 text-xs text-[#FA5600] font-black uppercase tracking-widest flex items-center gap-1 hover:underline"><Plus className="w-3 h-3" /> Add Item</button>
           </div>
@@ -1426,14 +1453,12 @@ function PurchaseOrdersModule({ showMsg }: any) {
             <p className="text-xs text-gray-500 font-bold uppercase">Total Cost</p>
             <p className="text-2xl font-black text-[#FA5600]">{fmt(form.items.reduce((s, i) => s + (parseFloat(i.costPrice || '0') * parseInt(i.quantity || '1')), 0))}</p>
           </div>
-          {/* FIX #5: Notes was in state & API payload but had no UI input */}
-          <div>
-            <label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">Notes</label>
+          <div><label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">Notes</label>
             <input value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} placeholder="Any notes for this PO..." className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none" />
           </div>
           <div className="flex gap-2">
-            <button onClick={() => withDupCheck(`po-create-${form.supplierName}-${form.items.map(i=>i.productName).join('|')}`, 'Create PO', handleCreate)} className="flex-1 bg-[#FA5600] text-white font-black text-sm uppercase tracking-widest py-3 rounded-xl hover:bg-[#E04A00] transition">Create PO</button>
-            <button onClick={() => setShowForm(false)} className="px-4 bg-gray-100 text-gray-600 font-bold text-sm rounded-xl">Cancel</button>
+            <button onClick={() => withDupCheck(`po-save-${form.supplierName}`, editingPO ? 'Update PO' : 'Create PO', handleCreate)} className="flex-1 bg-[#FA5600] text-white font-black text-sm uppercase tracking-widest py-3 rounded-xl hover:bg-[#E04A00] transition">{editingPO ? 'Update PO' : 'Create PO'}</button>
+            <button onClick={() => { setShowForm(false); setEditingPO(null); }} className="px-4 bg-gray-100 text-gray-600 font-bold text-sm rounded-xl">Cancel</button>
           </div>
         </div>
       )}
@@ -1441,31 +1466,213 @@ function PurchaseOrdersModule({ showMsg }: any) {
       {loading ? <LoadingCards count={3} /> : pos.length === 0 ? <EmptyState icon="📦" text="No purchase orders yet" /> : (
         <div className="space-y-3">
           {pos.map(po => (
-            <div key={po._id} className="bg-white rounded-xl border border-gray-200 p-4">
-              <div className="flex items-start justify-between gap-3 mb-3">
+            <div key={po._id} className={`bg-white rounded-xl border-2 transition-all ${expandedId === po._id ? 'border-[#FA5600]' : 'border-gray-200'}`}>
+              <div className="flex items-start justify-between gap-3 p-4 cursor-pointer" onClick={() => setExpandedId(expandedId === po._id ? null : po._id)}>
                 <div>
                   <p className="font-black text-sm text-gray-900">{po.poNumber}</p>
-                  <p className="text-xs text-gray-400">{po.supplier?.name || 'No supplier'} · {po.items?.length} items</p>
+                  <p className="text-xs text-gray-400">{po.supplier?.name || 'No supplier'} · {po.items?.length} item{po.items?.length !== 1 ? 's' : ''}</p>
                   <p className="text-xs text-gray-400">{new Date(po.createdAt).toLocaleDateString('en-IN')}</p>
+                  {po.notes && <p className="text-xs text-gray-400 italic mt-0.5">"{po.notes}"</p>}
                 </div>
-                <div className="text-right">
+                <div className="text-right shrink-0">
                   <p className="font-black text-lg text-[#FA5600]">{fmt(po.totalAmount)}</p>
                   <span className={`text-[10px] font-black uppercase px-2 py-0.5 rounded-full ${poStatusColor[po.status] || 'bg-gray-100 text-gray-600'}`}>{po.status}</span>
+                  {po.shortageStatus === 'has_shortage' && !po.shortageResolved && <p className="text-[10px] text-red-500 font-black mt-0.5">⚠️ SHORTAGE</p>}
                 </div>
               </div>
-              <div className="flex gap-2 flex-wrap">
-                {po.status === 'draft' && (<><button onClick={() => withDupCheck(`po-order-${po._id}`, 'Mark Ordered', () => handleAction(po._id, 'order'))} className="text-xs bg-blue-500 text-white font-bold px-3 py-1 rounded-full hover:bg-blue-600 transition">Mark Ordered</button><button onClick={() => deletePO(po._id)} className="text-xs bg-red-50 text-red-500 font-bold px-3 py-1 rounded-full hover:bg-red-100 transition">Delete</button></>)}
-                {po.status === 'ordered' && (<><button onClick={() => withDupCheck(`po-receive-${po._id}`, 'Receive Stock', () => handleAction(po._id, 'receive'))} className="text-xs bg-green-500 text-white font-bold px-3 py-1 rounded-full hover:bg-green-600 transition">✓ Receive Stock</button><button onClick={() => handleAction(po._id, 'cancel')} className="text-xs bg-gray-100 text-gray-600 font-bold px-3 py-1 rounded-full hover:bg-gray-200 transition">Cancel</button></>)}
-              </div>
+
+              {expandedId === po._id && (
+                <div className="border-t border-gray-100 p-4 space-y-4">
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-2">Items</p>
+                    <div className="space-y-1.5">
+                      {po.items?.map((item: any, i: number) => (
+                        <div key={i} className="flex justify-between items-center bg-gray-50 rounded-lg px-3 py-2">
+                          <div><p className="text-xs font-bold text-gray-800">{item.productName}</p><p className="text-[10px] text-gray-400">Cost: {fmt(item.costPrice)} · Qty: {item.quantity}</p></div>
+                          <p className="font-black text-xs text-[#FA5600]">{fmt(item.totalCost)}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {(po.paidAmount > 0 || po.dueAmount > 0) && (
+                    <div className="grid grid-cols-3 gap-2">
+                      <div className="bg-orange-50 rounded-lg p-2 text-center"><p className="font-black text-sm text-[#FA5600]">{fmt(po.totalAmount)}</p><p className="text-[9px] text-gray-400 uppercase font-bold">Total</p></div>
+                      <div className="bg-green-50 rounded-lg p-2 text-center"><p className="font-black text-sm text-green-600">{fmt(po.paidAmount)}</p><p className="text-[9px] text-gray-400 uppercase font-bold">Paid</p></div>
+                      <div className="bg-red-50 rounded-lg p-2 text-center"><p className="font-black text-sm text-red-600">{fmt(po.dueAmount)}</p><p className="text-[9px] text-gray-400 uppercase font-bold">Due</p></div>
+                    </div>
+                  )}
+
+                  {po.shortageItems?.length > 0 && (
+                    <div className={`rounded-xl border p-3 space-y-2 ${po.shortageResolved ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}>
+                      <p className="text-xs font-black uppercase tracking-widest text-red-700">{po.shortageResolved ? '✅ Shortage Resolved' : '⚠️ Shortage / Damage Recorded'}</p>
+                      {po.shortageItems.map((s: any, i: number) => (
+                        <div key={i} className="flex justify-between text-xs">
+                          <span className="text-gray-700 font-bold">{s.productName}</span>
+                          <span className="text-red-600 font-black">{s.orderedQty} ordered · {s.receivedQty} received · {s.shortageQty} short — {fmt(s.shortageValue)}{s.damageNotes && <span className="text-gray-400 font-normal"> ({s.damageNotes})</span>}</span>
+                        </div>
+                      ))}
+                      <div className="flex justify-between font-black text-sm pt-1 border-t border-red-200">
+                        <span className="text-red-700">Owed by {po.supplier?.name || 'supplier'}</span>
+                        <span className="text-red-700">{fmt(po.shortageValue)}</span>
+                      </div>
+                      {po.shortageResolveType && <p className="text-[10px] text-green-600 font-bold">Resolved via {po.shortageResolveType === 'refund' ? `refund of ${fmt(po.shortageRefundAmount)}` : 'goods received'} on {new Date(po.shortageResolvedAt).toLocaleDateString('en-IN')}</p>}
+                    </div>
+                  )}
+
+                  <div className="flex gap-2 flex-wrap pt-1">
+                    {['draft', 'ordered'].includes(po.status) && (
+                      <button onClick={() => openEdit(po)} className="flex items-center gap-1 text-xs text-blue-500 font-bold border border-blue-200 px-3 py-1.5 rounded-full hover:bg-blue-50 transition">
+                        <Edit2 className="w-3 h-3" /> Edit PO
+                      </button>
+                    )}
+                    {po.status === 'draft' && (
+                      <>
+                        <button onClick={() => withDupCheck(`po-order-${po._id}`, 'Mark Ordered', () => handleAction(po._id, 'order'))} className="text-xs bg-blue-500 text-white font-bold px-3 py-1.5 rounded-full hover:bg-blue-600 transition">Mark Ordered</button>
+                        <button onClick={() => deletePO(po._id)} className="text-xs bg-red-50 text-red-500 font-bold px-3 py-1.5 rounded-full hover:bg-red-100 transition">Delete</button>
+                      </>
+                    )}
+                    {po.status === 'ordered' && (
+                      <>
+                        <button onClick={() => { setAdvModal({ open: true, po }); setAdvForm({ amount: String(po.dueAmount || po.totalAmount), paymentMode: 'cash', notes: '' }); }} className="text-xs bg-yellow-500 text-white font-bold px-3 py-1.5 rounded-full hover:bg-yellow-600 transition">💰 Advance Payment</button>
+                        <button onClick={() => openReceive(po)} className="text-xs bg-green-500 text-white font-bold px-3 py-1.5 rounded-full hover:bg-green-600 transition">✓ Receive Stock</button>
+                        <button onClick={() => handleAction(po._id, 'cancel')} className="text-xs bg-gray-100 text-gray-600 font-bold px-3 py-1.5 rounded-full hover:bg-gray-200 transition">Cancel</button>
+                      </>
+                    )}
+                    {po.status === 'received' && po.shortageItems?.length > 0 && !po.shortageResolved && (
+                      <button onClick={() => { setResolveModal({ open: true, po }); setResolveForm({ resolveType: 'refund', amount: String(po.shortageValue || ''), paymentMode: 'cash', notes: '' }); }} className="text-xs bg-orange-500 text-white font-bold px-3 py-1.5 rounded-full hover:bg-orange-600 transition">🔧 Resolve Shortage</button>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Advance Payment Modal */}
+      {advModal.open && advModal.po && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 space-y-4">
+            <div className="flex justify-between items-start">
+              <div><h3 className="font-black text-gray-900 text-sm uppercase tracking-widest">Advance Payment</h3><p className="text-xs text-gray-400 mt-0.5">{advModal.po.poNumber} · {advModal.po.supplier?.name}</p><p className="text-xs text-gray-400">Total: {fmt(advModal.po.totalAmount)} · Due: {fmt(advModal.po.dueAmount)}</p></div>
+              <button onClick={() => setAdvModal({ open: false, po: null })} className="text-gray-400 hover:text-gray-600 font-black text-xl">✕</button>
+            </div>
+            <div className="space-y-3">
+              <div><label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">Amount Paid (₹) *</label>
+                <input type="number" value={advForm.amount} onChange={e => setAdvForm(f => ({ ...f, amount: e.target.value }))} placeholder="Enter amount" className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none" />
+              </div>
+              <div><label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">Payment Mode</label>
+                <select value={advForm.paymentMode} onChange={e => setAdvForm(f => ({ ...f, paymentMode: e.target.value }))} className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none bg-white">
+                  <option value="cash">Cash</option><option value="upi">UPI</option><option value="bank">Bank Transfer</option><option value="cheque">Cheque</option>
+                </select>
+              </div>
+              <div><label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">Notes</label>
+                <input value={advForm.notes} onChange={e => setAdvForm(f => ({ ...f, notes: e.target.value }))} placeholder="e.g. 50% advance as agreed" className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none" />
+              </div>
+            </div>
+            <div className="bg-yellow-50 rounded-xl px-3 py-2 text-xs font-bold text-yellow-700">This will be recorded as an advance expense in Cash Flow, linked to {advModal.po.poNumber}.</div>
+            <div className="flex gap-3">
+              <button onClick={() => setAdvModal({ open: false, po: null })} className="flex-1 py-2.5 rounded-xl border-2 border-gray-200 text-xs font-black text-gray-500">Cancel</button>
+              <button onClick={submitAdvance} className="flex-1 py-2.5 rounded-xl bg-[#FA5600] text-white text-xs font-black uppercase tracking-widest hover:bg-[#E04A00] transition">Record Payment</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Receive Stock Modal */}
+      {recvModal.open && recvModal.po && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4 overflow-y-auto">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg p-6 space-y-4 my-4">
+            <div className="flex justify-between items-start">
+              <div><h3 className="font-black text-gray-900 text-sm uppercase tracking-widest">Receive Stock</h3><p className="text-xs text-gray-400 mt-0.5">{recvModal.po.poNumber} · {recvModal.po.supplier?.name}</p></div>
+              <button onClick={() => setRecvModal({ open: false, po: null })} className="text-gray-400 hover:text-gray-600 font-black text-xl">✕</button>
+            </div>
+            <p className="text-xs text-blue-600 font-bold bg-blue-50 rounded-lg px-3 py-2">Enter actual quantity received per item. Reduce if short or damaged and add a note — the shortage will be recorded against the supplier.</p>
+            <div className="space-y-3">
+              {recvItems.map((item, i) => (
+                <div key={i} className="bg-gray-50 rounded-xl p-3 space-y-2">
+                  <div className="flex justify-between items-center">
+                    <p className="text-sm font-black text-gray-800">{item.productName}</p>
+                    <span className="text-xs text-gray-400 font-bold">Ordered: {item.quantity} · {fmt(item.costPrice)} each</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div><label className="block text-[10px] font-black uppercase tracking-widest text-gray-400 mb-1">Qty Received *</label>
+                      <input type="number" min="0" max={item.quantity} value={item.quantityReceived}
+                        onChange={e => setRecvItems(items => items.map((it, idx) => idx === i ? { ...it, quantityReceived: Number(e.target.value) } : it))}
+                        className="w-full border-2 border-gray-200 rounded-lg px-2 py-1.5 text-sm font-bold focus:border-[#FA5600] outline-none" />
+                    </div>
+                    <div><label className="block text-[10px] font-black uppercase tracking-widest text-gray-400 mb-1">Damage / Shortage Note</label>
+                      <input value={item.damageNotes} onChange={e => setRecvItems(items => items.map((it, idx) => idx === i ? { ...it, damageNotes: e.target.value } : it))}
+                        placeholder="e.g. 2 pcs damaged" className="w-full border-2 border-gray-200 rounded-lg px-2 py-1.5 text-sm font-bold focus:border-[#FA5600] outline-none" />
+                    </div>
+                  </div>
+                  {Number(item.quantityReceived) < Number(item.quantity) && (
+                    <p className="text-[10px] text-red-500 font-bold">⚠️ Shortage: {Number(item.quantity) - Number(item.quantityReceived)} units · {fmt((Number(item.quantity) - Number(item.quantityReceived)) * Number(item.costPrice))} owed by {recvModal.po.supplier?.name || 'supplier'}</p>
+                  )}
+                </div>
+              ))}
+            </div>
+            <div><label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">Balance Payment Mode</label>
+              <select value={recvPayMode} onChange={e => setRecvPayMode(e.target.value)} className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none bg-white">
+                <option value="cash">Cash</option><option value="upi">UPI</option><option value="bank">Bank Transfer</option><option value="cheque">Cheque</option>
+              </select>
+            </div>
+            {recvModal.po.paidAmount > 0 && <div className="bg-green-50 rounded-xl px-3 py-2 text-xs font-bold text-green-700">✅ Advance of {fmt(recvModal.po.paidAmount)} already paid — only the balance will be added to Cash Flow.</div>}
+            <div className="flex gap-3">
+              <button onClick={() => setRecvModal({ open: false, po: null })} className="flex-1 py-2.5 rounded-xl border-2 border-gray-200 text-xs font-black text-gray-500">Cancel</button>
+              <button onClick={submitReceive} className="flex-1 py-2.5 rounded-xl bg-green-500 text-white text-xs font-black uppercase tracking-widest hover:bg-green-600 transition">Confirm Receipt</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Shortage Resolution Modal */}
+      {resolveModal.open && resolveModal.po && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 space-y-4">
+            <div className="flex justify-between items-start">
+              <div><h3 className="font-black text-gray-900 text-sm uppercase tracking-widest">Resolve Shortage</h3><p className="text-xs text-gray-400 mt-0.5">{resolveModal.po.poNumber} · {resolveModal.po.supplier?.name}</p><p className="text-xs text-red-500 font-bold">Outstanding: {fmt(resolveModal.po.shortageValue)}</p></div>
+              <button onClick={() => setResolveModal({ open: false, po: null })} className="text-gray-400 hover:text-gray-600 font-black text-xl">✕</button>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              {[{ value: 'refund', label: '💵 Refund', desc: 'Supplier paid back' }, { value: 'goods', label: '📦 Goods Sent', desc: 'Missing items arrived' }].map(opt => (
+                <button key={opt.value} onClick={() => setResolveForm(f => ({ ...f, resolveType: opt.value }))} className={`p-3 rounded-xl border-2 text-left transition ${resolveForm.resolveType === opt.value ? 'border-[#FA5600] bg-orange-50' : 'border-gray-200 hover:border-gray-300'}`}>
+                  <p className="font-black text-xs text-gray-800">{opt.label}</p><p className="text-[10px] text-gray-400">{opt.desc}</p>
+                </button>
+              ))}
+            </div>
+            {resolveForm.resolveType === 'refund' && (
+              <div className="space-y-3">
+                <div><label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">Refund Amount (₹)</label>
+                  <input type="number" value={resolveForm.amount} onChange={e => setResolveForm(f => ({ ...f, amount: e.target.value }))} placeholder={String(resolveModal.po.shortageValue)} className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none" />
+                </div>
+                <div><label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">Payment Mode</label>
+                  <select value={resolveForm.paymentMode} onChange={e => setResolveForm(f => ({ ...f, paymentMode: e.target.value }))} className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none bg-white">
+                    <option value="cash">Cash</option><option value="upi">UPI</option><option value="bank">Bank Transfer</option>
+                  </select>
+                </div>
+              </div>
+            )}
+            {resolveForm.resolveType === 'goods' && (
+              <div className="bg-blue-50 rounded-xl p-3">
+                <p className="text-xs font-bold text-blue-700">All shortage items will be added to inventory.</p>
+                <div className="mt-2 space-y-1">{resolveModal.po.shortageItems?.map((s: any, i: number) => (<p key={i} className="text-xs text-gray-600">• {s.productName} — {s.shortageQty} units</p>))}</div>
+              </div>
+            )}
+            <div><label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">Notes</label>
+              <input value={resolveForm.notes} onChange={e => setResolveForm(f => ({ ...f, notes: e.target.value }))} placeholder="Any notes..." className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none" />
+            </div>
+            <div className="flex gap-3">
+              <button onClick={() => setResolveModal({ open: false, po: null })} className="flex-1 py-2.5 rounded-xl border-2 border-gray-200 text-xs font-black text-gray-500">Cancel</button>
+              <button onClick={submitResolve} className="flex-1 py-2.5 rounded-xl bg-[#FA5600] text-white text-xs font-black uppercase tracking-widest hover:bg-[#E04A00] transition">Confirm Resolution</button>
+            </div>
+          </div>
         </div>
       )}
     </div>
   );
 }
-
-// ─── CASHFLOW ────────────────────────────────────────────────────────────────
 function CashflowModule({ showMsg }: any) {
   const [data, setData] = useState<any>({ entries: [], summary: {} });
   const [loading, setLoading] = useState(true);
