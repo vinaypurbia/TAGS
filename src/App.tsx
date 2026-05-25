@@ -16,6 +16,7 @@ import { ManageCategories } from './pages/ManageCategories';
 import { Contact } from './pages/Contact';
 import { AdminPanel } from './pages/AdminPanel';
 import EditProductForm from './pages/EditProductForm';
+import { MyAccount } from './pages/MyAccount';
 
 // Captures the install prompt on Android Chrome
 let deferredInstallPrompt: any = null;
@@ -292,6 +293,7 @@ function AppShell() {
                 <Route path="/order" element={<OrderSummary />} />
                 <Route path="/manage-categories" element={<ManageCategories />} />
                 <Route path="/contact" element={<Contact />} />
+                <Route path="/account" element={<MyAccount />} />
                 <Route path="*" element={<Home />} />
               </Routes>
             </Layout>
