@@ -1,4 +1,5 @@
 import { ReactNode, useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { Link, useNavigate } from 'react-router-dom';
 import { ShoppingBag, Phone, Mail, MapPin, Search } from 'lucide-react';
 import { useCart } from '../context/CartContext';
@@ -218,7 +219,7 @@ export function Layout({ children }: { children: ReactNode }) {
         </div>
       </footer>
       <CustomerRegistrationModal />
-      <ChatBot />
+      {createPortal(<ChatBot />, document.body)}
     </div>
   );
 }
