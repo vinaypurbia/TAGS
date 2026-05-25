@@ -249,13 +249,16 @@ export function ChatBot() {
   const [typing, setTyping] = useState(false);
   const [unread, setUnread] = useState(0);
   const [peekDismissed, setPeekDismissed] = useState(false);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const initialized = useRef(false);
 
   // Scroll to bottom on new messages
   useEffect(() => {
-    if (!messagesEndRef.current) return;
-    messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    try {
+      const el = messagesEndRef.current;
+      if (el) el.scrollIntoView({ behavior: 'smooth' });
+    } catch (_) {}
   }, [messages, typing]);
 
   // Focus input when opened
