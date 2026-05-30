@@ -1387,8 +1387,13 @@ function PurchaseOrdersModule({ showMsg }: any) {
     return data;
   };
 
-  const deletePO = async (id: string) => {
-    if (!confirm('Delete this draft PO?')) return;
+  const deletePO = async (id: string, poNumber: string, status: string) => {
+    const warn = status === 'received'
+      ? `Delete ${poNumber}? This will remove the PO and all its cash flow entries. Stock already received will NOT be reversed.`
+      : status === 'ordered'
+      ? `Delete ${poNumber}? This will remove the PO and all advance/payment entries from cash flow.`
+      : `Delete ${poNumber}?`;
+    if (!confirm(warn)) return;
     await fetch('/api/purchase-orders', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
     showMsg('PO deleted.', 'success'); fetchPOs();
   };
@@ -1531,7 +1536,7 @@ function PurchaseOrdersModule({ showMsg }: any) {
                     {po.status === 'draft' && (
                       <>
                         <button onClick={() => withDupCheck(`po-order-${po._id}`, 'Mark Ordered', () => handleAction(po._id, 'order'))} className="text-xs bg-blue-500 text-white font-bold px-3 py-1.5 rounded-full hover:bg-blue-600 transition">Mark Ordered</button>
-                        <button onClick={() => deletePO(po._id)} className="text-xs bg-red-50 text-red-500 font-bold px-3 py-1.5 rounded-full hover:bg-red-100 transition">Delete</button>
+                        <button onClick={() => deletePO(po._id, po.poNumber, po.status)} className="text-xs bg-red-50 text-red-500 font-bold px-3 py-1.5 rounded-full hover:bg-red-100 transition">Delete</button>
                       </>
                     )}
                     {po.status === 'ordered' && (
@@ -1539,10 +1544,14 @@ function PurchaseOrdersModule({ showMsg }: any) {
                         <button onClick={() => { setAdvModal({ open: true, po }); setAdvForm({ amount: String(po.dueAmount || po.totalAmount), paymentMode: 'cash', notes: '' }); }} className="text-xs bg-yellow-500 text-white font-bold px-3 py-1.5 rounded-full hover:bg-yellow-600 transition">💰 Advance Payment</button>
                         <button onClick={() => openReceive(po)} className="text-xs bg-green-500 text-white font-bold px-3 py-1.5 rounded-full hover:bg-green-600 transition">✓ Receive Stock</button>
                         <button onClick={() => handleAction(po._id, 'cancel')} className="text-xs bg-gray-100 text-gray-600 font-bold px-3 py-1.5 rounded-full hover:bg-gray-200 transition">Cancel</button>
+                        <button onClick={() => deletePO(po._id, po.poNumber, po.status)} className="text-xs bg-red-50 text-red-500 font-bold px-3 py-1.5 rounded-full hover:bg-red-100 transition">Delete</button>
                       </>
                     )}
                     {po.status === 'received' && po.shortageItems?.length > 0 && !po.shortageResolved && (
                       <button onClick={() => { setResolveModal({ open: true, po }); setResolveForm({ resolveType: 'refund', amount: String(po.shortageValue || ''), paymentMode: 'cash', notes: '' }); }} className="text-xs bg-orange-500 text-white font-bold px-3 py-1.5 rounded-full hover:bg-orange-600 transition">🔧 Resolve Shortage</button>
+                    )}
+                    {(po.status === 'received' || po.status === 'cancelled') && (
+                      <button onClick={() => deletePO(po._id, po.poNumber, po.status)} className="text-xs bg-red-50 text-red-500 font-bold px-3 py-1.5 rounded-full hover:bg-red-100 transition">Delete</button>
                     )}
                   </div>
                 </div>
