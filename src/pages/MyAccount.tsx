@@ -2,6 +2,9 @@ import { useState, useEffect } from 'react';
 import { useCart } from '../context/CartContext';
 import { Phone, Mail, MapPin, MessageCircle, Package, Clock, CheckCircle, XCircle, Loader, Edit2, Save, X } from 'lucide-react';
 
+// Your business WhatsApp number (with country code, no + or spaces)
+const BUSINESS_WHATSAPP = '916350021226';
+
 const STATUS_STYLES: Record<string, { color: string; icon: any; label: string }> = {
   pending:   { color: 'bg-yellow-100 text-yellow-700', icon: Clock,         label: 'Pending' },
   confirmed: { color: 'bg-blue-100 text-blue-700',    icon: CheckCircle,    label: 'Confirmed' },
@@ -70,6 +73,36 @@ export function MyAccount() {
       }
     } catch { setError('Failed to save. Please try again.'); }
     finally { setSaving(false); }
+  }
+
+  function resendOnWhatsApp(order: any) {
+    const orderId = order.saleNumber || order.orderId || 'N/A';
+    const date = new Date(order.date || order.createdAt).toLocaleDateString('en-IN', {
+      day: 'numeric', month: 'short', year: 'numeric'
+    });
+    const itemLines = (order.items || [])
+      .map((item: any) => `  • ${item.quantity}x ${item.productName || item.name} — ₹${((item.price || 0) * (item.quantity || 1)).toLocaleString('en-IN')}`)
+      .join('\n');
+    const total = (order.totalAmount || order.subtotal || 0).toLocaleString('en-IN');
+    const address = profile?.address ? `\n📍 *Delivery Address:* ${profile.address}` : '';
+
+    const message =
+`🛒 *Order Resend Request*
+
+📦 *Order ID:* ${orderId}
+📅 *Date:* ${date}
+👤 *Name:* ${profile?.name || customer.name}
+📞 *Phone:* ${customer.phone}${address}
+
+*Items:*
+${itemLines}
+
+💰 *Total: ₹${total}*
+
+_Please confirm availability and delivery timeline. Thank you!_`;
+
+    const url = `https://wa.me/${BUSINESS_WHATSAPP}?text=${encodeURIComponent(message)}`;
+    window.open(url, '_blank');
   }
 
   function signOut() {
@@ -221,6 +254,18 @@ export function MyAccount() {
                       <p className="font-black text-sm text-[#FA5600]">₹{(order.totalAmount || order.subtotal || 0).toLocaleString('en-IN')}</p>
                     </div>
                   </div>
+                  {/* Resend on WhatsApp — only for pending/confirmed orders */}
+                  {(order.status === 'pending' || order.status === 'confirmed') && (
+                    <div className="mt-3 pt-3 border-t border-gray-100">
+                      <button
+                        onClick={() => resendOnWhatsApp(order)}
+                        className="flex items-center gap-1.5 text-[11px] font-black uppercase tracking-widest text-green-600 hover:text-green-700 bg-green-50 hover:bg-green-100 px-3 py-1.5 rounded-lg transition"
+                      >
+                        <MessageCircle className="w-3.5 h-3.5" />
+                        Resend on WhatsApp
+                      </button>
+                    </div>
+                  )}
                 </div>
               );
             })}
