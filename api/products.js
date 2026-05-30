@@ -163,6 +163,27 @@ async function enrichWithStock(p, inventory) {
   return p;
 }
 
+// ── Helper: strip Cloudinary transformation params from URL ──────────────────
+// Telegram requires a clean, direct image URL with no transformation segments.
+// Cloudinary URLs look like: /upload/w_800,h_800,c_limit,q_auto/v1778.../file.jpg
+// We strip everything between /upload/ and the version (v\d+) or filename.
+function cleanCloudinaryUrl(url) {
+  if (!url) return '';
+  try {
+    // Strip transformation segments — anything between /upload/ and /vNUMBER/ or /filename
+    let clean = url
+      // Case 1: has version number — remove all segments between /upload/ and /vNUMBER/
+      .replace(/\/upload\/(?:[^/]+\/)*?(v\d+\/)/, '/upload/$1')
+      // Case 2: no version number — remove single transformation segment
+      .replace(/\/upload\/[^/]+\/(?!v\d)/, '/upload/')
+      // Remove any query string
+      .replace(/\?.*$/, '');
+    return clean;
+  } catch {
+    return url;
+  }
+}
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
@@ -307,46 +328,37 @@ export default async function handler(req, res) {
       const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
       const BASE    = `https://api.telegram.org/bot${TOKEN}`;
 
-      // Clean Cloudinary URL — remove transformation params so Telegram can fetch it
-      const cleanImageUrl = (url) => {
-        if (!url) return '';
-        try {
-          // Remove Cloudinary transformations between /upload/ and the filename
-          // e.g. /upload/w_800,h_800,c_limit,q_auto/v123/filename.jpg → /upload/v123/filename.jpg
-          let clean = url.replace(/\/upload\/(?:[^/]+\/)+(?=v\d+\/)/, '/upload/');
-          // If no version number, just strip everything between /upload/ and the filename
-          clean = clean.replace(/\/upload\/[a-z0-9_,]+\/(?!v\d)/, '/upload/');
-          // Force jpg extension for webp/avif
-          clean = clean.replace(/\.(webp|avif)(\?.*)?$/, '.jpg');
-          return clean;
-        } catch {
-          return url;
-        }
-      };
+      if (!TOKEN || !CHAT_ID) {
+        return res.status(500).json({ error: 'Telegram credentials missing — check TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID env vars' });
+      }
 
       try {
-        let imageSent = false;
-        if (imageUrl) {
-          const clean = cleanImageUrl(imageUrl);
-          console.log('Sending image URL to Telegram:', clean);
+        const clean = cleanCloudinaryUrl(imageUrl);
+        console.log('[Broadcast] chat_id:', CHAT_ID);
+        console.log('[Broadcast] image URL (cleaned):', clean);
 
-          const pr = await fetch(`${BASE}/sendPhoto`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ chat_id: CHAT_ID, photo: clean }),
-          });
-          const pd = await pr.json();
+        // Send image + caption together as one Telegram message
+        const photoRes = await fetch(`${BASE}/sendPhoto`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            chat_id: CHAT_ID,
+            photo: clean,
+            caption: message,
+            parse_mode: 'Markdown',
+          }),
+        });
+        const photoData = await photoRes.json();
+        console.log('[Broadcast] sendPhoto response:', JSON.stringify(photoData));
 
-          if (pd.ok) {
-            imageSent = true;
-            await new Promise(r => setTimeout(r, 600));
-          } else {
-            // Log but don't fail — still send the text message
-            console.warn('Telegram image failed:', pd.description, '| URL:', clean);
-          }
+        if (photoData.ok) {
+          // Success — image + caption posted together
+          return res.status(200).json({ success: true, imageSent: true });
         }
 
-        const tr = await fetch(`${BASE}/sendMessage`, {
+        // Image failed — fall back to text-only message
+        console.warn('[Broadcast] sendPhoto failed:', photoData.description, '— falling back to text-only');
+        const textRes = await fetch(`${BASE}/sendMessage`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -356,12 +368,17 @@ export default async function handler(req, res) {
             disable_web_page_preview: true,
           }),
         });
-        const td = await tr.json();
-        if (!td.ok) throw new Error(`Message error: ${td.description}`);
+        const textData = await textRes.json();
+        console.log('[Broadcast] sendMessage response:', JSON.stringify(textData));
 
-        return res.status(200).json({ success: true, imageSent });
+        if (!textData.ok) {
+          throw new Error(`Telegram error: ${textData.description}`);
+        }
+
+        return res.status(200).json({ success: true, imageSent: false, note: 'Text only — image URL was rejected by Telegram' });
+
       } catch (err) {
-        console.error('Broadcast error:', err.message);
+        console.error('[Broadcast] error:', err.message);
         return res.status(500).json({ error: err.message });
       }
     }
