@@ -2279,11 +2279,11 @@ wa.me/916350021226
     const allImages = getProductImages(selected);
     const imageUrl = allImages[selectedImageIndex] || allImages[0] || '';
     try {
-      const res = await fetch('/api/products?broadcast=true', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ imageUrl, message: customMsg }),
-      });
+    const res = await fetch('/api/products', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ broadcast: true, imageUrl, message: customMsg }),
+});
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to send');
       setTelegramSuccess(true);
