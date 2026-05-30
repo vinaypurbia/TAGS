@@ -64,7 +64,6 @@ export default async function handler(req, res) {
         return res.status(400).json({ error: 'At least one item is required' });
       }
 
-      // Calculate totals
       const enrichedItems = items.map((item) => ({
         ...item,
         quantity: Number(item.quantity),
@@ -98,11 +97,15 @@ export default async function handler(req, res) {
     // ─────────────────────────────────────────────
     // PUT /api/purchase-orders
     // Actions:
-    //   "update"   → edit PO details (only if draft)
-    //   "order"    → mark as ordered (draft → ordered)
-    //   "receive"  → mark as received → AUTO adds stock to inventory
-    //   "pay"      → record payment
-    //   "cancel"   → cancel PO
+    //   "update"              → edit PO details (only if draft/ordered)
+    //   "order"               → mark as ordered (draft → ordered)
+    //   "receive"             → mark as received → AUTO adds stock to inventory
+    //   "edit_received"       → correct qty/cost on a received PO, adjusts stock diff
+    //   "advance_payment"     → record advance payment
+    //   "pay"                 → record payment
+    //   "cancel"              → cancel PO
+    //   "resolve_shortage"    → resolve shortage via refund or goods
+    //   "return_to_supplier"  → partial or full return, deducts stock, logs refund
     // ─────────────────────────────────────────────
     if (req.method === 'PUT') {
       const { id, action } = req.body;
@@ -114,7 +117,7 @@ export default async function handler(req, res) {
       // ── Edit draft or ordered PO ──
       if (action === 'update' || !action) {
         if (!['draft', 'ordered'].includes(po.status)) {
-          return res.status(400).json({ error: 'Only draft or ordered POs can be edited' });
+          return res.status(400).json({ error: 'Only draft or ordered POs can be edited. Use edit_received for received POs.' });
         }
         const { supplier, items, notes, expectedDate } = req.body;
         const updateFields = { updatedAt: new Date() };
@@ -193,10 +196,15 @@ export default async function handler(req, res) {
           if (existing) {
             const balanceBefore = existing.currentStock;
             const newStock = existing.currentStock + receivedQty;
-            await inventory.updateOne({ productId: item.productId }, { $set: { currentStock: newStock, availableStock: existing.availableStock + receivedQty, costPrice: costP || existing.costPrice, updatedAt: new Date() } });
+            const available = Math.max(0, newStock - (existing.reservedStock || 0));
+            const alert = existing.lowStockAlert || 5;
+            let stockStatus = 'in_stock';
+            if (available === 0) stockStatus = 'out_of_stock';
+            else if (available <= alert) stockStatus = 'low_stock';
+            await inventory.updateOne({ productId: item.productId }, { $set: { currentStock: newStock, availableStock: existing.availableStock + receivedQty, stockStatus, costPrice: costP || existing.costPrice, updatedAt: new Date() } });
             await movements.insertOne({ productId: item.productId, type: 'in', quantity: receivedQty, reason: 'purchase_order', referenceId: id, balanceBefore, balanceAfter: newStock, note: `Received from PO ${po.poNumber}${item.damageNotes ? ` — ${item.damageNotes}` : ''}`, createdAt: new Date() });
           } else {
-            await inventory.insertOne({ productId: item.productId, sku: item.sku || '', currentStock: receivedQty, reservedStock: 0, availableStock: receivedQty, lowStockAlert: 10, costPrice: costP, unit: 'pcs', trackInventory: true, createdAt: new Date(), updatedAt: new Date() });
+            await inventory.insertOne({ productId: item.productId, sku: item.sku || '', currentStock: receivedQty, reservedStock: 0, availableStock: receivedQty, lowStockAlert: 10, costPrice: costP, unit: 'pcs', trackInventory: true, stockStatus: 'in_stock', createdAt: new Date(), updatedAt: new Date() });
             await movements.insertOne({ productId: item.productId, type: 'in', quantity: receivedQty, reason: 'purchase_order', referenceId: id, balanceBefore: 0, balanceAfter: receivedQty, note: `First stock from PO ${po.poNumber}`, createdAt: new Date() });
           }
         }
@@ -226,7 +234,7 @@ export default async function handler(req, res) {
           });
         }
 
-        // ── AP LEDGER: auto-entries when stock received ─────────────────────
+        // ── AP LEDGER: auto-entries when stock received ──
         {
           let resolvedSupplierId = po.supplierId || null;
           if (!resolvedSupplierId && po.supplier?.name) {
@@ -234,7 +242,6 @@ export default async function handler(req, res) {
             if (supplierDoc) resolvedSupplierId = supplierDoc._id.toString();
           }
           if (resolvedSupplierId) {
-            // CREDIT: goods received — supplier is owed this amount
             await ledgerCol.insertOne({
               partyType: 'supplier', partyId: resolvedSupplierId,
               partyName: po.supplier?.name || '',
@@ -245,7 +252,6 @@ export default async function handler(req, res) {
               paymentMode: null, notes: '',
               date: new Date(), createdAt: new Date(),
             });
-            // DEBIT: shortage — supplier owes us the shortfall value
             if (totalShortageValue > 0.01) {
               await ledgerCol.insertOne({
                 partyType: 'supplier', partyId: resolvedSupplierId,
@@ -265,7 +271,189 @@ export default async function handler(req, res) {
         return res.status(200).json({ success: true, message: shortageItems.length > 0 ? `Stock updated. ⚠️ Shortage of ₹${totalShortageValue.toFixed(2)} recorded against ${po.supplier?.name || 'supplier'}.` : 'Stock fully received and inventory updated.', shortageItems, totalShortageValue });
       }
 
-      // ── Supplier Resolution ──
+      // ── Edit a received PO — corrects qty/cost and adjusts stock by diff ──
+      if (action === 'edit_received') {
+        if (po.status !== 'received') {
+          return res.status(400).json({ error: 'Only received POs can be edited with edit_received' });
+        }
+
+        const { items } = req.body;
+        if (!items || items.length === 0) {
+          return res.status(400).json({ error: 'items are required' });
+        }
+
+        const oldItems = po.receivedItems || po.items || [];
+
+        for (const newItem of items) {
+          const oldItem = oldItems.find(i => i.productId === newItem.productId);
+          const oldQty = Number(oldItem?.quantityReceived ?? oldItem?.quantity) || 0;
+          const newQty = Number(newItem.quantityReceived ?? newItem.quantity) || 0;
+          const diff = newQty - oldQty; // positive = more stock added, negative = stock removed
+
+          if (diff === 0) continue;
+
+          const existing = await inventory.findOne({ productId: newItem.productId });
+          if (!existing) continue;
+
+          const newStock = Math.max(0, existing.currentStock + diff);
+          const available = Math.max(0, newStock - (existing.reservedStock || 0));
+          const alert = existing.lowStockAlert || 5;
+
+          let stockStatus = 'in_stock';
+          if (available === 0) stockStatus = 'out_of_stock';
+          else if (available <= alert) stockStatus = 'low_stock';
+
+          await inventory.updateOne(
+            { productId: newItem.productId },
+            {
+              $set: { currentStock: newStock, availableStock: available, stockStatus, updatedAt: new Date() },
+              $push: {
+                adjustmentLog: {
+                  adjustment: diff,
+                  reason: `PO Edit — ${po.poNumber} (qty corrected: ${oldQty} → ${newQty})`,
+                  date: new Date(),
+                  stockAfter: newStock,
+                }
+              }
+            }
+          );
+
+          await movements.insertOne({
+            productId: newItem.productId,
+            type: diff > 0 ? 'in' : 'out',
+            quantity: Math.abs(diff),
+            reason: 'po_edit',
+            referenceId: id,
+            balanceBefore: existing.currentStock,
+            balanceAfter: newStock,
+            note: `PO ${po.poNumber} edited — qty corrected: ${oldQty} → ${newQty}`,
+            createdAt: new Date(),
+          });
+        }
+
+        // Save corrected items and recalculate totals on the PO
+        const enrichedItems = items.map(item => ({
+          ...item,
+          quantity: Number(item.quantity),
+          quantityReceived: Number(item.quantityReceived ?? item.quantity),
+          costPrice: Number(item.costPrice),
+          totalCost: Number(item.quantity) * Number(item.costPrice),
+        }));
+        const newTotal = enrichedItems.reduce((s, i) => s + i.totalCost, 0);
+
+        await orders.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: { receivedItems: enrichedItems, totalAmount: newTotal, updatedAt: new Date() } }
+        );
+
+        return res.status(200).json({ success: true, message: 'Received PO updated and stock corrected.' });
+      }
+
+      // ── Return to supplier (partial or full) ──
+      if (action === 'return_to_supplier') {
+        if (!['received', 'partially_returned'].includes(po.status)) {
+          return res.status(400).json({ error: 'Only received POs can be returned' });
+        }
+
+        const { returnItems, returnReason = '', paymentMode = 'cash' } = req.body;
+        // returnItems: [{ productId, productName, returnQty, costPrice }]
+
+        if (!returnItems || returnItems.length === 0) {
+          return res.status(400).json({ error: 'returnItems are required' });
+        }
+
+        let totalReturnValue = 0;
+
+        for (const item of returnItems) {
+          const returnQty = Number(item.returnQty) || 0;
+          if (returnQty <= 0) continue;
+
+          const existing = await inventory.findOne({ productId: item.productId });
+          if (!existing) continue;
+
+          const newStock = Math.max(0, existing.currentStock - returnQty);
+          const available = Math.max(0, newStock - (existing.reservedStock || 0));
+          const alert = existing.lowStockAlert || 5;
+          const costPrice = Number(item.costPrice) || 0;
+          totalReturnValue += returnQty * costPrice;
+
+          let stockStatus = 'in_stock';
+          if (available === 0) stockStatus = 'out_of_stock';
+          else if (available <= alert) stockStatus = 'low_stock';
+
+          await inventory.updateOne(
+            { productId: item.productId },
+            {
+              $set: { currentStock: newStock, availableStock: available, stockStatus, updatedAt: new Date() },
+              $push: {
+                adjustmentLog: {
+                  adjustment: -returnQty,
+                  reason: `Return to supplier — ${po.poNumber}${returnReason ? `: ${returnReason}` : ''}`,
+                  date: new Date(),
+                  stockAfter: newStock,
+                }
+              }
+            }
+          );
+
+          await movements.insertOne({
+            productId: item.productId,
+            type: 'out',
+            quantity: returnQty,
+            reason: 'supplier_return',
+            referenceId: id,
+            balanceBefore: existing.currentStock,
+            balanceAfter: newStock,
+            note: `Returned to supplier — PO ${po.poNumber}${returnReason ? ` — ${returnReason}` : ''}`,
+            createdAt: new Date(),
+          });
+        }
+
+        // Log refund as income in cashFlow
+        await cashFlow.insertOne({
+          type: 'income',
+          category: 'supplier_return_refund',
+          amount: totalReturnValue,
+          paymentMode,
+          description: `Return to supplier — PO ${po.poNumber} — ${po.supplier?.name || 'Supplier'}${returnReason ? ` — ${returnReason}` : ''}`,
+          referenceId: id,
+          referenceType: 'po_return',
+          poNumber: po.poNumber,
+          supplierName: po.supplier?.name || '',
+          returnItems,
+          date: new Date(),
+          createdAt: new Date(),
+        });
+
+        // Determine if fully or partially returned
+        const allReturned = (po.receivedItems || po.items || []).every(poItem => {
+          const ret = returnItems.find(r => r.productId === poItem.productId);
+          return ret && Number(ret.returnQty) >= Number(poItem.quantityReceived ?? poItem.quantity);
+        });
+
+        await orders.updateOne(
+          { _id: new ObjectId(id) },
+          {
+            $set: {
+              status: allReturned ? 'returned' : 'partially_returned',
+              returnItems,
+              returnReason,
+              returnDate: new Date(),
+              returnValue: totalReturnValue,
+              updatedAt: new Date(),
+            }
+          }
+        );
+
+        return res.status(200).json({
+          success: true,
+          message: `${allReturned ? 'Full' : 'Partial'} return recorded. Stock deducted. Refund of ₹${totalReturnValue.toFixed(2)} logged.`,
+          totalReturnValue,
+          status: allReturned ? 'returned' : 'partially_returned',
+        });
+      }
+
+      // ── Shortage Resolution ──
       if (action === 'resolve_shortage') {
         if (po.status !== 'received') return res.status(400).json({ error: 'PO must be received first' });
         if (!po.shortageItems?.length) return res.status(400).json({ error: 'No shortage to resolve' });
@@ -288,7 +476,12 @@ export default async function handler(req, res) {
             if (existing) {
               const balanceBefore = existing.currentStock;
               const newStock = existing.currentStock + qty;
-              await inventory.updateOne({ productId: item.productId }, { $set: { currentStock: newStock, availableStock: existing.availableStock + qty, updatedAt: new Date() } });
+              const available = Math.max(0, newStock - (existing.reservedStock || 0));
+              const alert = existing.lowStockAlert || 5;
+              let stockStatus = 'in_stock';
+              if (available === 0) stockStatus = 'out_of_stock';
+              else if (available <= alert) stockStatus = 'low_stock';
+              await inventory.updateOne({ productId: item.productId }, { $set: { currentStock: newStock, availableStock: existing.availableStock + qty, stockStatus, updatedAt: new Date() } });
               await movements.insertOne({ productId: item.productId, type: 'in', quantity: qty, reason: 'shortage_resolution', referenceId: id, balanceBefore, balanceAfter: newStock, note: `Shortage resolved — PO ${po.poNumber}`, createdAt: new Date() });
             }
           }
@@ -312,7 +505,6 @@ export default async function handler(req, res) {
           { $set: { paidAmount: newPaid, dueAmount: newDue, updatedAt: new Date() } }
         );
 
-        // ── AP LEDGER: DEBIT — we paid the supplier ──────────────────────────
         {
           let resolvedSupplierId = po.supplierId || null;
           if (!resolvedSupplierId && po.supplier?.name) {
@@ -334,7 +526,6 @@ export default async function handler(req, res) {
               notes: pmNotes || '',
               date: new Date(), createdAt: new Date(),
             });
-            // Also post to cashFlow for cash position tracking
             await cashFlow.insertOne({
               type: 'expense', category: 'supplier_payment',
               amount: paid,
@@ -355,8 +546,8 @@ export default async function handler(req, res) {
 
       // ── Cancel PO ──
       if (action === 'cancel') {
-        if (po.status === 'received') {
-          return res.status(400).json({ error: 'Cannot cancel a received PO' });
+        if (['received', 'returned', 'partially_returned'].includes(po.status)) {
+          return res.status(400).json({ error: 'Cannot cancel a received or returned PO. Use return_to_supplier instead.' });
         }
         await cashFlow.deleteMany({ referenceId: id, referenceType: 'po_advance' });
         await orders.updateOne({ _id: new ObjectId(id) }, { $set: { status: 'cancelled', updatedAt: new Date() } });
@@ -368,7 +559,8 @@ export default async function handler(req, res) {
 
     // ─────────────────────────────────────────────
     // DELETE /api/purchase-orders
-    // Only draft POs can be deleted
+    // Draft POs: deleted immediately, no stock impact
+    // Received POs: stock fully reversed, ledger + cashFlow cleaned up
     // ─────────────────────────────────────────────
     if (req.method === 'DELETE') {
       const { id } = req.body;
@@ -376,14 +568,70 @@ export default async function handler(req, res) {
 
       const po = await orders.findOne({ _id: new ObjectId(id) });
       if (!po) return res.status(404).json({ error: 'Purchase order not found' });
-      if (po.status !== 'draft') {
-        return res.status(400).json({ error: 'Only draft POs can be deleted' });
+
+      if (!['draft', 'received'].includes(po.status)) {
+        return res.status(400).json({ error: 'Only draft or received POs can be deleted. For returned/partially returned POs, no deletion is allowed.' });
       }
 
-      // Cascade: also remove any cashFlow entries linked to this PO
-      await cashFlow.deleteMany({ referenceId: id, referenceType: 'purchase_order' });
+      // ── Reverse stock if PO was received ──
+      if (po.status === 'received') {
+        const itemsToReverse = po.receivedItems || po.items || [];
+
+        for (const item of itemsToReverse) {
+          const qty = Number(item.quantityReceived ?? item.quantity) || 0;
+          if (qty <= 0) continue;
+
+          const existing = await inventory.findOne({ productId: item.productId });
+          if (!existing) continue;
+
+          const newStock = Math.max(0, existing.currentStock - qty);
+          const available = Math.max(0, newStock - (existing.reservedStock || 0));
+          const alert = existing.lowStockAlert || 5;
+
+          let stockStatus = 'in_stock';
+          if (available === 0) stockStatus = 'out_of_stock';
+          else if (available <= alert) stockStatus = 'low_stock';
+
+          await inventory.updateOne(
+            { productId: item.productId },
+            {
+              $set: { currentStock: newStock, availableStock: available, stockStatus, updatedAt: new Date() },
+              $push: {
+                adjustmentLog: {
+                  adjustment: -qty,
+                  reason: `PO Deleted — ${po.poNumber}`,
+                  date: new Date(),
+                  stockAfter: newStock,
+                }
+              }
+            }
+          );
+
+          await movements.insertOne({
+            productId: item.productId,
+            type: 'out',
+            quantity: qty,
+            reason: 'po_deleted',
+            referenceId: id,
+            balanceBefore: existing.currentStock,
+            balanceAfter: newStock,
+            note: `PO ${po.poNumber} deleted — stock reversed`,
+            createdAt: new Date(),
+          });
+        }
+
+        // Clean up all financial entries linked to this PO
+        await cashFlow.deleteMany({ referenceId: id });
+        await ledgerCol.deleteMany({ referenceId: id });
+      }
+
+      // Draft-only cleanup: remove any advance cashFlow entries
+      if (po.status === 'draft') {
+        await cashFlow.deleteMany({ referenceId: id, referenceType: 'po_advance' });
+      }
+
       await orders.deleteOne({ _id: new ObjectId(id) });
-      return res.status(200).json({ success: true });
+      return res.status(200).json({ success: true, message: `PO ${po.poNumber} deleted${po.status === 'received' ? ' and stock fully reversed' : ''}.` });
     }
 
     return res.status(405).json({ error: 'Method not allowed' });
