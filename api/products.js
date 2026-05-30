@@ -289,6 +289,44 @@ export default async function handler(req, res) {
       });
     }
 
+    // ── Telegram Broadcast ───────────────────────────────────────────────────
+    if (req.method === 'POST' && req.query.broadcast === 'true') {
+      const { imageUrl, message } = req.body;
+      const TOKEN   = process.env.TELEGRAM_BOT_TOKEN;
+      const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+      const BASE    = `https://api.telegram.org/bot${TOKEN}`;
+
+      try {
+        if (imageUrl) {
+          const pr = await fetch(`${BASE}/sendPhoto`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: CHAT_ID, photo: imageUrl }),
+          });
+          const pd = await pr.json();
+          if (!pd.ok) throw new Error(`Image error: ${pd.description}`);
+          await new Promise(r => setTimeout(r, 600));
+        }
+
+        const tr = await fetch(`${BASE}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            chat_id: CHAT_ID,
+            text: message,
+            parse_mode: 'Markdown',
+            disable_web_page_preview: true,
+          }),
+        });
+        const td = await tr.json();
+        if (!td.ok) throw new Error(`Message error: ${td.description}`);
+
+        return res.status(200).json({ success: true });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
     if (req.method === 'POST') {
       const product = { ...req.body, createdAt: new Date() };
       const result = await collection.insertOne(product);
