@@ -239,6 +239,17 @@ export default async function handler(req, res) {
         return res.status(200).json(product);
       }
 
+      // ── Cleanup duplicate/empty products ─────────────────────
+      if (req.query.cleanup === 'true') {
+        const deleted = await collection.deleteMany({
+          $and: [
+            { $or: [{ price: 0 }, { price: null }, { price: { $exists: false } }] },
+            { $or: [{ name: '' }, { name: null }, { name: { $exists: false } }] },
+          ]
+        });
+        return res.status(200).json({ success: true, deleted: deleted.deletedCount });
+      }
+
       // ── PAGINATED product list ─────────────────────────────────
       const pageNum  = Math.max(1, parseInt(page  || '1',  10));
       const pageSize = Math.min(100, Math.max(1, parseInt(limit || '20', 10)));
@@ -350,6 +361,7 @@ export default async function handler(req, res) {
 
         return res.status(200).json({ success: true, imageSent });
       } catch (err) {
+        console.error('Broadcast error:', err.message);
         return res.status(500).json({ error: err.message });
       }
     }
