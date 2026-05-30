@@ -296,16 +296,43 @@ export default async function handler(req, res) {
       const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
       const BASE    = `https://api.telegram.org/bot${TOKEN}`;
 
+      // Clean Cloudinary URL — remove transformation params so Telegram can fetch it
+      const cleanImageUrl = (url) => {
+        if (!url) return '';
+        try {
+          // Remove Cloudinary transformations between /upload/ and the filename
+          // e.g. /upload/w_800,h_800,c_limit,q_auto/v123/filename.jpg → /upload/v123/filename.jpg
+          let clean = url.replace(/\/upload\/(?:[^/]+\/)+(?=v\d+\/)/, '/upload/');
+          // If no version number, just strip everything between /upload/ and the filename
+          clean = clean.replace(/\/upload\/[a-z0-9_,]+\/(?!v\d)/, '/upload/');
+          // Force jpg extension for webp/avif
+          clean = clean.replace(/\.(webp|avif)(\?.*)?$/, '.jpg');
+          return clean;
+        } catch {
+          return url;
+        }
+      };
+
       try {
+        let imageSent = false;
         if (imageUrl) {
+          const clean = cleanImageUrl(imageUrl);
+          console.log('Sending image URL to Telegram:', clean);
+
           const pr = await fetch(`${BASE}/sendPhoto`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ chat_id: CHAT_ID, photo: imageUrl }),
+            body: JSON.stringify({ chat_id: CHAT_ID, photo: clean }),
           });
           const pd = await pr.json();
-          if (!pd.ok) throw new Error(`Image error: ${pd.description}`);
-          await new Promise(r => setTimeout(r, 600));
+
+          if (pd.ok) {
+            imageSent = true;
+            await new Promise(r => setTimeout(r, 600));
+          } else {
+            // Log but don't fail — still send the text message
+            console.warn('Telegram image failed:', pd.description, '| URL:', clean);
+          }
         }
 
         const tr = await fetch(`${BASE}/sendMessage`, {
@@ -321,7 +348,7 @@ export default async function handler(req, res) {
         const td = await tr.json();
         if (!td.ok) throw new Error(`Message error: ${td.description}`);
 
-        return res.status(200).json({ success: true });
+        return res.status(200).json({ success: true, imageSent });
       } catch (err) {
         return res.status(500).json({ error: err.message });
       }
