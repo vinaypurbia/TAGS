@@ -56,7 +56,6 @@ export default async function handler(req, res) {
             const newStock = Math.max(0, (inv.currentStock || 0) - qty);
             const available = Math.max(0, newStock - (inv.reservedStock || 0));
 
-            // FIX: compute and persist stockStatus
             let stockStatus = 'in_stock';
             if (available === 0) stockStatus = 'out_of_stock';
             else if (available <= (inv.lowStockAlert || 5)) stockStatus = 'low_stock';
@@ -114,7 +113,6 @@ export default async function handler(req, res) {
               updated++;
             }
           } else {
-            // FIX: include frontendStatus and stockStatus in new records
             await inventoryCol.insertOne({
               productId: pid,
               sku: '',
@@ -125,8 +123,8 @@ export default async function handler(req, res) {
               costPrice: 0,
               unit: 'pcs',
               trackInventory: true,
-              stockStatus: 'out_of_stock',       // FIX: persisted stock state
-              frontendStatus: 'normal',           // FIX: admin-controlled visibility
+              stockStatus: 'out_of_stock',
+              frontendStatus: 'normal',
               adjustmentLog: [],
               createdAt: new Date(),
               updatedAt: new Date(),
@@ -142,9 +140,56 @@ export default async function handler(req, res) {
         });
       }
 
-      // ── STOCK VISIBILITY PANEL: get all tracked products for admin control ──
+      // ── RECALCULATE ALL STOCK from received POs ───────────────────────────
+      // GET /api/inventory?action=recalcFromPOs
+      // Use this as a recovery tool if POs are deleted directly from DB
+      if (action === 'recalcFromPOs') {
+        const purchaseOrdersCol = db.collection('purchaseOrders');
+        const receivedPOs = await purchaseOrdersCol.find({ status: 'received' }).toArray();
+
+        // Build map: productId → total received qty across all remaining received POs
+        const stockFromPOs = {};
+        for (const po of receivedPOs) {
+          const items = po.receivedItems || po.items || [];
+          for (const item of items) {
+            const pid = item.productId;
+            const qty = Number(item.quantityReceived ?? item.quantity) || 0;
+            stockFromPOs[pid] = (stockFromPOs[pid] || 0) + qty;
+          }
+        }
+
+        const allInv = await inventoryCol.find({}).toArray();
+        let updated = 0;
+        const log = [];
+
+        for (const inv of allInv) {
+          const pid = inv.productId;
+          const correctStock = stockFromPOs[pid] || 0;
+          const reservedStock = inv.reservedStock || 0;
+          const available = Math.max(0, correctStock - reservedStock);
+          const alert = inv.lowStockAlert || 5;
+
+          let stockStatus = 'in_stock';
+          if (available === 0) stockStatus = 'out_of_stock';
+          else if (available <= alert) stockStatus = 'low_stock';
+
+          await inventoryCol.updateOne(
+            { _id: inv._id },
+            { $set: { currentStock: correctStock, availableStock: available, stockStatus, updatedAt: new Date() } }
+          );
+          updated++;
+          log.push({ productId: pid, correctStock, available, stockStatus });
+        }
+
+        return res.status(200).json({
+          success: true,
+          message: `Recalculated stock for ${updated} products from ${receivedPOs.length} received POs.`,
+          updated, log,
+        });
+      }
+
+      // ── STOCK VISIBILITY PANEL ────────────────────────────────────────────
       if (action === 'visibilityPanel') {
-        // Get ALL tracked inventory records (not just out_of_stock)
         const allInventory = await inventoryCol
           .find({ trackInventory: true })
           .toArray();
@@ -152,14 +197,12 @@ export default async function handler(req, res) {
         const enriched = await Promise.all(allInventory.map(async (inv) => {
           const product = await productsCol.findOne({ _id: new ObjectId(inv.productId) }).catch(() => null);
 
-          // Always recalculate stockStatus from actual stock numbers — never trust stored value
           const available = inv.availableStock || 0;
           const alert = inv.lowStockAlert || 5;
           let stockStatus = 'in_stock';
           if (available === 0) stockStatus = 'out_of_stock';
           else if (available <= alert) stockStatus = 'low_stock';
 
-          // Sync corrected stockStatus back to DB if it differs
           if (stockStatus !== inv.stockStatus) {
             await inventoryCol.updateOne(
               { _id: inv._id },
@@ -216,8 +259,8 @@ export default async function handler(req, res) {
             trackInventory: stock.trackInventory !== false,
             isInStock: (stock.availableStock || 0) > 0,
             isLowStock: stock.trackInventory && (stock.availableStock || 0) <= (stock.lowStockAlert || 5) && (stock.availableStock || 0) > 0,
-            stockStatus: stock.stockStatus || 'in_stock',           // FIX: persisted
-            frontendStatus: stock.frontendStatus || 'normal',       // FIX: admin visibility
+            stockStatus: stock.stockStatus || 'in_stock',
+            frontendStatus: stock.frontendStatus || 'normal',
             adjustmentLog: stock.adjustmentLog || [],
             updatedAt: stock.updatedAt,
           } : {
@@ -252,7 +295,6 @@ export default async function handler(req, res) {
       const alert = Number(lowStockAlert) || 5;
       const existing = await inventoryCol.findOne({ productId });
 
-      // FIX: compute and persist stockStatus on create/update
       let stockStatus = 'in_stock';
       if (available === 0) stockStatus = 'out_of_stock';
       else if (available <= alert) stockStatus = 'low_stock';
@@ -276,7 +318,7 @@ export default async function handler(req, res) {
       } else {
         await inventoryCol.insertOne({
           productId, ...data,
-          frontendStatus: 'normal',   // FIX: default visibility on first creation
+          frontendStatus: 'normal',
           adjustmentLog: [],
           createdAt: new Date(),
         });
@@ -295,7 +337,6 @@ export default async function handler(req, res) {
       const newStock = Math.max(0, (existing.currentStock || 0) + (Number(adjustment) || 0));
       const available = Math.max(0, newStock - (existing.reservedStock || 0));
 
-      // FIX: persist stockStatus on every adjustment
       let stockStatus = 'in_stock';
       if (available === 0) stockStatus = 'out_of_stock';
       else if (existing.trackInventory && available <= (existing.lowStockAlert || 5)) stockStatus = 'low_stock';
@@ -334,7 +375,6 @@ export default async function handler(req, res) {
         const log = existing.adjustmentLog || [];
         if (idx >= log.length) return res.status(400).json({ error: 'Index out of range' });
 
-        // Remove the entry at that index
         log.splice(idx, 1);
 
         await inventoryCol.updateOne(
