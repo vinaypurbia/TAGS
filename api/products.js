@@ -322,7 +322,7 @@ export default async function handler(req, res) {
     }
 
     // ── Telegram Broadcast ───────────────────────────────────────────────────
-    if (req.method === 'POST' && req.query.broadcast === 'true') {
+   if (req.method === 'POST' && (req.query.broadcast === 'true' || req.body.broadcast === true)) {
       const { imageUrl, message } = req.body;
       const TOKEN   = process.env.TELEGRAM_BOT_TOKEN;
       const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
