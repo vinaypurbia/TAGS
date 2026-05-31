@@ -369,21 +369,17 @@ export function AdminPanel() {
       fetch('/api/sales?status=pending').then(r => r.json()).catch(() => ({})),
       fetch('/api/customers?module=orders').then(r => r.json()).catch(() => ({})),
     ]).then(([sales, cash, stockShortage, customers, inventory, pendingSales, ordersData]) => {
-      const invArr = Array.isArray(inventory) ? inventory : [];
-      // customers returns a plain array OR {summary} object depending on query
-      const customerCount = Array.isArray(customers)
-        ? customers.length
-        : (customers?.summary?.totalCustomers || customers?.length || 0);
+      const invArr = Array.isArray(inventory) ? inventory : (inventory?.inventory || inventory?.items || []);
       setDashStats({
         revenue:       sales?.summary?.totalRevenue  || 0,
         orders:        sales?.summary?.totalOrders   || 0,
         profit:        cash?.summary?.profit         || 0,
         expense:       cash?.summary?.expense        || 0,
-        customers:     customerCount,
+        // customers API returns plain array (no module param)
+        customers:     Array.isArray(customers) ? customers.length : (customers?.summary?.totalCustomers || customers?.length || 0),
         totalProducts: invArr.length,
-        // inventory items have availableStock directly (not nested under stock)
-        inStock:       invArr.filter((p: any) => p.availableStock > 0).length,
-        outOfStock:    invArr.filter((p: any) => p.availableStock === 0).length,
+        inStock:       invArr.filter((p: any) => (p.availableStock ?? p.stock?.availableStock ?? 0) > 0).length,
+        outOfStock:    invArr.filter((p: any) => (p.availableStock ?? p.stock?.availableStock ?? 0) === 0).length,
       });
       setShortage(Array.isArray(stockShortage) ? stockShortage : []);
       // Pending sales (not yet confirmed) + confirmed orders (confirmed but not delivered)
