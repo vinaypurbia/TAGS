@@ -800,18 +800,12 @@ export default async function handler(req, res) {
             });
           }
 
-          // ── Short delivery credit note ────────────────────────────────
-          if (po.shortageItems?.length > 0 && po.shortageValue > 0) {
-            entries.push({
-              partyType: 'supplier', partyId: supplierId, partyName: supplierName,
-              entryType: 'debit', amount: po.shortageValue,
-              description: `Short delivery credit note — PO ${po.poNumber} (₹${po.shortageValue.toFixed(2)} claimable)`,
-              referenceType: 'short_delivery', referenceId: poId,
-              paymentMode: null,
-              notes: po.shortageItems.map((s) => `${s.productName}: ordered ${s.orderedQty}, received ${s.receivedQty}`).join('; '),
-              date: po.receivedDate || po.updatedAt, createdAt: new Date(),
-            });
-          }
+          // ── Short delivery credit note ─────────────────────────────────
+          // NOTE: We do NOT add a separate shortage debit entry here.
+          // The shortage is already captured by the difference between
+          // advance paid and goods received value. Adding it again would
+          // double-count and show wrong balance to supplier.
+          // Shortage is tracked in po.shortageItems for reference only.
         }
 
         // ── Cashflow regeneration (scope=full only) ───────────────────────
