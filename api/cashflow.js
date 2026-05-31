@@ -63,8 +63,8 @@ export default async function handler(req, res) {
       }
 
       if (summary === 'true') {
-        // P&L excluded categories (financing = capital/loans, inventory_asset = PO purchases)
-        const PL_EXCLUDE = ['financing', 'inventory_asset'];
+        // P&L excluded — balance sheet movements, not operating P&L
+        const PL_EXCLUDE = ['financing', 'inventory_asset', 'advance_payment', 'supplier_payment', 'ledger_payment', 'po_shortage_receivable', 'po_shortage_refund', 'supplier_return_refund'];
         const all = await cashFlow.find({ ...filter, category: { $nin: PL_EXCLUDE } }).toArray();
 
         const revenue = all.filter((e) => e.type === 'income' && e.category === 'sales').reduce((s, e) => s + e.amount, 0);
