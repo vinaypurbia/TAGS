@@ -290,9 +290,9 @@ export function AdminPanel() {
   const catRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
   const [dashStats,     setDashStats]     = useState<any>(null);
-  const [dashLoading,   setDashLoading]   = useState(true);
+  const [dashLoading,   setDashLoading]   = useState(false);
   const [dbStats,       setDbStats]       = useState<any>(null);
-  const [dbLoading,     setDbLoading]     = useState(true);
+  const [dbLoading,     setDbLoading]     = useState(false);
   const [cloudStats,    setCloudStats]    = useState<any>(null);
   const [cloudLoading,  setCloudLoading]  = useState(true);
   // Storage popup state: null | 'mongo' | 'cloudinary'
@@ -359,7 +359,7 @@ export function AdminPanel() {
       setCatImages(imgs);
     }).catch(() => {});
 
-    setDashLoading(true);
+    // setDashLoading(true) removed — UI renders immediately, data fills in silently
     Promise.all([
       fetch('/api/sales?period=month').then(r => r.json()).catch(() => ({})),
       fetch('/api/business?module=cashflow&period=month').then(r => r.json()).catch(() => ({})),
