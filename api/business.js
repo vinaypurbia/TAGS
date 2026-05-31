@@ -25,24 +25,12 @@ function getTokenFromReq(req) {
   return null;
 }
 function requireAuth(req, roles = []) {
-  // Primary: JWT token auth (for new auth system)
   const token = getTokenFromReq(req);
-  if (token) {
-    const decoded = verifyToken(token);
-    if (decoded) {
-      if (roles.length && !roles.includes(decoded.role)) return null;
-      return decoded;
-    }
-  }
-  // Fallback: X-Admin-Key header (for old admin password system)
-  const adminKey = req.headers['x-admin-key'];
-  const ADMIN_PASSWORD = process.env.VITE_ADMIN_PASSWORD || process.env.ADMIN_PASSWORD || '';
-  if (adminKey && ADMIN_PASSWORD && adminKey === ADMIN_PASSWORD) {
-    // Treat as admin role — passes all role checks
-    if (roles.length && !roles.includes('admin')) return null;
-    return { userId: 'admin', role: 'admin', name: 'Admin' };
-  }
-  return null;
+  if (!token) return null;
+  const decoded = verifyToken(token);
+  if (!decoded) return null;
+  if (roles.length && !roles.includes(decoded.role)) return null;
+  return decoded;
 }
 
 export default async function handler(req, res) {
@@ -68,7 +56,24 @@ export default async function handler(req, res) {
         const user = await db.collection('users').findOne({ email: email.toLowerCase(), active: true });
         if (!user) return res.status(401).json({ error: 'Invalid credentials' });
         if (!['admin', 'manager'].includes(user.role)) return res.status(403).json({ error: 'Use PIN login for your role' });
-        const valid = await bcrypt.compare(password, user.passwordHash);
+
+        // Support bcrypt hashed AND plain-text passwords (auto-migrate plain text to bcrypt)
+        let valid = false;
+        if (user.passwordHash && user.passwordHash.startsWith('$2')) {
+          valid = await bcrypt.compare(password, user.passwordHash);
+        } else {
+          const storedPlain = user.passwordHash || user.password || '';
+          valid = (password === storedPlain);
+          if (valid) {
+            // Migrate plain text → bcrypt immediately
+            const newHash = await bcrypt.hash(password, 12);
+            await db.collection('users').updateOne(
+              { _id: user._id },
+              { $set: { passwordHash: newHash }, $unset: { password: '' } }
+            );
+          }
+        }
+
         if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
         const token = signToken({ userId: user._id.toString(), name: user.name, email: user.email, role: user.role });
         await db.collection('users').updateOne({ _id: user._id }, { $set: { lastLogin: new Date() } });
@@ -95,6 +100,22 @@ export default async function handler(req, res) {
         const decoded = requireAuth(req);
         if (!decoded) return res.status(401).json({ error: 'Unauthorized' });
         return res.status(200).json({ valid: true, user: decoded });
+      }
+
+      // Change password
+      if (action === 'change-password' && req.method === 'POST') {
+        const decoded = requireAuth(req);
+        if (!decoded) return res.status(401).json({ error: 'Unauthorized' });
+        const { currentPassword, newPassword } = req.body;
+        if (!currentPassword || !newPassword) return res.status(400).json({ error: 'Current and new password required' });
+        if (newPassword.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' });
+        const user = await db.collection('users').findOne({ _id: new ObjectId(decoded.userId) });
+        if (!user) return res.status(404).json({ error: 'User not found' });
+        const valid = await bcrypt.compare(currentPassword, user.passwordHash);
+        if (!valid) return res.status(401).json({ error: 'Current password is incorrect' });
+        const newHash = await bcrypt.hash(newPassword, 12);
+        await db.collection('users').updateOne({ _id: user._id }, { $set: { passwordHash: newHash, updatedAt: new Date() } });
+        return res.status(200).json({ success: true });
       }
 
       return res.status(400).json({ error: 'Invalid auth action' });
@@ -251,12 +272,12 @@ export default async function handler(req, res) {
         const allEntries = await col.find({}).toArray();
 
         // ── PROPER 3-TIER P&L ────────────────────────────────────────────────
-        // Excluded from P&L: balance sheet movements, not operating P&L
-        const PL_EXCLUDE = ['financing', 'inventory_asset', 'advance_payment', 'supplier_payment', 'ledger_payment', 'po_shortage_receivable', 'po_shortage_refund', 'supplier_return_refund'];
+        // Excluded from P&L: financing (capital/loans), inventory_asset (PO purchases)
+        const PL_EXCLUDE = ['financing', 'inventory_asset'];
 
         // Revenue = sales income only (filtered period)
         const revenue = entries
-          .filter(e => e.type === 'income' && e.category === 'sales')
+          .filter(e => e.type === 'income' && (e.category === 'sales' || e.category === 'delivery_collection'))
           .reduce((s, e) => s + e.amount, 0);
 
         // COGS = cost of goods sold per sale
@@ -277,7 +298,7 @@ export default async function handler(req, res) {
 
         // Other income (non-sales, non-financing)
         const otherIncome = entries
-          .filter(e => e.type === 'income' && e.category !== 'sales' && !PL_EXCLUDE.includes(e.category))
+          .filter(e => e.type === 'income' && e.category !== 'sales' && e.category !== 'delivery_collection' && !PL_EXCLUDE.includes(e.category))
           .reduce((s, e) => s + e.amount, 0);
 
         const operatingIncome = revenue + otherIncome;
@@ -403,15 +424,15 @@ export default async function handler(req, res) {
           const { from, to } = req.query;
           const dateFilter = {};
           if (from || to) { dateFilter.date = {}; if (from) dateFilter.date.$gte = new Date(from); if (to) dateFilter.date.$lte = new Date(to); }
-          // Excluded from P&L: balance sheet movements, not operating P&L
-          const PL_EXCLUDE = ['financing', 'inventory_asset', 'advance_payment', 'supplier_payment', 'ledger_payment', 'po_shortage_receivable', 'po_shortage_refund', 'supplier_return_refund'];
+          // Exclude financing and inventory_asset from P&L
+          const PL_EXCLUDE = ['financing', 'inventory_asset'];
           const allCashFlow = await cashFlow.find({ ...dateFilter, category: { $nin: PL_EXCLUDE } }).toArray();
 
-          const revenue          = allCashFlow.filter(e => e.type === 'income'  && e.category === 'sales').reduce((s, e) => s + e.amount, 0);
+          const revenue          = allCashFlow.filter(e => e.type === 'income' && (e.category === 'sales' || e.category === 'delivery_collection')).reduce((s, e) => s + e.amount, 0);
           const cogs             = allCashFlow.filter(e => e.type === 'expense' && e.category === 'cogs').reduce((s, e) => s + e.amount, 0);
           const grossProfit      = revenue - cogs;
           const operatingExpenses = allCashFlow.filter(e => e.type === 'expense' && e.category !== 'cogs').reduce((s, e) => s + e.amount, 0);
-          const otherIncome      = allCashFlow.filter(e => e.type === 'income'  && e.category !== 'sales').reduce((s, e) => s + e.amount, 0);
+          const otherIncome      = allCashFlow.filter(e => e.type === 'income' && e.category !== 'sales' && e.category !== 'delivery_collection').reduce((s, e) => s + e.amount, 0);
           const netProfit        = grossProfit + otherIncome - operatingExpenses;
           const totalIncome      = revenue + otherIncome;
           const totalExpenses    = cogs + operatingExpenses;
@@ -699,169 +720,7 @@ export default async function handler(req, res) {
       }
     }
 
-    // ─── REGENERATE LEDGER (?module=regenerate) ──────────────────────────────
-    // Wipes all PO-linked ledger entries and rebuilds them from PO data
-    // Safe: only touches ledgerEntries with referenceType in PO types
-    // Manual entries (advance_payment added via ledger UI) are preserved
-    if (module === 'regenerate') {
-      const auth = requireAuth(req, ['admin']);
-      if (!auth) return res.status(403).json({ error: 'Admin access required' });
-
-      if (req.method !== 'POST') return res.status(405).json({ error: 'POST only' });
-
-      const { scope = 'ledger' } = req.body;
-      const poCol       = db.collection('purchaseOrders');
-      const suppCol     = db.collection('suppliers');
-      const ledgerCol   = db.collection('ledgerEntries');
-      const cashFlow    = db.collection('cashFlow');
-
-      const log = [];
-      let ledgerDeleted = 0, ledgerCreated = 0, cashDeleted = 0, cashCreated = 0;
-
-      // ── Step 1: Delete all PO-linked ledger entries ──────────────────────
-      // Preserve manual ledger entries (referenceType = 'manual' or 'ledger_payment')
-      const PO_LEDGER_TYPES = ['purchase_order', 'advance_payment', 'payment', 'overpayment', 'short_delivery'];
-      const delLedger = await ledgerCol.deleteMany({ referenceType: { $in: PO_LEDGER_TYPES } });
-      ledgerDeleted = delLedger.deletedCount;
-      log.push(`Deleted ${ledgerDeleted} PO-linked ledger entries`);
-
-      // ── Step 2: Delete all PO-linked cashflow entries ─────────────────────
-      if (scope === 'full') {
-        const PO_CASH_TYPES = ['po_advance', 'purchase_order', 'po_shortage', 'po_shortage_refund', 'po_resolution', 'supplier_payment', 'ledger_payment'];
-        const delCash = await cashFlow.deleteMany({ referenceType: { $in: PO_CASH_TYPES } });
-        cashDeleted = delCash.deletedCount;
-        log.push(`Deleted ${cashDeleted} PO-linked cashflow entries`);
-      }
-
-      // ── Step 3: Rebuild from all POs ──────────────────────────────────────
-      const allPOs = await poCol.find({}).sort({ createdAt: 1 }).toArray();
-      log.push(`Processing ${allPOs.length} purchase orders...`);
-
-      for (const po of allPOs) {
-        const poId = po._id.toString();
-
-        // Resolve supplier ID
-        let supplierId = po.supplierId || null;
-        if (!supplierId && po.supplier?.name) {
-          const s = await suppCol.findOne({ name: po.supplier.name });
-          if (s) supplierId = s._id.toString();
-        }
-        if (!supplierId) { log.push(`⚠️ Skipped ${po.poNumber} — supplier not found`); continue; }
-
-        const supplierName = po.supplier?.name || '';
-        const entries = [];
-
-        // ── Advance payments ──────────────────────────────────────────────
-        // Find cashflow advance entries for this PO
-        const advanceEntries = await cashFlow.find({ referenceId: poId, referenceType: 'po_advance' }).toArray();
-        for (const adv of advanceEntries) {
-          entries.push({
-            partyType: 'supplier', partyId: supplierId, partyName: supplierName,
-            entryType: 'debit', amount: adv.amount,
-            description: `Advance Payment — PO ${po.poNumber}${adv.description?.includes('—') ? ' — ' + adv.description.split('— ').slice(2).join('— ') : ''}`,
-            referenceType: 'advance_payment', referenceId: poId,
-            paymentMode: adv.paymentMode || 'cash', notes: '',
-            date: adv.date || adv.createdAt, createdAt: new Date(),
-          });
-        }
-
-        // ── If no cashflow advance entry, use paidAmount before receive ────
-        if (advanceEntries.length === 0 && po.paidAmount > 0 && ['ordered', 'received'].includes(po.status)) {
-          entries.push({
-            partyType: 'supplier', partyId: supplierId, partyName: supplierName,
-            entryType: 'debit', amount: po.paidAmount,
-            description: `Advance Payment — PO ${po.poNumber}`,
-            referenceType: 'advance_payment', referenceId: poId,
-            paymentMode: 'cash', notes: '',
-            date: po.orderDate || po.createdAt, createdAt: new Date(),
-          });
-        }
-
-        // ── Goods received ────────────────────────────────────────────────
-        if (['received', 'partially_returned', 'returned'].includes(po.status)) {
-          // Always use receivedItems with quantityReceived — never fall back to po.items
-          // po.items has ORDERED quantities; po.receivedItems has ACTUAL received quantities
-          const receivedItems = po.receivedItems || [];
-          const totalReceivedValue = receivedItems.reduce((s, i) => {
-            const qty = Number(i.quantityReceived) || 0;
-            return s + qty * (Number(i.costPrice) || 0);
-          }, 0);
-
-          if (totalReceivedValue > 0) {
-            const totalOrdered = (po.items || []).reduce((s, i) => s + Number(i.quantity), 0);
-            const totalReceived = receivedItems.reduce((s, i) => s + (Number(i.quantityReceived) || 0), 0);
-            entries.push({
-              partyType: 'supplier', partyId: supplierId, partyName: supplierName,
-              entryType: 'credit', amount: totalReceivedValue,
-              description: `Goods received — PO ${po.poNumber} (${totalReceived}/${totalOrdered} units)`,
-              referenceType: 'purchase_order', referenceId: poId,
-              paymentMode: null, notes: '',
-              date: po.receivedDate || po.updatedAt, createdAt: new Date(),
-            });
-          }
-
-          // ── Short delivery credit note ─────────────────────────────────
-          // NOTE: We do NOT add a separate shortage debit entry here.
-          // The shortage is already captured by the difference between
-          // advance paid and goods received value. Adding it again would
-          // double-count and show wrong balance to supplier.
-          // Shortage is tracked in po.shortageItems for reference only.
-        }
-
-        // ── Cashflow regeneration (scope=full only) ───────────────────────
-        if (scope === 'full') {
-          // Advance payment cashflow — only if not already there
-          const existingAdv = await cashFlow.findOne({ referenceId: poId, referenceType: 'po_advance' });
-          if (!existingAdv && po.paidAmount > 0) {
-            await cashFlow.insertOne({
-              type: 'expense', category: 'advance_payment', amount: po.paidAmount,
-              paymentMode: 'cash',
-              description: `Advance Payment — PO ${po.poNumber} — ${supplierName}`,
-              referenceId: poId, referenceType: 'po_advance',
-              supplierName, poNumber: po.poNumber,
-              date: po.orderDate || po.createdAt, createdAt: new Date(),
-            });
-            cashCreated++;
-          }
-        }
-
-        // Insert all ledger entries for this PO
-        if (entries.length > 0) {
-          await ledgerCol.insertMany(entries);
-          ledgerCreated += entries.length;
-          log.push(`✅ ${po.poNumber}: ${entries.length} ledger entries created`);
-        } else {
-          log.push(`⏭️ ${po.poNumber}: no entries needed (${po.status})`);
-        }
-      }
-
-      log.push(`Done! Created ${ledgerCreated} ledger entries, ${cashCreated} cashflow entries`);
-      return res.status(200).json({
-        success: true,
-        ledgerDeleted, ledgerCreated,
-        cashDeleted, cashCreated,
-        log,
-      });
-    }
-
-    // ─── NOTIFICATIONS (?module=notifications) ───────────────────────────────
-    if (module === 'notifications') {
-      const { action } = req.query;
-      if (action === 'save-token' && req.method === 'POST') {
-        const { token } = req.body;
-        if (!token) return res.status(400).json({ error: 'Token required' });
-        const col = db.collection('pushTokens');
-        await col.updateOne(
-          { token },
-          { $set: { token, updatedAt: new Date() }, $setOnInsert: { createdAt: new Date() } },
-          { upsert: true }
-        );
-        return res.status(200).json({ success: true });
-      }
-      return res.status(400).json({ error: 'Invalid notifications action' });
-    }
-
-    return res.status(400).json({ error: 'Invalid module. Use ?module=auth|users|suppliers|expenses|cashflow|reports|financing|ledger|regenerate|notifications' });
+    return res.status(400).json({ error: 'Invalid module. Use ?module=auth|users|suppliers|expenses|cashflow|reports|financing|ledger' });
   } catch (error) {
     console.error('Business API error:', error);
     return res.status(500).json({ error: 'Database error', details: error.message });
