@@ -779,15 +779,17 @@ export default async function handler(req, res) {
 
         // ── Goods received ────────────────────────────────────────────────
         if (['received', 'partially_returned', 'returned'].includes(po.status)) {
-          const receivedItems = po.receivedItems || po.items || [];
+          // Always use receivedItems with quantityReceived — never fall back to po.items
+          // po.items has ORDERED quantities; po.receivedItems has ACTUAL received quantities
+          const receivedItems = po.receivedItems || [];
           const totalReceivedValue = receivedItems.reduce((s, i) => {
-            const qty = Number(i.quantityReceived ?? i.quantity) || 0;
+            const qty = Number(i.quantityReceived) || 0;
             return s + qty * (Number(i.costPrice) || 0);
           }, 0);
 
           if (totalReceivedValue > 0) {
             const totalOrdered = (po.items || []).reduce((s, i) => s + Number(i.quantity), 0);
-            const totalReceived = receivedItems.reduce((s, i) => s + Number(i.quantityReceived ?? i.quantity), 0);
+            const totalReceived = receivedItems.reduce((s, i) => s + (Number(i.quantityReceived) || 0), 0);
             entries.push({
               partyType: 'supplier', partyId: supplierId, partyName: supplierName,
               entryType: 'credit', amount: totalReceivedValue,
@@ -848,26 +850,7 @@ export default async function handler(req, res) {
       });
     }
 
-    // ─── NOTIFICATIONS (?module=notifications) ───────────────────────────────
-    if (module === 'notifications') {
-      const { action } = req.query;
-      // Save FCM push token for sending notifications later
-      if (action === 'save-token' && req.method === 'POST') {
-        const { token } = req.body;
-        if (!token) return res.status(400).json({ error: 'Token required' });
-        const col = db.collection('pushTokens');
-        // Upsert — same token may arrive multiple times
-        await col.updateOne(
-          { token },
-          { $set: { token, updatedAt: new Date() }, $setOnInsert: { createdAt: new Date() } },
-          { upsert: true }
-        );
-        return res.status(200).json({ success: true });
-      }
-      return res.status(400).json({ error: 'Invalid notifications action' });
-    }
-
-    return res.status(400).json({ error: 'Invalid module. Use ?module=auth|users|suppliers|expenses|cashflow|reports|financing|ledger|regenerate|notifications' });
+    return res.status(400).json({ error: 'Invalid module. Use ?module=auth|users|suppliers|expenses|cashflow|reports|financing|ledger|regenerate' });
   } catch (error) {
     console.error('Business API error:', error);
     return res.status(500).json({ error: 'Database error', details: error.message });
