@@ -780,14 +780,14 @@ export default async function handler(req, res) {
         // ── Goods received ────────────────────────────────────────────────
         if (['received', 'partially_returned', 'returned'].includes(po.status)) {
           const receivedItems = po.receivedItems || po.items || [];
-          const totalReceivedValue = receivedItems.reduce((s: number, i: any) => {
+          const totalReceivedValue = receivedItems.reduce((s, i) => {
             const qty = Number(i.quantityReceived ?? i.quantity) || 0;
             return s + qty * (Number(i.costPrice) || 0);
           }, 0);
 
           if (totalReceivedValue > 0) {
-            const totalOrdered = (po.items || []).reduce((s: number, i: any) => s + Number(i.quantity), 0);
-            const totalReceived = receivedItems.reduce((s: number, i: any) => s + Number(i.quantityReceived ?? i.quantity), 0);
+            const totalOrdered = (po.items || []).reduce((s, i) => s + Number(i.quantity), 0);
+            const totalReceived = receivedItems.reduce((s, i) => s + Number(i.quantityReceived ?? i.quantity), 0);
             entries.push({
               partyType: 'supplier', partyId: supplierId, partyName: supplierName,
               entryType: 'credit', amount: totalReceivedValue,
@@ -806,7 +806,7 @@ export default async function handler(req, res) {
               description: `Short delivery credit note — PO ${po.poNumber} (₹${po.shortageValue.toFixed(2)} claimable)`,
               referenceType: 'short_delivery', referenceId: poId,
               paymentMode: null,
-              notes: po.shortageItems.map((s: any) => `${s.productName}: ordered ${s.orderedQty}, received ${s.receivedQty}`).join('; '),
+              notes: po.shortageItems.map((s) => `${s.productName}: ordered ${s.orderedQty}, received ${s.receivedQty}`).join('; '),
               date: po.receivedDate || po.updatedAt, createdAt: new Date(),
             });
           }
