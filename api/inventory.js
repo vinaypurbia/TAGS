@@ -11,6 +11,14 @@ async function getClient() {
   return client;
 }
 
+// ── Shared helper: compute stockStatus from actual numbers ───────────────────
+// Single source of truth — used everywhere in this file
+function computeStockStatus(availableStock, lowStockAlert, trackInventory = true) {
+  if (availableStock <= 0) return 'out_of_stock';
+  if (trackInventory && availableStock <= (lowStockAlert || 5)) return 'low_stock';
+  return 'in_stock';
+}
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
@@ -55,10 +63,7 @@ export default async function handler(req, res) {
             const qty = Number(item.quantity) || 1;
             const newStock = Math.max(0, (inv.currentStock || 0) - qty);
             const available = Math.max(0, newStock - (inv.reservedStock || 0));
-
-            let stockStatus = 'in_stock';
-            if (available === 0) stockStatus = 'out_of_stock';
-            else if (available <= (inv.lowStockAlert || 5)) stockStatus = 'low_stock';
+            const stockStatus = computeStockStatus(available, inv.lowStockAlert, inv.trackInventory);
 
             await inventoryCol.updateOne(
               { productId: pid },
@@ -86,7 +91,7 @@ export default async function handler(req, res) {
         });
       }
 
-      // ── BULK UPDATE lowStockAlert from 10 → 5 for all existing records ──
+      // ── BULK UPDATE lowStockAlert from 10 → 5 ────────────────────────────
       if (action === 'fixAlerts') {
         const result = await inventoryCol.updateMany(
           { lowStockAlert: 10 },
@@ -96,6 +101,7 @@ export default async function handler(req, res) {
       }
 
       // ── ENABLE ALL TRACKING ───────────────────────────────────────────────
+      // Creates inventory records for any product missing one (always out_of_stock)
       if (action === 'enableAll') {
         const allProducts = await productsCol.find({}).toArray();
         let created = 0, updated = 0;
@@ -113,6 +119,7 @@ export default async function handler(req, res) {
               updated++;
             }
           } else {
+            // FIX: new records always start at 0 / out_of_stock — never assume in stock
             await inventoryCol.insertOne({
               productId: pid,
               sku: '',
@@ -141,13 +148,12 @@ export default async function handler(req, res) {
       }
 
       // ── RECALCULATE ALL STOCK from received POs ───────────────────────────
-      // GET /api/inventory?action=recalcFromPOs
-      // Use this as a recovery tool if POs are deleted directly from DB
+      // Recovery tool: use if POs are deleted directly from DB
       if (action === 'recalcFromPOs') {
         const purchaseOrdersCol = db.collection('purchaseOrders');
         const receivedPOs = await purchaseOrdersCol.find({ status: 'received' }).toArray();
 
-        // Build map: productId → total received qty across all remaining received POs
+        // Build map: productId → total received qty from all remaining received POs
         const stockFromPOs = {};
         for (const po of receivedPOs) {
           const items = po.receivedItems || po.items || [];
@@ -167,11 +173,7 @@ export default async function handler(req, res) {
           const correctStock = stockFromPOs[pid] || 0;
           const reservedStock = inv.reservedStock || 0;
           const available = Math.max(0, correctStock - reservedStock);
-          const alert = inv.lowStockAlert || 5;
-
-          let stockStatus = 'in_stock';
-          if (available === 0) stockStatus = 'out_of_stock';
-          else if (available <= alert) stockStatus = 'low_stock';
+          const stockStatus = computeStockStatus(available, inv.lowStockAlert, inv.trackInventory);
 
           await inventoryCol.updateOne(
             { _id: inv._id },
@@ -199,10 +201,10 @@ export default async function handler(req, res) {
 
           const available = inv.availableStock || 0;
           const alert = inv.lowStockAlert || 5;
-          let stockStatus = 'in_stock';
-          if (available === 0) stockStatus = 'out_of_stock';
-          else if (available <= alert) stockStatus = 'low_stock';
+          // Always recompute — never trust the stored string
+          const stockStatus = computeStockStatus(available, alert, inv.trackInventory);
 
+          // Sync back to DB if it drifted
           if (stockStatus !== inv.stockStatus) {
             await inventoryCol.updateOne(
               { _id: inv._id },
@@ -238,47 +240,73 @@ export default async function handler(req, res) {
       const result = allProducts.map(p => {
         const pid = p._id.toString();
         const stock = inventoryMap[pid];
-        return {
-          _id: pid,
-          name: p.name,
-          category: p.category,
-          subCategory: p.subCategory,
-          price: p.price,
-          originalPrice: p.originalPrice,
-          discountedPrice: p.discountedPrice,
-          image: p.image,
-          stock: stock ? {
-            inventoryId: stock._id.toString(),
-            sku: stock.sku || '',
-            currentStock: stock.currentStock || 0,
-            reservedStock: stock.reservedStock || 0,
-            availableStock: stock.availableStock || 0,
-            lowStockAlert: stock.lowStockAlert || 5,
-            costPrice: stock.costPrice || 0,
-            unit: stock.unit || 'pcs',
-            trackInventory: stock.trackInventory !== false,
-            isInStock: (stock.availableStock || 0) > 0,
-            isLowStock: stock.trackInventory && (stock.availableStock || 0) <= (stock.lowStockAlert || 5) && (stock.availableStock || 0) > 0,
-            stockStatus: stock.stockStatus || 'in_stock',
-            frontendStatus: stock.frontendStatus || 'normal',
-            adjustmentLog: stock.adjustmentLog || [],
-            updatedAt: stock.updatedAt,
-          } : {
-            sku: '',
-            currentStock: 0,
-            reservedStock: 0,
-            availableStock: 0,
-            lowStockAlert: 5,
-            costPrice: 0,
-            unit: 'pcs',
-            trackInventory: false,
-            isInStock: false,
-            isLowStock: false,
-            stockStatus: 'out_of_stock',
-            frontendStatus: 'normal',
-            adjustmentLog: [],
-          }
-        };
+
+        if (stock) {
+          const availableStock = stock.availableStock || 0;
+          const lowStockAlert = stock.lowStockAlert || 5;
+          const trackInventory = stock.trackInventory !== false;
+          // Always compute live — never use stored stockStatus string as source of truth
+          const stockStatus = computeStockStatus(availableStock, lowStockAlert, trackInventory);
+          const isInStock = availableStock > 0;
+          const isLowStock = trackInventory && availableStock <= lowStockAlert && availableStock > 0;
+
+          return {
+            _id: pid,
+            name: p.name,
+            category: p.category,
+            subCategory: p.subCategory,
+            price: p.price,
+            originalPrice: p.originalPrice,
+            discountedPrice: p.discountedPrice,
+            image: p.image,
+            stock: {
+              inventoryId: stock._id.toString(),
+              sku: stock.sku || '',
+              currentStock: stock.currentStock || 0,
+              reservedStock: stock.reservedStock || 0,
+              availableStock,
+              lowStockAlert,
+              costPrice: stock.costPrice || 0,
+              unit: stock.unit || 'pcs',
+              trackInventory,
+              isInStock,
+              isLowStock,
+              stockStatus,            // computed live
+              frontendStatus: stock.frontendStatus || 'normal',
+              adjustmentLog: stock.adjustmentLog || [],
+              updatedAt: stock.updatedAt,
+            }
+          };
+        } else {
+          // FIX: No inventory record = out of stock, not in stock
+          return {
+            _id: pid,
+            name: p.name,
+            category: p.category,
+            subCategory: p.subCategory,
+            price: p.price,
+            originalPrice: p.originalPrice,
+            discountedPrice: p.discountedPrice,
+            image: p.image,
+            stock: {
+              inventoryId: null,
+              sku: '',
+              currentStock: 0,
+              reservedStock: 0,
+              availableStock: 0,
+              lowStockAlert: 5,
+              costPrice: 0,
+              unit: 'pcs',
+              trackInventory: false,
+              isInStock: false,
+              isLowStock: false,
+              stockStatus: 'out_of_stock',
+              frontendStatus: 'normal',
+              adjustmentLog: [],
+              updatedAt: null,
+            }
+          };
+        }
       });
 
       return res.status(200).json(result);
@@ -293,11 +321,9 @@ export default async function handler(req, res) {
       const rs = Number(reservedStock) || 0;
       const available = Math.max(0, cs - rs);
       const alert = Number(lowStockAlert) || 5;
+      const track = trackInventory !== false;
       const existing = await inventoryCol.findOne({ productId });
-
-      let stockStatus = 'in_stock';
-      if (available === 0) stockStatus = 'out_of_stock';
-      else if (available <= alert) stockStatus = 'low_stock';
+      const stockStatus = computeStockStatus(available, alert, track);
 
       const data = {
         sku: sku || '',
@@ -307,7 +333,7 @@ export default async function handler(req, res) {
         lowStockAlert: alert,
         costPrice: Number(costPrice) || 0,
         unit: unit || 'pcs',
-        trackInventory: trackInventory !== false,
+        trackInventory: track,
         stockStatus,
         updatedAt: new Date(),
       };
@@ -336,10 +362,7 @@ export default async function handler(req, res) {
 
       const newStock = Math.max(0, (existing.currentStock || 0) + (Number(adjustment) || 0));
       const available = Math.max(0, newStock - (existing.reservedStock || 0));
-
-      let stockStatus = 'in_stock';
-      if (available === 0) stockStatus = 'out_of_stock';
-      else if (existing.trackInventory && available <= (existing.lowStockAlert || 5)) stockStatus = 'low_stock';
+      const stockStatus = computeStockStatus(available, existing.lowStockAlert, existing.trackInventory);
 
       await inventoryCol.updateOne(
         { productId },
@@ -367,7 +390,6 @@ export default async function handler(req, res) {
       const existing = await inventoryCol.findOne({ productId });
       if (!existing) return res.status(404).json({ error: 'Inventory record not found' });
 
-      // ── Delete a specific adjustment log entry by index ──────────────────
       if (action === 'deleteAdjustment') {
         const idx = Number(index);
         if (isNaN(idx) || idx < 0) return res.status(400).json({ error: 'Valid index is required' });
@@ -384,7 +406,6 @@ export default async function handler(req, res) {
         return res.status(200).json({ success: true });
       }
 
-      // ── Update frontendStatus (Stock Visibility Control panel) ───────────
       const validStatuses = ['normal', 'low_stock', 'out_of_stock', 'hidden'];
       if (!validStatuses.includes(frontendStatus)) {
         return res.status(400).json({ error: `frontendStatus must be one of: ${validStatuses.join(', ')}` });
