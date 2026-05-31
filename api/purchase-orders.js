@@ -274,21 +274,9 @@ export default async function handler(req, res) {
               paymentMode: null, notes: '',
               date: new Date(), createdAt: new Date(),
             });
-            // ✅ Only one credit note for shortage — no separate overpayment entry
-            // The short_delivery entry below covers the full amount claimable
-            if (totalShortageValue > 0.01) {
-              await ledgerCol.insertOne({
-                partyType: 'supplier', partyId: resolvedSupplierId,
-                partyName: po.supplier?.name || '',
-                entryType: 'debit',
-                amount: totalShortageValue,
-                description: `Short delivery credit note — PO ${po.poNumber} (₹${totalShortageValue.toFixed(2)} claimable)`,
-                referenceType: 'short_delivery', referenceId: id,
-                paymentMode: null,
-                notes: shortageItems.map(s => `${s.productName}: ordered ${s.orderedQty}, received ${s.receivedQty}`).join('; '),
-                date: new Date(), createdAt: new Date(),
-              });
-            }
+            // NOTE: No separate shortage debit entry needed.
+            // The balance is already correct from advance paid vs goods received.
+            // Adding a short_delivery debit would double-count the shortage.
           }
         }
 
