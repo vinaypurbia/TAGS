@@ -32,7 +32,16 @@ function getFbProductCategory(category) {
   return map[category] || '1';
 }
 
-async function pushProductToMeta(product, metaId = null) {
+// ── Helper: resolve Meta availability from actual inventory ──────────────────
+// Never hardcode 'in stock' — always read from inventory collection
+async function resolveMetaAvailability(productId, inventory) {
+  if (!productId) return 'out of stock';
+  const stock = await inventory.findOne({ productId: productId.toString() });
+  if (!stock) return 'out of stock'; // no inventory record = not tracked = treat as out of stock
+  return (stock.availableStock || 0) > 0 ? 'in stock' : 'out of stock';
+}
+
+async function pushProductToMeta(product, metaId = null, inventory = null) {
   if (!META_ACCESS_TOKEN) return null;
 
   const price = parseFloat(product.discountedPrice || product.originalPrice || product.price || 0);
@@ -40,10 +49,15 @@ async function pushProductToMeta(product, metaId = null) {
   const priceInPaise = Math.round(price * 100);
   const originalPriceInPaise = Math.round(originalPrice * 100);
 
+  // FIX: resolve availability from inventory instead of hardcoding 'in stock'
+  const availability = inventory
+    ? await resolveMetaAvailability(product._id, inventory)
+    : 'out of stock'; // safe default if inventory not passed
+
   const body = {
     name: product.name,
     description: product.description || product.name,
-    availability: 'in stock',
+    availability,  // FIX: now dynamic from inventory
     condition: 'new',
     image_url: product.imageUrl || product.image || '',
     url: `https://www.ta-gs.online/products/${product._id || ''}`,
@@ -120,7 +134,7 @@ async function syncMetaToMongo(collection) {
           category: mp.category || 'General',
           image: mp.image_url || '',
           imageUrl: mp.image_url || '',
-          availability: mp.availability || 'in stock',
+          // NOTE: do NOT sync availability from Meta → our inventory is the source of truth
           updatedAt: new Date(),
         },
         $setOnInsert: { createdAt: new Date() },
@@ -133,50 +147,82 @@ async function syncMetaToMongo(collection) {
   return { synced, total: allProducts.length };
 }
 
-// ── Helper: enrich a product with its stock data ──────────────────────────────
-// FIX: now returns frontendStatus and stockStatus so frontend can act on them
+// ── Helper: enrich a product with its live inventory data ────────────────────
+// FULLY linked to inventory — no hardcoded defaults for stock status
 async function enrichWithStock(p, inventory) {
   const pid = p._id.toString();
   const stock = await inventory.findOne({ productId: pid });
-  p.stock = stock
-    ? {
-        available: stock.availableStock,
-        total: stock.currentStock,
-        reserved: stock.reservedStock,
-        isInStock: stock.availableStock > 0,
-        isLowStock: stock.trackInventory && stock.availableStock <= stock.lowStockAlert && stock.availableStock > 0,
-        availableStock: stock.availableStock,
-        lowStockAlert: stock.lowStockAlert || 10,
-        trackInventory: stock.trackInventory,
-        sku: stock.sku,
-        costPrice: stock.costPrice || 0,
-        stockStatus: stock.stockStatus || 'in_stock',
-        frontendStatus: stock.frontendStatus || 'normal',  // FIX: returned to frontend
-      }
-    : {
-        available: null,
-        isInStock: true,
-        trackInventory: false,
-        stockStatus: 'in_stock',
-        frontendStatus: 'normal',
-      };
+
+  if (stock) {
+    // Inventory record exists — compute everything live from actual numbers
+    const availableStock = stock.availableStock || 0;
+    const currentStock = stock.currentStock || 0;
+    const reservedStock = stock.reservedStock || 0;
+    const lowStockAlert = stock.lowStockAlert || 5;
+    const trackInventory = stock.trackInventory !== false;
+
+    // Always recompute isInStock and stockStatus from availableStock — never trust stored string
+    const isInStock = availableStock > 0;
+    const isLowStock = trackInventory && availableStock <= lowStockAlert && availableStock > 0;
+    let stockStatus = 'out_of_stock';
+    if (availableStock > 0) {
+      stockStatus = isLowStock ? 'low_stock' : 'in_stock';
+    }
+
+    p.stock = {
+      available: availableStock,
+      total: currentStock,
+      reserved: reservedStock,
+      isInStock,
+      isLowStock,
+      availableStock,
+      currentStock,
+      reservedStock,
+      lowStockAlert,
+      trackInventory,
+      sku: stock.sku || '',
+      costPrice: stock.costPrice || 0,
+      unit: stock.unit || 'pcs',
+      stockStatus,                              // computed live — never from DB string alone
+      frontendStatus: stock.frontendStatus || 'normal',
+      adjustmentLog: stock.adjustmentLog || [],
+      inventoryId: stock._id.toString(),
+      updatedAt: stock.updatedAt,
+    };
+  } else {
+    // FIX: No inventory record = product is NOT tracked = out of stock
+    // Never assume 'in stock' just because no record exists
+    p.stock = {
+      available: 0,
+      total: 0,
+      reserved: 0,
+      isInStock: false,           // FIX: was true — now correctly false
+      isLowStock: false,
+      availableStock: 0,
+      currentStock: 0,
+      reservedStock: 0,
+      lowStockAlert: 5,
+      trackInventory: false,
+      sku: '',
+      costPrice: 0,
+      unit: 'pcs',
+      stockStatus: 'out_of_stock', // FIX: was 'in_stock' — now correctly out_of_stock
+      frontendStatus: 'normal',
+      adjustmentLog: [],
+      inventoryId: null,
+      updatedAt: null,
+    };
+  }
   return p;
 }
 
 // ── Helper: strip Cloudinary transformation params from URL ──────────────────
-// Telegram requires a clean, direct image URL with no transformation segments.
-// Cloudinary URLs look like: /upload/w_800,h_800,c_limit,q_auto/v1778.../file.jpg
-// We strip everything between /upload/ and the version (v\d+) or filename.
 function cleanCloudinaryUrl(url) {
   if (!url) return '';
   try {
-    // Strip transformation segments — anything between /upload/ and /vNUMBER/ or /filename
     let clean = url
-      // Case 1: has version number — remove all segments between /upload/ and /vNUMBER/
       .replace(/\/upload\/(?:[^/]+\/)*?(v\d+\/)/, '/upload/$1')
-      // Case 2: no version number — remove single transformation segment
       .replace(/\/upload\/[^/]+\/(?!v\d)/, '/upload/')
-      // Remove any query string
       .replace(/\?.*$/, '');
     return clean;
   } catch {
@@ -200,7 +246,7 @@ export default async function handler(req, res) {
       const {
         id, withStock, syncMeta, pushAll,
         page, limit, category, subcategory, search,
-        adminView  // FIX: ?adminView=true skips hidden filter (for admin panel)
+        adminView
       } = req.query;
 
       // ── Special ops ───────────────────────────────────────────
@@ -220,36 +266,22 @@ export default async function handler(req, res) {
         for (const product of allProducts) {
           try {
             const pid = product._id.toString();
+            // FIX: pass inventory so Meta availability is resolved from actual stock
             const metaResult = await pushProductToMeta(
               { ...product, _id: pid },
-              product.metaId || null
+              product.metaId || null,
+              inventory
             );
-            results.push({ name: product.name, metaResponse: metaResult });
-            if (metaResult?.error) {
-              failed++;
-              errors.push({ name: product.name, error: metaResult.error.message });
-            } else {
-              if (metaResult?.id) {
-                await collection.updateOne(
-                  { _id: product._id },
-                  { $set: { metaId: metaResult.id } }
-                );
-              }
-              pushed++;
-            }
-          } catch (err) {
+            results.push({ name: product.name, result: metaResult });
+            if (metaResult?.id || metaResult?.success) pushed++;
+            else { failed++; errors.push({ name: product.name, error: metaResult }); }
+          } catch (e) {
             failed++;
-            errors.push({ name: product.name, error: err.message });
+            errors.push({ name: product.name, error: e.message });
           }
         }
 
-        return res.status(200).json({
-          success: true,
-          message: `Pushed ${pushed} of ${allProducts.length} products to Meta/WhatsApp catalog`,
-          pushed, failed, total: allProducts.length,
-          errors: errors.length > 0 ? errors : undefined,
-          results,
-        });
+        return res.status(200).json({ success: true, pushed, failed, errors, results });
       }
 
       // ── Single product by ID ───────────────────────────────────
@@ -300,14 +332,12 @@ export default async function handler(req, res) {
         .limit(pageSize)
         .toArray();
 
-      // FIX: Always enrich with stock now (needed to read frontendStatus for filtering)
-      // adminView=true skips the hidden filter so admin sees everything
+      // Always enrich with live inventory data
       const enriched = await Promise.all(
         products.map(p => enrichWithStock(p, inventory))
       );
 
-      // FIX: Filter out hidden products from customer-facing catalog
-      // adminView=true bypasses this so the admin panel always sees all products
+      // Filter out hidden products from customer-facing catalog
       const result = adminView === 'true'
         ? enriched
         : enriched.filter(p => p.stock?.frontendStatus !== 'hidden');
@@ -322,7 +352,7 @@ export default async function handler(req, res) {
     }
 
     // ── Telegram Broadcast ───────────────────────────────────────────────────
-   if (req.method === 'POST' && (req.query.broadcast === 'true' || req.body.broadcast === true)) {
+    if (req.method === 'POST' && (req.query.broadcast === 'true' || req.body.broadcast === true)) {
       const { imageUrl, message } = req.body;
       const TOKEN   = process.env.TELEGRAM_BOT_TOKEN;
       const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
@@ -337,7 +367,6 @@ export default async function handler(req, res) {
         console.log('[Broadcast] chat_id:', CHAT_ID);
         console.log('[Broadcast] image URL (cleaned):', clean);
 
-        // Send image + caption together as one Telegram message
         const photoRes = await fetch(`${BASE}/sendPhoto`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -352,11 +381,9 @@ export default async function handler(req, res) {
         console.log('[Broadcast] sendPhoto response:', JSON.stringify(photoData));
 
         if (photoData.ok) {
-          // Success — image + caption posted together
           return res.status(200).json({ success: true, imageSent: true });
         }
 
-        // Image failed — fall back to text-only message
         console.warn('[Broadcast] sendPhoto failed:', photoData.description, '— falling back to text-only');
         const textRes = await fetch(`${BASE}/sendMessage`, {
           method: 'POST',
@@ -388,30 +415,30 @@ export default async function handler(req, res) {
       const result = await collection.insertOne(product);
       const insertedId = result.insertedId.toString();
 
-      if (req.body.trackInventory) {
-        const cs = Number(req.body.currentStock) || 0;
-        // FIX: compute stockStatus on product creation
-        const stockStatus = cs === 0 ? 'out_of_stock' : 'in_stock';
-        await inventory.insertOne({
-          productId: insertedId,
-          sku: req.body.sku || '',
-          currentStock: cs,
-          reservedStock: 0,
-          availableStock: cs,
-          lowStockAlert: 10,
-          costPrice: Number(req.body.costPrice) || 0,
-          unit: 'pcs',
-          trackInventory: true,
-          stockStatus,
-          frontendStatus: 'normal',   // FIX: default visibility
-          adjustmentLog: [],
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        });
-      }
+      // FIX: ALWAYS create an inventory record for every new product
+      // This ensures no product ever exists without an inventory record
+      const cs = Number(req.body.currentStock) || 0;
+      const stockStatus = cs === 0 ? 'out_of_stock' : 'in_stock';
+      await inventory.insertOne({
+        productId: insertedId,
+        sku: req.body.sku || '',
+        currentStock: cs,
+        reservedStock: 0,
+        availableStock: cs,
+        lowStockAlert: 5,
+        costPrice: Number(req.body.costPrice) || 0,
+        unit: 'pcs',
+        trackInventory: req.body.trackInventory !== false, // default true
+        stockStatus,
+        frontendStatus: 'normal',
+        adjustmentLog: [],
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
 
       try {
-        const metaResult = await pushProductToMeta({ ...product, _id: insertedId });
+        // FIX: pass inventory so Meta gets real availability
+        const metaResult = await pushProductToMeta({ ...product, _id: insertedId }, null, inventory);
         if (metaResult?.id) {
           await collection.updateOne(
             { _id: result.insertedId },
@@ -440,7 +467,8 @@ export default async function handler(req, res) {
       try {
         const existing = await collection.findOne({ _id: new ObjectId(id) });
         if (existing) {
-          await pushProductToMeta({ ...existing, ...updateData, _id: id }, existing.metaId || null);
+          // FIX: pass inventory so Meta availability stays in sync with actual stock
+          await pushProductToMeta({ ...existing, ...updateData, _id: id }, existing.metaId || null, inventory);
         }
       } catch (metaErr) {
         console.error('Meta update failed (DB updated):', metaErr.message);
@@ -457,7 +485,7 @@ export default async function handler(req, res) {
       const result = await collection.deleteOne({ _id: new ObjectId(id) });
       if (result.deletedCount === 0) return res.status(404).json({ error: 'Product not found' });
 
-      // Also clean up inventory record
+      // Always clean up inventory record when product is deleted
       await inventory.deleteOne({ productId: id });
 
       try {
