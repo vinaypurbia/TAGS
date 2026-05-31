@@ -1390,9 +1390,9 @@ function PurchaseOrdersModule({ showMsg }: any) {
 
   const deletePO = async (id: string, poNumber: string, status: string) => {
     const warn = status === 'received'
-      ? `Delete ${poNumber}? This will remove the PO and all its cash flow entries. Stock already received will NOT be reversed.`
+      ? `Delete ${poNumber}? This will remove the PO, REVERSE all stock, and delete all cash flow and ledger entries.`
       : status === 'ordered'
-      ? `Delete ${poNumber}? This will remove the PO and all advance/payment entries from cash flow.`
+      ? `Delete ${poNumber}? This will remove the PO and all advance/payment entries from cash flow and ledger.`
       : `Delete ${poNumber}?`;
     if (!confirm(warn)) return;
     await fetch('/api/purchase-orders', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
@@ -1423,12 +1423,29 @@ function PurchaseOrdersModule({ showMsg }: any) {
   const submitAdvance = async () => {
     if (!advForm.amount || Number(advForm.amount) <= 0) { showMsg('Enter a valid amount.', 'error'); return; }
     const data = await handleAction(advModal.po._id, 'advance_payment', { amount: Number(advForm.amount), paymentMode: advForm.paymentMode, notes: advForm.notes });
-    if (data.success) { setAdvModal({ open: false, po: null }); setAdvForm({ amount: '', paymentMode: 'cash', notes: '' }); setSupplierCredit({ netBalance: 0, loading: false }); }
+    if (data.success) {
+      setAdvModal({ open: false, po: null });
+      setAdvForm({ amount: '', paymentMode: 'cash', notes: '' });
+      setSupplierCredit({ netBalance: 0, loading: false });
+      fetchPOs(); // ← auto-refresh PO list to show updated paid/due amounts
+    }
   };
 
   const openReceive = (po: any) => {
     setRecvItems(po.items.map((i: any) => ({ ...i, quantityReceived: i.quantity, damageNotes: '' })));
     setRecvPayMode('cash'); setRecvModal({ open: true, po });
+  };
+
+  const removeRecvItem = (index: number) => {
+    setRecvItems((prev: any[]) => prev.filter((_: any, i: number) => i !== index));
+  };
+
+  const addRecvItem = () => {
+    setRecvItems((prev: any[]) => [...prev, { productId: '', productName: '', sku: '', quantity: 1, quantityReceived: 1, costPrice: 0, totalCost: 0, damageNotes: '', isExtra: true }]);
+  };
+
+  const updateRecvItem = (index: number, field: string, value: any) => {
+    setRecvItems((prev: any[]) => prev.map((item: any, i: number) => i === index ? { ...item, [field]: value } : item));
   };
 
   const submitReceive = async () => {
@@ -1550,7 +1567,8 @@ function PurchaseOrdersModule({ showMsg }: any) {
                   )}
 
                   <div className="flex gap-2 flex-wrap pt-1">
-                    {['draft', 'ordered'].includes(po.status) && (
+                    {/* Edit PO — only for draft (ordered POs are edited at receive time) */}
+                    {po.status === 'draft' && (
                       <button onClick={() => openEdit(po)} className="flex items-center gap-1 text-xs text-blue-500 font-bold border border-blue-200 px-3 py-1.5 rounded-full hover:bg-blue-50 transition">
                         <Edit2 className="w-3 h-3" /> Edit PO
                       </button>
@@ -1563,7 +1581,10 @@ function PurchaseOrdersModule({ showMsg }: any) {
                     )}
                     {po.status === 'ordered' && (
                       <>
-                        <button onClick={() => openAdvance(po)} className="text-xs bg-yellow-500 text-white font-bold px-3 py-1.5 rounded-full hover:bg-yellow-600 transition">💰 Advance Payment</button>
+                        {/* Hide Advance Payment when fully paid */}
+                        {(po.dueAmount > 0) && (
+                          <button onClick={() => openAdvance(po)} className="text-xs bg-yellow-500 text-white font-bold px-3 py-1.5 rounded-full hover:bg-yellow-600 transition">💰 Advance Payment</button>
+                        )}
                         <button onClick={() => openReceive(po)} className="text-xs bg-green-500 text-white font-bold px-3 py-1.5 rounded-full hover:bg-green-600 transition">✓ Receive Stock</button>
                         <button onClick={() => handleAction(po._id, 'cancel')} className="text-xs bg-gray-100 text-gray-600 font-bold px-3 py-1.5 rounded-full hover:bg-gray-200 transition">Cancel</button>
                         <button onClick={() => deletePO(po._id, po.poNumber, po.status)} className="text-xs bg-red-50 text-red-500 font-bold px-3 py-1.5 rounded-full hover:bg-red-100 transition">Delete</button>
@@ -1644,31 +1665,49 @@ function PurchaseOrdersModule({ showMsg }: any) {
               <div><h3 className="font-black text-gray-900 text-sm uppercase tracking-widest">Receive Stock</h3><p className="text-xs text-gray-400 mt-0.5">{recvModal.po.poNumber} · {recvModal.po.supplier?.name}</p></div>
               <button onClick={() => setRecvModal({ open: false, po: null })} className="text-gray-400 hover:text-gray-600 font-black text-xl">✕</button>
             </div>
-            <p className="text-xs text-blue-600 font-bold bg-blue-50 rounded-lg px-3 py-2">Enter actual quantity received per item. Reduce if short or damaged and add a note — the shortage will be recorded against the supplier.</p>
-            <div className="space-y-3">
-              {recvItems.map((item, i) => (
-                <div key={i} className="bg-gray-50 rounded-xl p-3 space-y-2">
+            <p className="text-xs text-blue-600 font-bold bg-blue-50 rounded-lg px-3 py-2">Enter actual quantity received. Remove items not sent. Add items supplier sent that weren't on the PO.</p>
+            <div className="space-y-3 max-h-72 overflow-y-auto pr-1">
+              {recvItems.map((item: any, i: number) => (
+                <div key={i} className={`rounded-xl p-3 space-y-2 ${item.isExtra ? 'bg-blue-50 border-2 border-blue-200' : 'bg-gray-50'}`}>
                   <div className="flex justify-between items-center">
-                    <p className="text-sm font-black text-gray-800">{item.productName}</p>
-                    <span className="text-xs text-gray-400 font-bold">Ordered: {item.quantity} · {fmt(item.costPrice)} each</span>
+                    <div>
+                      {item.isExtra ? (
+                        <input value={item.productName} onChange={e => updateRecvItem(i, 'productName', e.target.value)}
+                          placeholder="Product name..." className="text-sm font-black text-gray-800 bg-transparent border-b border-blue-300 outline-none w-full" />
+                      ) : (
+                        <p className="text-sm font-black text-gray-800">{item.productName}</p>
+                      )}
+                      {item.isExtra
+                        ? <span className="text-[10px] text-blue-500 font-bold">➕ Extra item from supplier</span>
+                        : <span className="text-xs text-gray-400 font-bold">Ordered: {item.quantity} · {fmt(item.costPrice)} each</span>
+                      }
+                    </div>
+                    <button onClick={() => removeRecvItem(i)} className="text-red-400 hover:text-red-600 font-black text-lg leading-none ml-2" title="Remove item">✕</button>
                   </div>
                   <div className="grid grid-cols-2 gap-2">
                     <div><label className="block text-[10px] font-black uppercase tracking-widest text-gray-400 mb-1">Qty Received *</label>
-                      <input type="number" min="0" max={item.quantity} value={item.quantityReceived}
-                        onChange={e => setRecvItems(items => items.map((it, idx) => idx === i ? { ...it, quantityReceived: Number(e.target.value) } : it))}
+                      <input type="number" min="0" value={item.quantityReceived}
+                        onChange={e => updateRecvItem(i, 'quantityReceived', Number(e.target.value))}
                         className="w-full border-2 border-gray-200 rounded-lg px-2 py-1.5 text-sm font-bold focus:border-[#FA5600] outline-none" />
                     </div>
-                    <div><label className="block text-[10px] font-black uppercase tracking-widest text-gray-400 mb-1">Damage / Shortage Note</label>
-                      <input value={item.damageNotes} onChange={e => setRecvItems(items => items.map((it, idx) => idx === i ? { ...it, damageNotes: e.target.value } : it))}
-                        placeholder="e.g. 2 pcs damaged" className="w-full border-2 border-gray-200 rounded-lg px-2 py-1.5 text-sm font-bold focus:border-[#FA5600] outline-none" />
+                    <div><label className="block text-[10px] font-black uppercase tracking-widest text-gray-400 mb-1">{item.isExtra ? 'Cost Price (₹)' : 'Damage / Shortage Note'}</label>
+                      {item.isExtra
+                        ? <input type="number" min="0" value={item.costPrice} onChange={e => updateRecvItem(i, 'costPrice', Number(e.target.value))}
+                            placeholder="0" className="w-full border-2 border-gray-200 rounded-lg px-2 py-1.5 text-sm font-bold focus:border-[#FA5600] outline-none" />
+                        : <input value={item.damageNotes} onChange={e => updateRecvItem(i, 'damageNotes', e.target.value)}
+                            placeholder="e.g. 2 pcs damaged" className="w-full border-2 border-gray-200 rounded-lg px-2 py-1.5 text-sm font-bold focus:border-[#FA5600] outline-none" />
+                      }
                     </div>
                   </div>
-                  {Number(item.quantityReceived) < Number(item.quantity) && (
+                  {!item.isExtra && Number(item.quantityReceived) < Number(item.quantity) && (
                     <p className="text-[10px] text-red-500 font-bold">⚠️ Shortage: {Number(item.quantity) - Number(item.quantityReceived)} units · {fmt((Number(item.quantity) - Number(item.quantityReceived)) * Number(item.costPrice))} owed by {recvModal.po.supplier?.name || 'supplier'}</p>
                   )}
                 </div>
               ))}
             </div>
+            <button onClick={addRecvItem} className="text-xs text-blue-500 font-black uppercase tracking-widest flex items-center gap-1 hover:underline">
+              ➕ Add Item Supplier Sent
+            </button>
             <div><label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">Balance Payment Mode</label>
               <select value={recvPayMode} onChange={e => setRecvPayMode(e.target.value)} className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none bg-white">
                 <option value="cash">Cash</option><option value="upi">UPI</option><option value="bank">Bank Transfer</option><option value="cheque">Cheque</option>
