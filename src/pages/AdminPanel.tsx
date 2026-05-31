@@ -370,15 +370,20 @@ export function AdminPanel() {
       fetch('/api/customers?module=orders').then(r => r.json()).catch(() => ({})),
     ]).then(([sales, cash, stockShortage, customers, inventory, pendingSales, ordersData]) => {
       const invArr = Array.isArray(inventory) ? inventory : [];
+      // customers returns a plain array OR {summary} object depending on query
+      const customerCount = Array.isArray(customers)
+        ? customers.length
+        : (customers?.summary?.totalCustomers || customers?.length || 0);
       setDashStats({
         revenue:       sales?.summary?.totalRevenue  || 0,
         orders:        sales?.summary?.totalOrders   || 0,
         profit:        cash?.summary?.profit         || 0,
         expense:       cash?.summary?.expense        || 0,
-        customers:     customers?.summary?.totalCustomers || 0,
+        customers:     customerCount,
         totalProducts: invArr.length,
-        inStock:       invArr.filter((p: any) =>  p.stock?.trackInventory && p.stock?.isInStock).length,
-        outOfStock:    invArr.filter((p: any) =>  p.stock?.trackInventory && !p.stock?.isInStock).length,
+        // inventory items have availableStock directly (not nested under stock)
+        inStock:       invArr.filter((p: any) => p.availableStock > 0).length,
+        outOfStock:    invArr.filter((p: any) => p.availableStock === 0).length,
       });
       setShortage(Array.isArray(stockShortage) ? stockShortage : []);
       // Pending sales (not yet confirmed) + confirmed orders (confirmed but not delivered)
