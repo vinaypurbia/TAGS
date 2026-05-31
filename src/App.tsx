@@ -243,15 +243,29 @@ function AppShell() {
   const [minTimeDone, setMinTimeDone] = useState(false);
 
   // Handle foreground push notifications
-  useFirebaseNotifications();
+  // Delay until after splash to avoid SW race condition
+  const [notifReady, setNotifReady] = useState(false);
+  useEffect(() => {
+    // Wait for SW to be ready before initializing Firebase messaging
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.ready
+        .then(() => setNotifReady(true))
+        .catch(() => setNotifReady(true)); // fail silently
+    } else {
+      setNotifReady(true);
+    }
+  }, []);
+
+  useFirebaseNotifications(notifReady);
 
   // Request notification permission after splash screen
   useEffect(() => {
+    if (!notifReady) return;
     const timer = setTimeout(() => {
       requestNotificationPermission();
     }, 5000); // Ask after 5 seconds — not immediately on load
     return () => clearTimeout(timer);
-  }, []);
+  }, [notifReady]);
 
   // Start a timer on mount — splash shows for at least MIN_SPLASH_MS
   useEffect(() => {
