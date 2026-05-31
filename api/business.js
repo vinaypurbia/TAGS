@@ -848,7 +848,26 @@ export default async function handler(req, res) {
       });
     }
 
-    return res.status(400).json({ error: 'Invalid module. Use ?module=auth|users|suppliers|expenses|cashflow|reports|financing|ledger|regenerate' });
+    // ─── NOTIFICATIONS (?module=notifications) ───────────────────────────────
+    if (module === 'notifications') {
+      const { action } = req.query;
+      // Save FCM push token for sending notifications later
+      if (action === 'save-token' && req.method === 'POST') {
+        const { token } = req.body;
+        if (!token) return res.status(400).json({ error: 'Token required' });
+        const col = db.collection('pushTokens');
+        // Upsert — same token may arrive multiple times
+        await col.updateOne(
+          { token },
+          { $set: { token, updatedAt: new Date() }, $setOnInsert: { createdAt: new Date() } },
+          { upsert: true }
+        );
+        return res.status(200).json({ success: true });
+      }
+      return res.status(400).json({ error: 'Invalid notifications action' });
+    }
+
+    return res.status(400).json({ error: 'Invalid module. Use ?module=auth|users|suppliers|expenses|cashflow|reports|financing|ledger|regenerate|notifications' });
   } catch (error) {
     console.error('Business API error:', error);
     return res.status(500).json({ error: 'Database error', details: error.message });
