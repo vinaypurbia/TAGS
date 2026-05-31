@@ -98,7 +98,7 @@ export default async function handler(req, res) {
         }
 
         const token = jwt.sign({ customerId, phone, name }, JWT_SECRET, { expiresIn: '30d' });
-        return res.status(201).json({ success: true, token, customer: { customerId, name, phone, email: email || '' } });
+        return res.status(201).json({ success: true, token, customer: { customerId, name, phone, email: email || '', address: address || '' } });
       }
 
       // ── LOGIN WITH PASSWORD ────────────────────────────────────────────────
@@ -114,7 +114,7 @@ export default async function handler(req, res) {
         if (!valid) return res.status(401).json({ error: 'Incorrect password.' });
 
         const token = jwt.sign({ customerId: customer._id.toString(), phone: customer.phone, name: customer.name }, JWT_SECRET, { expiresIn: '30d' });
-        return res.status(200).json({ success: true, token, customer: { customerId: customer._id.toString(), name: customer.name, phone: customer.phone, email: customer.email || '' } });
+        return res.status(200).json({ success: true, token, customer: { customerId: customer._id.toString(), name: customer.name, phone: customer.phone, email: customer.email || '', address: customer.address || '' } });
       }
 
       // ── SEND OTP ──────────────────────────────────────────────────────────
@@ -167,7 +167,7 @@ export default async function handler(req, res) {
         await otps.deleteOne({ customerId: customer._id.toString() });
 
         const token = jwt.sign({ customerId: customer._id.toString(), phone: customer.phone, name: customer.name }, JWT_SECRET, { expiresIn: '30d' });
-        return res.status(200).json({ success: true, token, customer: { customerId: customer._id.toString(), name: customer.name, phone: customer.phone, email: customer.email || '' } });
+        return res.status(200).json({ success: true, token, customer: { customerId: customer._id.toString(), name: customer.name, phone: customer.phone, email: customer.email || '', address: customer.address || '' } });
       }
 
       // ── VERIFY TOKEN ──────────────────────────────────────────────────────
@@ -179,7 +179,7 @@ export default async function handler(req, res) {
           const decoded = jwt.verify(token, JWT_SECRET);
           const customer = await customers.findOne({ _id: new ObjectId(decoded.customerId) });
           if (!customer) return res.status(401).json({ valid: false });
-          return res.status(200).json({ valid: true, customer: { customerId: customer._id.toString(), name: customer.name, phone: customer.phone, email: customer.email || '' } });
+          return res.status(200).json({ valid: true, customer: { customerId: customer._id.toString(), name: customer.name, phone: customer.phone, email: customer.email || '', address: customer.address || '' } });
         } catch {
           return res.status(401).json({ valid: false });
         }
