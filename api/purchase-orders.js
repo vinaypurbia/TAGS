@@ -213,28 +213,25 @@ export default async function handler(req, res) {
         const balanceDue = Math.max(0, totalReceivedValue - advanceAlreadyPaid);
         // If we overpaid (advance > received value), supplier owes us the difference
         const overpaidAmount = Math.max(0, advanceAlreadyPaid - totalReceivedValue);
-        await cashFlow.insertOne({
-          type: 'expense', category: 'inventory_asset', amount: totalReceivedValue,
-          paymentMode: poPaymentMode || 'cash',
-          description: `Stock Received — PO ${po.poNumber} — ${po.supplier?.name || 'Supplier'} (${totalReceived}/${totalOrdered} units)`,
-          referenceId: id, referenceType: 'purchase_order',
-          poNumber: po.poNumber, supplierName: po.supplier?.name || '',
-          advancePaid: advanceAlreadyPaid, balancePaid: balanceDue,
-          date: new Date(), createdAt: new Date(),
-        });
+        // ✅ NO cashflow entry here — money already left during advance_payment
+        // Only create a cashflow entry if there is remaining balance due (paid on delivery)
+        if (balanceDue > 0.01) {
+          await cashFlow.insertOne({
+            type: 'expense', category: 'inventory_asset', amount: balanceDue,
+            paymentMode: poPaymentMode || 'cash',
+            description: `Balance Payment on Delivery — PO ${po.poNumber} — ${po.supplier?.name || 'Supplier'} (${totalReceived}/${totalOrdered} units)`,
+            referenceId: id, referenceType: 'purchase_order',
+            poNumber: po.poNumber, supplierName: po.supplier?.name || '',
+            date: new Date(), createdAt: new Date(),
+          });
+        }
 
         const shortageStatus = shortageItems.length > 0 ? 'has_shortage' : 'complete';
         await orders.updateOne({ _id: new ObjectId(id) }, { $set: { status: 'received', receivedDate: new Date(), updatedAt: new Date(), receivedItems, shortageStatus, shortageItems: shortageItems.length > 0 ? shortageItems : [], shortageValue: totalShortageValue, shortageResolved: shortageItems.length === 0, paidAmount: advanceAlreadyPaid + balanceDue, dueAmount: 0 } });
 
-        if (shortageItems.length > 0) {
-          await cashFlow.insertOne({
-            type: 'income', category: 'po_shortage_receivable', amount: totalShortageValue,
-            description: `Shortage / Damage — PO ${po.poNumber} — ${po.supplier?.name || 'Supplier'} — ${shortageItems.map(s => `${s.productName}: ${s.shortageQty} missing`).join(', ')}`,
-            referenceId: id, referenceType: 'po_shortage',
-            poNumber: po.poNumber, supplierName: po.supplier?.name || '',
-            shortageItems, resolved: false, date: new Date(), createdAt: new Date(),
-          });
-        }
+        // ✅ NO cashflow income for shortage — money hasn't come back yet
+        // Shortage is tracked in supplier ledger as a credit note (debit on supplier)
+        // When supplier resolves it (refund or goods), THEN cashflow is created
 
         // ── AP LEDGER: auto-entries when stock received ──
         {
@@ -254,22 +251,8 @@ export default async function handler(req, res) {
               paymentMode: null, notes: '',
               date: new Date(), createdAt: new Date(),
             });
-            // If advance paid > actual received value → supplier owes us the diff
-            // Post as debit so it shows as credit/receivable on supplier's ledger
-            if (overpaidAmount > 0.01) {
-              await ledgerCol.insertOne({
-                partyType: 'supplier', partyId: resolvedSupplierId,
-                partyName: po.supplier?.name || '',
-                entryType: 'debit',
-                amount: overpaidAmount,
-                description: `Overpayment credit — PO ${po.poNumber} (paid ₹${advanceAlreadyPaid.toFixed(2)}, goods ₹${totalReceivedValue.toFixed(2)})`,
-                referenceType: 'overpayment', referenceId: id,
-                paymentMode: null,
-                notes: `Advance: ₹${advanceAlreadyPaid.toFixed(2)} — Received: ₹${totalReceivedValue.toFixed(2)} — Credit due: ₹${overpaidAmount.toFixed(2)}`,
-                date: new Date(), createdAt: new Date(),
-              });
-            }
-
+            // ✅ Only one credit note for shortage — no separate overpayment entry
+            // The short_delivery entry below covers the full amount claimable
             if (totalShortageValue > 0.01) {
               await ledgerCol.insertOne({
                 partyType: 'supplier', partyId: resolvedSupplierId,
