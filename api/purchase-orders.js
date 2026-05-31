@@ -159,6 +159,8 @@ export default async function handler(req, res) {
         const newPaid = (po.paidAmount || 0) + paid;
         const newDue = Math.max(0, po.totalAmount - newPaid);
         await orders.updateOne({ _id: new ObjectId(id) }, { $set: { paidAmount: newPaid, dueAmount: newDue, updatedAt: new Date() } });
+
+        // ── Cashflow entry ──
         await cashFlow.insertOne({
           type: 'expense', category: 'advance_payment', amount: paid,
           paymentMode: pmMode || 'cash',
@@ -167,6 +169,27 @@ export default async function handler(req, res) {
           supplierName: po.supplier?.name || '', poNumber: po.poNumber,
           date: new Date(), createdAt: new Date(),
         });
+
+        // ── Ledger entry — debit on supplier (we paid them) ──
+        let resolvedSupplierId = po.supplierId || null;
+        if (!resolvedSupplierId && po.supplier?.name) {
+          const supplierDoc = await db.collection('suppliers').findOne({ name: po.supplier.name });
+          if (supplierDoc) resolvedSupplierId = supplierDoc._id.toString();
+        }
+        if (resolvedSupplierId) {
+          await ledgerCol.insertOne({
+            partyType: 'supplier', partyId: resolvedSupplierId,
+            partyName: po.supplier?.name || '',
+            entryType: 'debit',
+            amount: paid,
+            description: `Advance Payment — PO ${po.poNumber}${pmNotes ? ` — ${pmNotes}` : ''}`,
+            referenceType: 'advance_payment', referenceId: id,
+            paymentMode: pmMode || 'cash',
+            notes: pmNotes || '',
+            date: new Date(), createdAt: new Date(),
+          });
+        }
+
         return res.status(200).json({ success: true, paidAmount: newPaid, dueAmount: newDue });
       }
 
