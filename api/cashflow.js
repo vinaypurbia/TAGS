@@ -67,12 +67,12 @@ export default async function handler(req, res) {
         const PL_EXCLUDE = ['financing', 'inventory_asset', 'advance_payment', 'supplier_payment', 'ledger_payment', 'po_shortage_receivable', 'po_shortage_refund', 'supplier_return_refund'];
         const all = await cashFlow.find({ ...filter, category: { $nin: PL_EXCLUDE } }).toArray();
 
-        const revenue = all.filter((e) => e.type === 'income' && e.category === 'sales').reduce((s, e) => s + e.amount, 0);
+        const revenue = all.filter((e) => e.type === 'income' && (e.category === 'sales' || e.category === 'delivery_collection')).reduce((s, e) => s + e.amount, 0);
         const cogs = all.filter((e) => e.type === 'expense' && e.category === 'cogs').reduce((s, e) => s + e.amount, 0);
         const grossProfit = revenue - cogs;
         const operatingExpenses = all.filter((e) => e.type === 'expense' && e.category !== 'cogs').reduce((s, e) => s + e.amount, 0);
         const netProfit = grossProfit - operatingExpenses;
-        const otherIncome = all.filter((e) => e.type === 'income' && e.category !== 'sales').reduce((s, e) => s + e.amount, 0);
+        const otherIncome = all.filter((e) => e.type === 'income' && e.category !== 'sales' && e.category !== 'delivery_collection').reduce((s, e) => s + e.amount, 0);
         const totalIncome = revenue + otherIncome;
         const totalExpense = cogs + operatingExpenses;
 
