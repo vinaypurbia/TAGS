@@ -236,6 +236,7 @@ export function BusinessEmbed() {
     { id: 'ledger',    label: 'AP/AR Ledger', icon: BookOpen },
     { id: 'reports', label: 'Reports', icon: FileText },
     { id: 'users', label: 'Users', icon: Users },
+    { id: 'regenerate', label: '🔄 Regenerate', icon: FileText },
   ];
 
   return (
@@ -267,6 +268,7 @@ export function BusinessEmbed() {
       {module === 'ledger'    && <LedgerModule showMsg={showMsg} />}
       {module === 'reports' && <ReportsModule showMsg={showMsg} />}
       {module === 'users' && <UsersModule showMsg={showMsg} />}
+      {module === 'regenerate' && <RegenerateModule showMsg={showMsg} />}
     </div>
   );
 }
@@ -2351,6 +2353,121 @@ function SuppliersModule({ showMsg }: any) {
               </div>
             </div>
           ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── REGENERATE BOOKS ────────────────────────────────────────────────────────
+function RegenerateModule({ showMsg }: any) {
+  const { token } = useAuth();
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<any>(null);
+  const [scope, setScope] = useState<'ledger' | 'full'>('ledger');
+
+  const runRegenerate = async () => {
+    const scopeLabel = scope === 'full' ? 'FULL (ledger + cashflow)' : 'LEDGER ONLY';
+    if (!window.confirm(`⚠️ This will DELETE and REBUILD all PO-linked ${scopeLabel} entries.\n\nThis cannot be undone. Continue?`)) return;
+    setLoading(true);
+    setResult(null);
+    try {
+      const res = await fetch('/api/business?module=regenerate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders(token) },
+        body: JSON.stringify({ scope }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setResult(data);
+        showMsg(`✅ Regenerated: ${data.ledgerCreated} ledger entries rebuilt`, 'success');
+      } else {
+        showMsg(data.error || 'Failed', 'error');
+      }
+    } catch (err: any) {
+      showMsg('Error: ' + err.message, 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-white rounded-2xl border-2 border-gray-100 p-5 space-y-4">
+        <div>
+          <h3 className="font-black text-sm uppercase tracking-widest text-gray-800">🔄 Regenerate Books</h3>
+          <p className="text-xs text-gray-400 mt-1">Rebuilds all financial entries from your transaction data. Use this to fix incorrect ledger or cashflow entries.</p>
+        </div>
+
+        {/* Scope selector */}
+        <div className="grid grid-cols-2 gap-3">
+          <button onClick={() => setScope('ledger')}
+            className={`p-4 rounded-xl border-2 text-left transition ${scope === 'ledger' ? 'border-[#FA5600] bg-orange-50' : 'border-gray-200 hover:border-gray-300'}`}>
+            <p className="font-black text-sm text-gray-800">📒 Ledger Only</p>
+            <p className="text-xs text-gray-400 mt-1">Rebuilds supplier ledger entries only. Safe — cashflow untouched.</p>
+          </button>
+          <button onClick={() => setScope('full')}
+            className={`p-4 rounded-xl border-2 text-left transition ${scope === 'full' ? 'border-red-500 bg-red-50' : 'border-gray-200 hover:border-gray-300'}`}>
+            <p className="font-black text-sm text-gray-800">⚡ Full Regenerate</p>
+            <p className="text-xs text-gray-400 mt-1">Rebuilds both ledger AND cashflow entries. Use with caution.</p>
+          </button>
+        </div>
+
+        {/* Warning */}
+        <div className={`rounded-xl p-3 text-xs font-bold ${scope === 'full' ? 'bg-red-50 text-red-700 border border-red-200' : 'bg-yellow-50 text-yellow-700 border border-yellow-200'}`}>
+          {scope === 'full'
+            ? '⚠️ Full regenerate will delete ALL PO-linked cashflow entries and rebuild them. Manual cashflow entries are preserved.'
+            : '✅ Safe mode — only rebuilds supplier ledger entries from POs. Your cashflow entries are untouched.'}
+        </div>
+
+        {/* What will be rebuilt */}
+        <div className="bg-gray-50 rounded-xl p-3 space-y-1">
+          <p className="text-[10px] font-black uppercase tracking-widest text-gray-500 mb-2">Will Rebuild:</p>
+          <p className="text-xs text-gray-600 font-semibold">✅ Advance payment ledger entries</p>
+          <p className="text-xs text-gray-600 font-semibold">✅ Goods received ledger entries</p>
+          <p className="text-xs text-gray-600 font-semibold">✅ Short delivery credit notes</p>
+          {scope === 'full' && <>
+            <p className="text-xs text-gray-600 font-semibold">✅ Advance payment cashflow entries</p>
+          </>}
+          <p className="text-[10px] text-gray-400 font-bold mt-2">🔒 Preserved: Manual ledger entries, expenses, financing, sales</p>
+        </div>
+
+        <button onClick={runRegenerate} disabled={loading}
+          className={`w-full py-3 rounded-xl font-black text-sm uppercase tracking-widest transition ${scope === 'full' ? 'bg-red-500 hover:bg-red-600 text-white' : 'bg-[#FA5600] hover:bg-[#E04A00] text-white'} disabled:opacity-50`}>
+          {loading ? '⏳ Regenerating...' : `🔄 Run ${scope === 'full' ? 'Full' : 'Ledger'} Regenerate`}
+        </button>
+      </div>
+
+      {/* Result log */}
+      {result && (
+        <div className="bg-white rounded-2xl border-2 border-green-200 p-5 space-y-3">
+          <p className="font-black text-sm uppercase tracking-widest text-green-700">✅ Regeneration Complete</p>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="bg-red-50 rounded-xl p-3 text-center">
+              <p className="font-black text-lg text-red-600">{result.ledgerDeleted}</p>
+              <p className="text-[10px] text-gray-400 uppercase font-bold">Ledger Entries Deleted</p>
+            </div>
+            <div className="bg-green-50 rounded-xl p-3 text-center">
+              <p className="font-black text-lg text-green-600">{result.ledgerCreated}</p>
+              <p className="text-[10px] text-gray-400 uppercase font-bold">Ledger Entries Created</p>
+            </div>
+            {result.cashDeleted > 0 && <>
+              <div className="bg-red-50 rounded-xl p-3 text-center">
+                <p className="font-black text-lg text-red-600">{result.cashDeleted}</p>
+                <p className="text-[10px] text-gray-400 uppercase font-bold">Cashflow Deleted</p>
+              </div>
+              <div className="bg-green-50 rounded-xl p-3 text-center">
+                <p className="font-black text-lg text-green-600">{result.cashCreated}</p>
+                <p className="text-[10px] text-gray-400 uppercase font-bold">Cashflow Created</p>
+              </div>
+            </>}
+          </div>
+          <div className="bg-gray-50 rounded-xl p-3 space-y-1 max-h-48 overflow-y-auto">
+            <p className="text-[10px] font-black uppercase tracking-widest text-gray-500 mb-2">Processing Log:</p>
+            {result.log?.map((line: string, i: number) => (
+              <p key={i} className="text-xs font-mono text-gray-600">{line}</p>
+            ))}
+          </div>
         </div>
       )}
     </div>
