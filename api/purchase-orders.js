@@ -211,6 +211,8 @@ export default async function handler(req, res) {
 
         const advanceAlreadyPaid = po.paidAmount || 0;
         const balanceDue = Math.max(0, totalReceivedValue - advanceAlreadyPaid);
+        // If we overpaid (advance > received value), supplier owes us the difference
+        const overpaidAmount = Math.max(0, advanceAlreadyPaid - totalReceivedValue);
         await cashFlow.insertOne({
           type: 'expense', category: 'inventory_asset', amount: totalReceivedValue,
           paymentMode: poPaymentMode || 'cash',
@@ -252,6 +254,22 @@ export default async function handler(req, res) {
               paymentMode: null, notes: '',
               date: new Date(), createdAt: new Date(),
             });
+            // If advance paid > actual received value → supplier owes us the diff
+            // Post as debit so it shows as credit/receivable on supplier's ledger
+            if (overpaidAmount > 0.01) {
+              await ledgerCol.insertOne({
+                partyType: 'supplier', partyId: resolvedSupplierId,
+                partyName: po.supplier?.name || '',
+                entryType: 'debit',
+                amount: overpaidAmount,
+                description: `Overpayment credit — PO ${po.poNumber} (paid ₹${advanceAlreadyPaid.toFixed(2)}, goods ₹${totalReceivedValue.toFixed(2)})`,
+                referenceType: 'overpayment', referenceId: id,
+                paymentMode: null,
+                notes: `Advance: ₹${advanceAlreadyPaid.toFixed(2)} — Received: ₹${totalReceivedValue.toFixed(2)} — Credit due: ₹${overpaidAmount.toFixed(2)}`,
+                date: new Date(), createdAt: new Date(),
+              });
+            }
+
             if (totalShortageValue > 0.01) {
               await ledgerCol.insertOne({
                 partyType: 'supplier', partyId: resolvedSupplierId,
