@@ -63,7 +63,7 @@ export function CartProvider({ children }: { children: ReactNode }) {
           fetch('/api/customers?module=auth&action=verify', {
             headers: { Authorization: `Bearer ${savedToken}` }
           }).then(r => r.json()).then(data => {
-            if (!data.valid) { clearSession(); }
+            if (!data.valid) { clearSession(); } else if (data.customer) { setCustomer(data.customer); }
           }).catch(() => {});
         }
       } catch { clearSession(); }
