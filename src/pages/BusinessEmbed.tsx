@@ -1332,6 +1332,7 @@ function PurchaseOrdersModule({ showMsg }: any) {
   const [form, setForm] = useState({ supplierName: '', supplierContact: '', notes: '', expectedDate: '', items: [{ productId: '', productName: '', sku: '', quantity: '1', costPrice: '' }] });
   const [advModal, setAdvModal] = useState<{ open: boolean; po: any | null }>({ open: false, po: null });
   const [advForm, setAdvForm] = useState({ amount: '', paymentMode: 'cash', notes: '' });
+  const [supplierCredit, setSupplierCredit] = useState<{ netBalance: number; loading: boolean }>({ netBalance: 0, loading: false });
   const [recvModal, setRecvModal] = useState<{ open: boolean; po: any | null }>({ open: false, po: null });
   const [recvItems, setRecvItems] = useState<any[]>([]);
   const [recvPayMode, setRecvPayMode] = useState('cash');
@@ -1398,10 +1399,31 @@ function PurchaseOrdersModule({ showMsg }: any) {
     showMsg('PO deleted.', 'success'); fetchPOs();
   };
 
+  const openAdvance = async (po: any) => {
+    setAdvModal({ open: true, po });
+    setAdvForm({ amount: String(po.dueAmount || po.totalAmount), paymentMode: 'cash', notes: '' });
+    setSupplierCredit({ netBalance: 0, loading: true });
+    // Fetch supplier's current ledger balance to show any existing credit
+    try {
+      const suppliers = await fetch('/api/business?module=suppliers').then(r => r.json());
+      const supplier = (Array.isArray(suppliers) ? suppliers : []).find((s: any) =>
+        s.name?.toLowerCase() === po.supplier?.name?.toLowerCase()
+      );
+      if (supplier) {
+        const ledger = await fetch(`/api/business?module=ledger&partyType=supplier&partyId=${supplier._id}`).then(r => r.json());
+        setSupplierCredit({ netBalance: ledger?.summary?.netBalance || 0, loading: false });
+      } else {
+        setSupplierCredit({ netBalance: 0, loading: false });
+      }
+    } catch {
+      setSupplierCredit({ netBalance: 0, loading: false });
+    }
+  };
+
   const submitAdvance = async () => {
     if (!advForm.amount || Number(advForm.amount) <= 0) { showMsg('Enter a valid amount.', 'error'); return; }
     const data = await handleAction(advModal.po._id, 'advance_payment', { amount: Number(advForm.amount), paymentMode: advForm.paymentMode, notes: advForm.notes });
-    if (data.success) { setAdvModal({ open: false, po: null }); setAdvForm({ amount: '', paymentMode: 'cash', notes: '' }); }
+    if (data.success) { setAdvModal({ open: false, po: null }); setAdvForm({ amount: '', paymentMode: 'cash', notes: '' }); setSupplierCredit({ netBalance: 0, loading: false }); }
   };
 
   const openReceive = (po: any) => {
@@ -1541,7 +1563,7 @@ function PurchaseOrdersModule({ showMsg }: any) {
                     )}
                     {po.status === 'ordered' && (
                       <>
-                        <button onClick={() => { setAdvModal({ open: true, po }); setAdvForm({ amount: String(po.dueAmount || po.totalAmount), paymentMode: 'cash', notes: '' }); }} className="text-xs bg-yellow-500 text-white font-bold px-3 py-1.5 rounded-full hover:bg-yellow-600 transition">💰 Advance Payment</button>
+                        <button onClick={() => openAdvance(po)} className="text-xs bg-yellow-500 text-white font-bold px-3 py-1.5 rounded-full hover:bg-yellow-600 transition">💰 Advance Payment</button>
                         <button onClick={() => openReceive(po)} className="text-xs bg-green-500 text-white font-bold px-3 py-1.5 rounded-full hover:bg-green-600 transition">✓ Receive Stock</button>
                         <button onClick={() => handleAction(po._id, 'cancel')} className="text-xs bg-gray-100 text-gray-600 font-bold px-3 py-1.5 rounded-full hover:bg-gray-200 transition">Cancel</button>
                         <button onClick={() => deletePO(po._id, po.poNumber, po.status)} className="text-xs bg-red-50 text-red-500 font-bold px-3 py-1.5 rounded-full hover:bg-red-100 transition">Delete</button>
@@ -1567,8 +1589,31 @@ function PurchaseOrdersModule({ showMsg }: any) {
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 space-y-4">
             <div className="flex justify-between items-start">
               <div><h3 className="font-black text-gray-900 text-sm uppercase tracking-widest">Advance Payment</h3><p className="text-xs text-gray-400 mt-0.5">{advModal.po.poNumber} · {advModal.po.supplier?.name}</p><p className="text-xs text-gray-400">Total: {fmt(advModal.po.totalAmount)} · Due: {fmt(advModal.po.dueAmount)}</p></div>
-              <button onClick={() => setAdvModal({ open: false, po: null })} className="text-gray-400 hover:text-gray-600 font-black text-xl">✕</button>
+              <button onClick={() => { setAdvModal({ open: false, po: null }); setSupplierCredit({ netBalance: 0, loading: false }); }} className="text-gray-400 hover:text-gray-600 font-black text-xl">✕</button>
             </div>
+
+            {/* Supplier credit balance banner */}
+            {supplierCredit.loading && (
+              <div className="bg-gray-50 rounded-xl px-3 py-2 text-xs font-bold text-gray-400">Checking {advModal.po.supplier?.name}'s balance...</div>
+            )}
+            {!supplierCredit.loading && supplierCredit.netBalance < -0.01 && (
+              <div className="bg-blue-50 border border-blue-200 rounded-xl px-3 py-2 space-y-1">
+                <p className="text-xs font-black text-blue-700">💰 Credit Available: {fmt(Math.abs(supplierCredit.netBalance))}</p>
+                <p className="text-[10px] text-blue-500">{advModal.po.supplier?.name} has an existing credit (overpayment / shortage refund). You can pay less on this PO.</p>
+                <button
+                  onClick={() => setAdvForm(f => ({ ...f, amount: String(Math.max(0, Number(f.amount) - Math.abs(supplierCredit.netBalance))) }))}
+                  className="text-[10px] font-black uppercase tracking-widest text-blue-600 underline"
+                >
+                  Apply credit → reduce payment to {fmt(Math.max(0, advModal.po.dueAmount - Math.abs(supplierCredit.netBalance)))}
+                </button>
+              </div>
+            )}
+            {!supplierCredit.loading && supplierCredit.netBalance > 0.01 && (
+              <div className="bg-orange-50 border border-orange-200 rounded-xl px-3 py-2 text-xs font-bold text-orange-700">
+                ⚠️ {advModal.po.supplier?.name} has an outstanding payable of {fmt(supplierCredit.netBalance)} from previous POs.
+              </div>
+            )}
+
             <div className="space-y-3">
               <div><label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">Amount Paid (₹) *</label>
                 <input type="number" value={advForm.amount} onChange={e => setAdvForm(f => ({ ...f, amount: e.target.value }))} placeholder="Enter amount" className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none" />
@@ -1584,7 +1629,7 @@ function PurchaseOrdersModule({ showMsg }: any) {
             </div>
             <div className="bg-yellow-50 rounded-xl px-3 py-2 text-xs font-bold text-yellow-700">This will be recorded as an advance expense in Cash Flow, linked to {advModal.po.poNumber}.</div>
             <div className="flex gap-3">
-              <button onClick={() => setAdvModal({ open: false, po: null })} className="flex-1 py-2.5 rounded-xl border-2 border-gray-200 text-xs font-black text-gray-500">Cancel</button>
+              <button onClick={() => { setAdvModal({ open: false, po: null }); setSupplierCredit({ netBalance: 0, loading: false }); }} className="flex-1 py-2.5 rounded-xl border-2 border-gray-200 text-xs font-black text-gray-500">Cancel</button>
               <button onClick={submitAdvance} className="flex-1 py-2.5 rounded-xl bg-[#FA5600] text-white text-xs font-black uppercase tracking-widest hover:bg-[#E04A00] transition">Record Payment</button>
             </div>
           </div>
