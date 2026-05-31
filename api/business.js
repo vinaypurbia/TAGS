@@ -251,8 +251,8 @@ export default async function handler(req, res) {
         const allEntries = await col.find({}).toArray();
 
         // ── PROPER 3-TIER P&L ────────────────────────────────────────────────
-        // Excluded from P&L: financing (capital/loans), inventory_asset (PO purchases)
-        const PL_EXCLUDE = ['financing', 'inventory_asset'];
+        // Excluded from P&L: balance sheet movements, not operating P&L
+        const PL_EXCLUDE = ['financing', 'inventory_asset', 'advance_payment', 'supplier_payment', 'ledger_payment', 'po_shortage_receivable', 'po_shortage_refund', 'supplier_return_refund'];
 
         // Revenue = sales income only (filtered period)
         const revenue = entries
@@ -403,8 +403,8 @@ export default async function handler(req, res) {
           const { from, to } = req.query;
           const dateFilter = {};
           if (from || to) { dateFilter.date = {}; if (from) dateFilter.date.$gte = new Date(from); if (to) dateFilter.date.$lte = new Date(to); }
-          // Exclude financing and inventory_asset from P&L
-          const PL_EXCLUDE = ['financing', 'inventory_asset'];
+          // Excluded from P&L: balance sheet movements, not operating P&L
+          const PL_EXCLUDE = ['financing', 'inventory_asset', 'advance_payment', 'supplier_payment', 'ledger_payment', 'po_shortage_receivable', 'po_shortage_refund', 'supplier_return_refund'];
           const allCashFlow = await cashFlow.find({ ...dateFilter, category: { $nin: PL_EXCLUDE } }).toArray();
 
           const revenue          = allCashFlow.filter(e => e.type === 'income'  && e.category === 'sales').reduce((s, e) => s + e.amount, 0);
