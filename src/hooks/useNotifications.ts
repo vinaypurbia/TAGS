@@ -18,7 +18,6 @@ const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0
 
 export async function requestNotificationPermission(): Promise<string | null> {
   try {
-    // Check if browser supports notifications
     if (!('Notification' in window)) return null;
     if (!('serviceWorker' in navigator)) return null;
 
@@ -29,12 +28,11 @@ export async function requestNotificationPermission(): Promise<string | null> {
     const token = await getToken(messaging, { vapidKey: VAPID_KEY });
 
     if (token) {
-      // Save token to your backend so you can send notifications later
       await fetch('/api/business?module=notifications&action=save-token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ token }),
-      }).catch(() => {}); // Silent fail — token saving is best-effort
+      }).catch(() => {});
     }
 
     return token;
@@ -44,25 +42,33 @@ export async function requestNotificationPermission(): Promise<string | null> {
   }
 }
 
-// Hook — use this in App.tsx to handle foreground notifications
-export function useFirebaseNotifications() {
+// FIX: accepts `ready` param so it waits for SW before initializing Firebase messaging
+export function useFirebaseNotifications(ready: boolean = true) {
   useEffect(() => {
+    // Don't initialize until SW is ready — prevents grey screen crash
+    if (!ready) return;
     if (!('serviceWorker' in navigator)) return;
 
-    const messaging = getMessaging(app);
+    let unsubscribe: (() => void) | null = null;
 
-    // Handle notifications when app is open/foreground
-    const unsubscribe = onMessage(messaging, (payload) => {
-      const { title, body } = payload.notification || {};
-      if (title && Notification.permission === 'granted') {
-        new Notification(title, {
-          body: body || '',
-          icon: '/icons/icon-192x192.png',
-          badge: '/icons/icon-72x72.png',
-        });
-      }
-    });
+    try {
+      const messaging = getMessaging(app);
 
-    return () => unsubscribe();
-  }, []);
+      unsubscribe = onMessage(messaging, (payload) => {
+        const { title, body } = payload.notification || {};
+        if (title && Notification.permission === 'granted') {
+          new Notification(title, {
+            body: body || '',
+            icon: '/icons/icon-192x192.png',
+            badge: '/icons/icon-72x72.png',
+          });
+        }
+      });
+    } catch (err) {
+      // Fail silently — notifications are non-critical
+      console.warn('Firebase messaging init error:', err);
+    }
+
+    return () => { if (unsubscribe) unsubscribe(); };
+  }, [ready]); // re-runs when ready flips to true
 }
