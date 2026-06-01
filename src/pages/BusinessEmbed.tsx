@@ -236,7 +236,6 @@ export function BusinessEmbed() {
     { id: 'ledger',    label: 'AP/AR Ledger', icon: BookOpen },
     { id: 'reports', label: 'Reports', icon: FileText },
     { id: 'users', label: 'Users', icon: Users },
-    { id: 'regenerate', label: '🔄 Regenerate', icon: FileText },
   ];
 
   return (
@@ -268,7 +267,6 @@ export function BusinessEmbed() {
       {module === 'ledger'    && <LedgerModule showMsg={showMsg} />}
       {module === 'reports' && <ReportsModule showMsg={showMsg} />}
       {module === 'users' && <UsersModule showMsg={showMsg} />}
-      {module === 'regenerate' && <RegenerateModule showMsg={showMsg} />}
     </div>
   );
 }
@@ -720,20 +718,8 @@ function OrdersModule({ showMsg }: any) {
           collectedBy, collectorName,
         }),
       });
-      if (paymentMode !== 'already_paid') {
-        await fetch('/api/business?module=cashflow', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            type: 'income', category: 'delivery_collection',
-            amount: Number(amountCollected),
-            description: `COD collected – ${order.customerName} (${order.orderId})`,
-            paymentMode, referenceId: order._id, referenceType: 'order',
-            collectedBy, collectorName: collectorName || null,
-            orderId: order.orderId, date: new Date().toISOString(),
-          }),
-        });
-      }
+      // NOTE: cashflow entry is recorded automatically inside customers.js when status=delivered
+      // Do NOT add another cashflow entry here — it would cause duplicates
       showMsg('Order delivered & payment recorded!', 'success');
       setPayModal(p => ({ ...p, open: false, order: null, submitting: false }));
       fetchOrders();
@@ -1334,7 +1320,6 @@ function PurchaseOrdersModule({ showMsg }: any) {
   const [form, setForm] = useState({ supplierName: '', supplierContact: '', notes: '', expectedDate: '', items: [{ productId: '', productName: '', sku: '', quantity: '1', costPrice: '' }] });
   const [advModal, setAdvModal] = useState<{ open: boolean; po: any | null }>({ open: false, po: null });
   const [advForm, setAdvForm] = useState({ amount: '', paymentMode: 'cash', notes: '' });
-  const [supplierCredit, setSupplierCredit] = useState<{ netBalance: number; loading: boolean }>({ netBalance: 0, loading: false });
   const [recvModal, setRecvModal] = useState<{ open: boolean; po: any | null }>({ open: false, po: null });
   const [recvItems, setRecvItems] = useState<any[]>([]);
   const [recvPayMode, setRecvPayMode] = useState('cash');
@@ -1390,64 +1375,21 @@ function PurchaseOrdersModule({ showMsg }: any) {
     return data;
   };
 
-  const deletePO = async (id: string, poNumber: string, status: string) => {
-    const warn = status === 'received'
-      ? `Delete ${poNumber}? This will remove the PO, REVERSE all stock, and delete all cash flow and ledger entries.`
-      : status === 'ordered'
-      ? `Delete ${poNumber}? This will remove the PO and all advance/payment entries from cash flow and ledger.`
-      : `Delete ${poNumber}?`;
-    if (!confirm(warn)) return;
+  const deletePO = async (id: string) => {
+    if (!confirm('Delete this draft PO?')) return;
     await fetch('/api/purchase-orders', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
     showMsg('PO deleted.', 'success'); fetchPOs();
-  };
-
-  const openAdvance = async (po: any) => {
-    setAdvModal({ open: true, po });
-    setAdvForm({ amount: String(po.dueAmount || po.totalAmount), paymentMode: 'cash', notes: '' });
-    setSupplierCredit({ netBalance: 0, loading: true });
-    // Fetch supplier's current ledger balance to show any existing credit
-    try {
-      const suppliers = await fetch('/api/business?module=suppliers').then(r => r.json());
-      const supplier = (Array.isArray(suppliers) ? suppliers : []).find((s: any) =>
-        s.name?.toLowerCase() === po.supplier?.name?.toLowerCase()
-      );
-      if (supplier) {
-        const ledger = await fetch(`/api/business?module=ledger&partyType=supplier&partyId=${supplier._id}`).then(r => r.json());
-        setSupplierCredit({ netBalance: ledger?.summary?.netBalance || 0, loading: false });
-      } else {
-        setSupplierCredit({ netBalance: 0, loading: false });
-      }
-    } catch {
-      setSupplierCredit({ netBalance: 0, loading: false });
-    }
   };
 
   const submitAdvance = async () => {
     if (!advForm.amount || Number(advForm.amount) <= 0) { showMsg('Enter a valid amount.', 'error'); return; }
     const data = await handleAction(advModal.po._id, 'advance_payment', { amount: Number(advForm.amount), paymentMode: advForm.paymentMode, notes: advForm.notes });
-    if (data.success) {
-      setAdvModal({ open: false, po: null });
-      setAdvForm({ amount: '', paymentMode: 'cash', notes: '' });
-      setSupplierCredit({ netBalance: 0, loading: false });
-      fetchPOs(); // ← auto-refresh PO list to show updated paid/due amounts
-    }
+    if (data.success) { setAdvModal({ open: false, po: null }); setAdvForm({ amount: '', paymentMode: 'cash', notes: '' }); }
   };
 
   const openReceive = (po: any) => {
     setRecvItems(po.items.map((i: any) => ({ ...i, quantityReceived: i.quantity, damageNotes: '' })));
     setRecvPayMode('cash'); setRecvModal({ open: true, po });
-  };
-
-  const removeRecvItem = (index: number) => {
-    setRecvItems((prev: any[]) => prev.filter((_: any, i: number) => i !== index));
-  };
-
-  const addRecvItem = () => {
-    setRecvItems((prev: any[]) => [...prev, { productId: '', productName: '', sku: '', quantity: 1, quantityReceived: 1, costPrice: 0, totalCost: 0, damageNotes: '', isExtra: true }]);
-  };
-
-  const updateRecvItem = (index: number, field: string, value: any) => {
-    setRecvItems((prev: any[]) => prev.map((item: any, i: number) => i === index ? { ...item, [field]: value } : item));
   };
 
   const submitReceive = async () => {
@@ -1569,8 +1511,7 @@ function PurchaseOrdersModule({ showMsg }: any) {
                   )}
 
                   <div className="flex gap-2 flex-wrap pt-1">
-                    {/* Edit PO — only for draft (ordered POs are edited at receive time) */}
-                    {po.status === 'draft' && (
+                    {['draft', 'ordered'].includes(po.status) && (
                       <button onClick={() => openEdit(po)} className="flex items-center gap-1 text-xs text-blue-500 font-bold border border-blue-200 px-3 py-1.5 rounded-full hover:bg-blue-50 transition">
                         <Edit2 className="w-3 h-3" /> Edit PO
                       </button>
@@ -1578,25 +1519,18 @@ function PurchaseOrdersModule({ showMsg }: any) {
                     {po.status === 'draft' && (
                       <>
                         <button onClick={() => withDupCheck(`po-order-${po._id}`, 'Mark Ordered', () => handleAction(po._id, 'order'))} className="text-xs bg-blue-500 text-white font-bold px-3 py-1.5 rounded-full hover:bg-blue-600 transition">Mark Ordered</button>
-                        <button onClick={() => deletePO(po._id, po.poNumber, po.status)} className="text-xs bg-red-50 text-red-500 font-bold px-3 py-1.5 rounded-full hover:bg-red-100 transition">Delete</button>
+                        <button onClick={() => deletePO(po._id)} className="text-xs bg-red-50 text-red-500 font-bold px-3 py-1.5 rounded-full hover:bg-red-100 transition">Delete</button>
                       </>
                     )}
                     {po.status === 'ordered' && (
                       <>
-                        {/* Hide Advance Payment when fully paid */}
-                        {(po.dueAmount > 0) && (
-                          <button onClick={() => openAdvance(po)} className="text-xs bg-yellow-500 text-white font-bold px-3 py-1.5 rounded-full hover:bg-yellow-600 transition">💰 Advance Payment</button>
-                        )}
+                        <button onClick={() => { setAdvModal({ open: true, po }); setAdvForm({ amount: String(po.dueAmount || po.totalAmount), paymentMode: 'cash', notes: '' }); }} className="text-xs bg-yellow-500 text-white font-bold px-3 py-1.5 rounded-full hover:bg-yellow-600 transition">💰 Advance Payment</button>
                         <button onClick={() => openReceive(po)} className="text-xs bg-green-500 text-white font-bold px-3 py-1.5 rounded-full hover:bg-green-600 transition">✓ Receive Stock</button>
                         <button onClick={() => handleAction(po._id, 'cancel')} className="text-xs bg-gray-100 text-gray-600 font-bold px-3 py-1.5 rounded-full hover:bg-gray-200 transition">Cancel</button>
-                        <button onClick={() => deletePO(po._id, po.poNumber, po.status)} className="text-xs bg-red-50 text-red-500 font-bold px-3 py-1.5 rounded-full hover:bg-red-100 transition">Delete</button>
                       </>
                     )}
                     {po.status === 'received' && po.shortageItems?.length > 0 && !po.shortageResolved && (
                       <button onClick={() => { setResolveModal({ open: true, po }); setResolveForm({ resolveType: 'refund', amount: String(po.shortageValue || ''), paymentMode: 'cash', notes: '' }); }} className="text-xs bg-orange-500 text-white font-bold px-3 py-1.5 rounded-full hover:bg-orange-600 transition">🔧 Resolve Shortage</button>
-                    )}
-                    {(po.status === 'received' || po.status === 'cancelled') && (
-                      <button onClick={() => deletePO(po._id, po.poNumber, po.status)} className="text-xs bg-red-50 text-red-500 font-bold px-3 py-1.5 rounded-full hover:bg-red-100 transition">Delete</button>
                     )}
                   </div>
                 </div>
@@ -1612,31 +1546,8 @@ function PurchaseOrdersModule({ showMsg }: any) {
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 space-y-4">
             <div className="flex justify-between items-start">
               <div><h3 className="font-black text-gray-900 text-sm uppercase tracking-widest">Advance Payment</h3><p className="text-xs text-gray-400 mt-0.5">{advModal.po.poNumber} · {advModal.po.supplier?.name}</p><p className="text-xs text-gray-400">Total: {fmt(advModal.po.totalAmount)} · Due: {fmt(advModal.po.dueAmount)}</p></div>
-              <button onClick={() => { setAdvModal({ open: false, po: null }); setSupplierCredit({ netBalance: 0, loading: false }); }} className="text-gray-400 hover:text-gray-600 font-black text-xl">✕</button>
+              <button onClick={() => setAdvModal({ open: false, po: null })} className="text-gray-400 hover:text-gray-600 font-black text-xl">✕</button>
             </div>
-
-            {/* Supplier credit balance banner */}
-            {supplierCredit.loading && (
-              <div className="bg-gray-50 rounded-xl px-3 py-2 text-xs font-bold text-gray-400">Checking {advModal.po.supplier?.name}'s balance...</div>
-            )}
-            {!supplierCredit.loading && supplierCredit.netBalance < -0.01 && (
-              <div className="bg-blue-50 border border-blue-200 rounded-xl px-3 py-2 space-y-1">
-                <p className="text-xs font-black text-blue-700">💰 Credit Available: {fmt(Math.abs(supplierCredit.netBalance))}</p>
-                <p className="text-[10px] text-blue-500">{advModal.po.supplier?.name} has an existing credit (overpayment / shortage refund). You can pay less on this PO.</p>
-                <button
-                  onClick={() => setAdvForm(f => ({ ...f, amount: String(Math.max(0, Number(f.amount) - Math.abs(supplierCredit.netBalance))) }))}
-                  className="text-[10px] font-black uppercase tracking-widest text-blue-600 underline"
-                >
-                  Apply credit → reduce payment to {fmt(Math.max(0, advModal.po.dueAmount - Math.abs(supplierCredit.netBalance)))}
-                </button>
-              </div>
-            )}
-            {!supplierCredit.loading && supplierCredit.netBalance > 0.01 && (
-              <div className="bg-orange-50 border border-orange-200 rounded-xl px-3 py-2 text-xs font-bold text-orange-700">
-                ⚠️ {advModal.po.supplier?.name} has an outstanding payable of {fmt(supplierCredit.netBalance)} from previous POs.
-              </div>
-            )}
-
             <div className="space-y-3">
               <div><label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">Amount Paid (₹) *</label>
                 <input type="number" value={advForm.amount} onChange={e => setAdvForm(f => ({ ...f, amount: e.target.value }))} placeholder="Enter amount" className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none" />
@@ -1652,7 +1563,7 @@ function PurchaseOrdersModule({ showMsg }: any) {
             </div>
             <div className="bg-yellow-50 rounded-xl px-3 py-2 text-xs font-bold text-yellow-700">This will be recorded as an advance expense in Cash Flow, linked to {advModal.po.poNumber}.</div>
             <div className="flex gap-3">
-              <button onClick={() => { setAdvModal({ open: false, po: null }); setSupplierCredit({ netBalance: 0, loading: false }); }} className="flex-1 py-2.5 rounded-xl border-2 border-gray-200 text-xs font-black text-gray-500">Cancel</button>
+              <button onClick={() => setAdvModal({ open: false, po: null })} className="flex-1 py-2.5 rounded-xl border-2 border-gray-200 text-xs font-black text-gray-500">Cancel</button>
               <button onClick={submitAdvance} className="flex-1 py-2.5 rounded-xl bg-[#FA5600] text-white text-xs font-black uppercase tracking-widest hover:bg-[#E04A00] transition">Record Payment</button>
             </div>
           </div>
@@ -1667,49 +1578,31 @@ function PurchaseOrdersModule({ showMsg }: any) {
               <div><h3 className="font-black text-gray-900 text-sm uppercase tracking-widest">Receive Stock</h3><p className="text-xs text-gray-400 mt-0.5">{recvModal.po.poNumber} · {recvModal.po.supplier?.name}</p></div>
               <button onClick={() => setRecvModal({ open: false, po: null })} className="text-gray-400 hover:text-gray-600 font-black text-xl">✕</button>
             </div>
-            <p className="text-xs text-blue-600 font-bold bg-blue-50 rounded-lg px-3 py-2">Enter actual quantity received. Remove items not sent. Add items supplier sent that weren't on the PO.</p>
-            <div className="space-y-3 max-h-72 overflow-y-auto pr-1">
-              {recvItems.map((item: any, i: number) => (
-                <div key={i} className={`rounded-xl p-3 space-y-2 ${item.isExtra ? 'bg-blue-50 border-2 border-blue-200' : 'bg-gray-50'}`}>
+            <p className="text-xs text-blue-600 font-bold bg-blue-50 rounded-lg px-3 py-2">Enter actual quantity received per item. Reduce if short or damaged and add a note — the shortage will be recorded against the supplier.</p>
+            <div className="space-y-3">
+              {recvItems.map((item, i) => (
+                <div key={i} className="bg-gray-50 rounded-xl p-3 space-y-2">
                   <div className="flex justify-between items-center">
-                    <div>
-                      {item.isExtra ? (
-                        <input value={item.productName} onChange={e => updateRecvItem(i, 'productName', e.target.value)}
-                          placeholder="Product name..." className="text-sm font-black text-gray-800 bg-transparent border-b border-blue-300 outline-none w-full" />
-                      ) : (
-                        <p className="text-sm font-black text-gray-800">{item.productName}</p>
-                      )}
-                      {item.isExtra
-                        ? <span className="text-[10px] text-blue-500 font-bold">➕ Extra item from supplier</span>
-                        : <span className="text-xs text-gray-400 font-bold">Ordered: {item.quantity} · {fmt(item.costPrice)} each</span>
-                      }
-                    </div>
-                    <button onClick={() => removeRecvItem(i)} className="text-red-400 hover:text-red-600 font-black text-lg leading-none ml-2" title="Remove item">✕</button>
+                    <p className="text-sm font-black text-gray-800">{item.productName}</p>
+                    <span className="text-xs text-gray-400 font-bold">Ordered: {item.quantity} · {fmt(item.costPrice)} each</span>
                   </div>
                   <div className="grid grid-cols-2 gap-2">
                     <div><label className="block text-[10px] font-black uppercase tracking-widest text-gray-400 mb-1">Qty Received *</label>
-                      <input type="number" min="0" value={item.quantityReceived}
-                        onChange={e => updateRecvItem(i, 'quantityReceived', Number(e.target.value))}
+                      <input type="number" min="0" max={item.quantity} value={item.quantityReceived}
+                        onChange={e => setRecvItems(items => items.map((it, idx) => idx === i ? { ...it, quantityReceived: Number(e.target.value) } : it))}
                         className="w-full border-2 border-gray-200 rounded-lg px-2 py-1.5 text-sm font-bold focus:border-[#FA5600] outline-none" />
                     </div>
-                    <div><label className="block text-[10px] font-black uppercase tracking-widest text-gray-400 mb-1">{item.isExtra ? 'Cost Price (₹)' : 'Damage / Shortage Note'}</label>
-                      {item.isExtra
-                        ? <input type="number" min="0" value={item.costPrice} onChange={e => updateRecvItem(i, 'costPrice', Number(e.target.value))}
-                            placeholder="0" className="w-full border-2 border-gray-200 rounded-lg px-2 py-1.5 text-sm font-bold focus:border-[#FA5600] outline-none" />
-                        : <input value={item.damageNotes} onChange={e => updateRecvItem(i, 'damageNotes', e.target.value)}
-                            placeholder="e.g. 2 pcs damaged" className="w-full border-2 border-gray-200 rounded-lg px-2 py-1.5 text-sm font-bold focus:border-[#FA5600] outline-none" />
-                      }
+                    <div><label className="block text-[10px] font-black uppercase tracking-widest text-gray-400 mb-1">Damage / Shortage Note</label>
+                      <input value={item.damageNotes} onChange={e => setRecvItems(items => items.map((it, idx) => idx === i ? { ...it, damageNotes: e.target.value } : it))}
+                        placeholder="e.g. 2 pcs damaged" className="w-full border-2 border-gray-200 rounded-lg px-2 py-1.5 text-sm font-bold focus:border-[#FA5600] outline-none" />
                     </div>
                   </div>
-                  {!item.isExtra && Number(item.quantityReceived) < Number(item.quantity) && (
+                  {Number(item.quantityReceived) < Number(item.quantity) && (
                     <p className="text-[10px] text-red-500 font-bold">⚠️ Shortage: {Number(item.quantity) - Number(item.quantityReceived)} units · {fmt((Number(item.quantity) - Number(item.quantityReceived)) * Number(item.costPrice))} owed by {recvModal.po.supplier?.name || 'supplier'}</p>
                   )}
                 </div>
               ))}
             </div>
-            <button onClick={addRecvItem} className="text-xs text-blue-500 font-black uppercase tracking-widest flex items-center gap-1 hover:underline">
-              ➕ Add Item Supplier Sent
-            </button>
             <div><label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">Balance Payment Mode</label>
               <select value={recvPayMode} onChange={e => setRecvPayMode(e.target.value)} className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none bg-white">
                 <option value="cash">Cash</option><option value="upi">UPI</option><option value="bank">Bank Transfer</option><option value="cheque">Cheque</option>
@@ -2353,121 +2246,6 @@ function SuppliersModule({ showMsg }: any) {
               </div>
             </div>
           ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ─── REGENERATE BOOKS ────────────────────────────────────────────────────────
-function RegenerateModule({ showMsg }: any) {
-  const { token } = useAuth();
-  const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<any>(null);
-  const [scope, setScope] = useState<'ledger' | 'full'>('ledger');
-
-  const runRegenerate = async () => {
-    const scopeLabel = scope === 'full' ? 'FULL (ledger + cashflow)' : 'LEDGER ONLY';
-    if (!window.confirm(`⚠️ This will DELETE and REBUILD all PO-linked ${scopeLabel} entries.\n\nThis cannot be undone. Continue?`)) return;
-    setLoading(true);
-    setResult(null);
-    try {
-      const res = await fetch('/api/business?module=regenerate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeaders(token) },
-        body: JSON.stringify({ scope }),
-      });
-      const data = await res.json();
-      if (data.success) {
-        setResult(data);
-        showMsg(`✅ Regenerated: ${data.ledgerCreated} ledger entries rebuilt`, 'success');
-      } else {
-        showMsg(data.error || 'Failed', 'error');
-      }
-    } catch (err: any) {
-      showMsg('Error: ' + err.message, 'error');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <div className="space-y-4">
-      <div className="bg-white rounded-2xl border-2 border-gray-100 p-5 space-y-4">
-        <div>
-          <h3 className="font-black text-sm uppercase tracking-widest text-gray-800">🔄 Regenerate Books</h3>
-          <p className="text-xs text-gray-400 mt-1">Rebuilds all financial entries from your transaction data. Use this to fix incorrect ledger or cashflow entries.</p>
-        </div>
-
-        {/* Scope selector */}
-        <div className="grid grid-cols-2 gap-3">
-          <button onClick={() => setScope('ledger')}
-            className={`p-4 rounded-xl border-2 text-left transition ${scope === 'ledger' ? 'border-[#FA5600] bg-orange-50' : 'border-gray-200 hover:border-gray-300'}`}>
-            <p className="font-black text-sm text-gray-800">📒 Ledger Only</p>
-            <p className="text-xs text-gray-400 mt-1">Rebuilds supplier ledger entries only. Safe — cashflow untouched.</p>
-          </button>
-          <button onClick={() => setScope('full')}
-            className={`p-4 rounded-xl border-2 text-left transition ${scope === 'full' ? 'border-red-500 bg-red-50' : 'border-gray-200 hover:border-gray-300'}`}>
-            <p className="font-black text-sm text-gray-800">⚡ Full Regenerate</p>
-            <p className="text-xs text-gray-400 mt-1">Rebuilds both ledger AND cashflow entries. Use with caution.</p>
-          </button>
-        </div>
-
-        {/* Warning */}
-        <div className={`rounded-xl p-3 text-xs font-bold ${scope === 'full' ? 'bg-red-50 text-red-700 border border-red-200' : 'bg-yellow-50 text-yellow-700 border border-yellow-200'}`}>
-          {scope === 'full'
-            ? '⚠️ Full regenerate will delete ALL PO-linked cashflow entries and rebuild them. Manual cashflow entries are preserved.'
-            : '✅ Safe mode — only rebuilds supplier ledger entries from POs. Your cashflow entries are untouched.'}
-        </div>
-
-        {/* What will be rebuilt */}
-        <div className="bg-gray-50 rounded-xl p-3 space-y-1">
-          <p className="text-[10px] font-black uppercase tracking-widest text-gray-500 mb-2">Will Rebuild:</p>
-          <p className="text-xs text-gray-600 font-semibold">✅ Advance payment ledger entries</p>
-          <p className="text-xs text-gray-600 font-semibold">✅ Goods received ledger entries</p>
-          <p className="text-xs text-gray-600 font-semibold">✅ Short delivery credit notes</p>
-          {scope === 'full' && <>
-            <p className="text-xs text-gray-600 font-semibold">✅ Advance payment cashflow entries</p>
-          </>}
-          <p className="text-[10px] text-gray-400 font-bold mt-2">🔒 Preserved: Manual ledger entries, expenses, financing, sales</p>
-        </div>
-
-        <button onClick={runRegenerate} disabled={loading}
-          className={`w-full py-3 rounded-xl font-black text-sm uppercase tracking-widest transition ${scope === 'full' ? 'bg-red-500 hover:bg-red-600 text-white' : 'bg-[#FA5600] hover:bg-[#E04A00] text-white'} disabled:opacity-50`}>
-          {loading ? '⏳ Regenerating...' : `🔄 Run ${scope === 'full' ? 'Full' : 'Ledger'} Regenerate`}
-        </button>
-      </div>
-
-      {/* Result log */}
-      {result && (
-        <div className="bg-white rounded-2xl border-2 border-green-200 p-5 space-y-3">
-          <p className="font-black text-sm uppercase tracking-widest text-green-700">✅ Regeneration Complete</p>
-          <div className="grid grid-cols-2 gap-3">
-            <div className="bg-red-50 rounded-xl p-3 text-center">
-              <p className="font-black text-lg text-red-600">{result.ledgerDeleted}</p>
-              <p className="text-[10px] text-gray-400 uppercase font-bold">Ledger Entries Deleted</p>
-            </div>
-            <div className="bg-green-50 rounded-xl p-3 text-center">
-              <p className="font-black text-lg text-green-600">{result.ledgerCreated}</p>
-              <p className="text-[10px] text-gray-400 uppercase font-bold">Ledger Entries Created</p>
-            </div>
-            {result.cashDeleted > 0 && <>
-              <div className="bg-red-50 rounded-xl p-3 text-center">
-                <p className="font-black text-lg text-red-600">{result.cashDeleted}</p>
-                <p className="text-[10px] text-gray-400 uppercase font-bold">Cashflow Deleted</p>
-              </div>
-              <div className="bg-green-50 rounded-xl p-3 text-center">
-                <p className="font-black text-lg text-green-600">{result.cashCreated}</p>
-                <p className="text-[10px] text-gray-400 uppercase font-bold">Cashflow Created</p>
-              </div>
-            </>}
-          </div>
-          <div className="bg-gray-50 rounded-xl p-3 space-y-1 max-h-48 overflow-y-auto">
-            <p className="text-[10px] font-black uppercase tracking-widest text-gray-500 mb-2">Processing Log:</p>
-            {result.log?.map((line: string, i: number) => (
-              <p key={i} className="text-xs font-mono text-gray-600">{line}</p>
-            ))}
-          </div>
         </div>
       )}
     </div>
