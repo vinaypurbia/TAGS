@@ -537,26 +537,8 @@ export function AdminPanel() {
         }),
       });
 
-      // 2. Post to cashflow if money was collected now
-      if (paymentMode !== 'already_paid') {
-        await fetch('/api/cashflow', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            type: 'income',
-            category: 'delivery_collection',
-            amount: Number(amountCollected),
-            description: `COD collected – ${order.customerName} (${order.orderId || order.saleNumber})`,
-            paymentMode,
-            referenceId: order._id,
-            referenceType: 'order',
-            collectedBy,
-            collectorName: collectorName || null,
-            orderId: order.orderId || order.saleNumber,
-            date: new Date().toISOString(),
-          }),
-        });
-      }
+      // NOTE: cashflow delivery_collection entry is written by /api/customers?module=orders
+      // when status is set to 'delivered' — no second write needed here.
 
       setPendingOrders(prev => prev.filter(o => o._id !== order._id));
       setPayModal(p => ({ ...p, open: false, order: null, submitting: false }));
