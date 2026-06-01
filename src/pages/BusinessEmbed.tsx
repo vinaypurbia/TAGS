@@ -8,7 +8,7 @@ import {
 import { useAuth, authHeaders } from '../context/AuthContext';
 import type { UserRole } from '../context/AuthContext';
 
-type Module = 'dashboard' | 'orders' | 'sales' | 'purchase-orders' | 'cashflow' | 'expenses' | 'suppliers' | 'customers' | 'reports' | 'users' | 'financing';
+type Module = 'dashboard' | 'orders' | 'sales' | 'purchase-orders' | 'cashflow' | 'expenses' | 'suppliers' | 'customers' | 'reports' | 'users' | 'financing' | 'ledger' | 'regenerate';
 type ReportType = 'stock-shortage' | 'low-performing' | 'best-selling' | 'profit-margin' | 'pnl' | 'stock-valuation';
 
 // ─── DUPLICATE DETECTION ─────────────────────────────────────────────────────
@@ -645,7 +645,7 @@ function CustomersModule({ showMsg }: any) {
 
                   {/* WhatsApp + Actions */}
                   <div className="flex gap-2 flex-wrap pt-2 border-t border-gray-100">
-                    <a href={`https://wa.me/${customer.phone.replace(/[^0-9]/g, '')}`} target="_blank" rel="noopener noreferrer"
+                    <a href={`https://wa.me/${(customer.phone || '').replace(/[^0-9]/g, '')}`} target="_blank" rel="noopener noreferrer"
                       className="flex items-center gap-1.5 bg-[#25D366] text-white text-xs font-black px-3 py-1.5 rounded-full hover:bg-[#20bd5a] transition">
                       <Phone className="w-3 h-3" /> WhatsApp
                     </a>
@@ -720,20 +720,8 @@ function OrdersModule({ showMsg }: any) {
           collectedBy, collectorName,
         }),
       });
-      if (paymentMode !== 'already_paid') {
-        await fetch('/api/business?module=cashflow', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            type: 'income', category: 'delivery_collection',
-            amount: Number(amountCollected),
-            description: `COD collected – ${order.customerName} (${order.orderId})`,
-            paymentMode, referenceId: order._id, referenceType: 'order',
-            collectedBy, collectorName: collectorName || null,
-            orderId: order.orderId, date: new Date().toISOString(),
-          }),
-        });
-      }
+      // NOTE: cashFlow entry is recorded server-side inside customers API when status=delivered
+      // Do NOT post to /api/business?module=cashflow here — that would double-count the income
       showMsg('Order delivered & payment recorded!', 'success');
       setPayModal(p => ({ ...p, open: false, order: null, submitting: false }));
       fetchOrders();
@@ -781,7 +769,7 @@ function OrdersModule({ showMsg }: any) {
   };
 
   const openWhatsApp = (phone: string, message: string) => {
-    const clean = phone.replace(/[^0-9]/g, '');
+    const clean = (phone || '').replace(/[^0-9]/g, '');
     const url = `https://wa.me/${clean.startsWith('91') ? clean : '91' + clean}?text=${encodeURIComponent(message)}`;
     window.open(url, '_blank');
   };
@@ -1160,7 +1148,7 @@ function SalesModule({ showMsg }: any) {
       const items = [...f.items];
       if (field === '__product__') {
         const p = JSON.parse(value);
-        items[i] = { ...items[i], productId: p._id, productName: p.name, price: String(p.discountedPrice || p.price || '') };
+        items[i] = { ...items[i], productId: p._id, productName: p.name, price: String(p.discountedPrice || p.price || ''), category: p.category || '' };
       } else {
         items[i] = { ...items[i], [field]: value };
       }
@@ -1172,7 +1160,7 @@ function SalesModule({ showMsg }: any) {
     if (!form.customerName || !form.customerPhone) { showMsg('Customer name and phone required.', 'error'); return; }
     const validItems = form.items.filter(i => i.productName && i.price && i.quantity);
     if (validItems.length === 0) { showMsg('Add at least one item.', 'error'); return; }
-    const payload = { ...form, items: validItems.map(i => ({ productId: i.productId, productName: i.productName, price: parseFloat(i.price), quantity: parseInt(i.quantity) })) };
+    const payload = { ...form, items: validItems.map(i => ({ productId: i.productId, productName: i.productName, category: i.category || '', price: parseFloat(i.price), quantity: parseInt(i.quantity) })) };
     const res = await fetch('/api/sales', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
     const data = await res.json();
     if (data.success) {
@@ -2341,7 +2329,7 @@ function SuppliersModule({ showMsg }: any) {
         <div className="space-y-3">
           {suppliers.map(s => (
             <div key={s._id} className="bg-white rounded-xl border border-gray-200 p-4 flex items-start gap-3">
-              <div className="w-10 h-10 bg-orange-100 rounded-xl flex items-center justify-center shrink-0 font-black text-[#FA5600] text-lg">{s.name[0].toUpperCase()}</div>
+              <div className="w-10 h-10 bg-orange-100 rounded-xl flex items-center justify-center shrink-0 font-black text-[#FA5600] text-lg">{(s.name || '?')[0].toUpperCase()}</div>
               <div className="flex-1 min-w-0">
                 <p className="font-black text-sm text-gray-900">{s.name}</p>
                 {s.phone && <p className="text-xs text-gray-400">{s.phone}</p>}
@@ -3045,7 +3033,7 @@ function UsersModule({ showMsg }: any) {
     try {
       await fetch('/api/business?module=users', {
         method: 'PUT',
-        headers: usersHeaders(),
+        headers: usersHeaders(true),
         body: JSON.stringify({ id: u._id, active: !u.active }),
       });
       showMsg(u.active ? 'User deactivated.' : '✅ User activated.', 'success');
