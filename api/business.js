@@ -816,17 +816,17 @@ export default async function handler(req, res) {
 
         // ── Goods received ────────────────────────────────────────────────────
         if (['received', 'partially_returned', 'returned'].includes(po.status)) {
-          // Calculate received value from receivedItems if available, else fall back to totalAmount.
-          // po.receivedAmount does NOT exist — must compute it.
-          const receivedValue = po.receivedItems
-            ? po.receivedItems.reduce((s, i) => s + (Number(i.quantityReceived ?? i.quantity) * Number(i.costPrice || 0)), 0)
-            : (po.totalAmount || 0);
+          // Credit = full ordered value (po.totalAmount) — what the supplier invoiced.
+          // Do NOT use receivedItems sum here: that gives only the received portion,
+          // which under-credits and makes the net balance show 2× the shortage.
+          // The shortage debit below separately claws back the undelivered amount.
+          const invoicedAmount = po.totalAmount || 0;
 
-          if (receivedValue > 0) {
+          if (invoicedAmount > 0) {
             await ledgerCol.insertOne({
               partyType: 'supplier', partyId: resolvedSupplierId, partyName: supplierName,
               entryType: 'credit',
-              amount: receivedValue,
+              amount: invoicedAmount,
               description: `Goods received — ${po.poNumber}`,
               referenceType: 'purchase_order', referenceId: poId,
               date: po.receivedDate || po.receivedAt || poDate, createdAt: new Date(),
