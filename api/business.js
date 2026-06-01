@@ -428,7 +428,7 @@ export default async function handler(req, res) {
           const PL_EXCLUDE = ['financing', 'inventory_asset'];
           const allCashFlow = await cashFlow.find({ ...dateFilter, category: { $nin: PL_EXCLUDE } }).toArray();
 
-          const revenue          = allCashFlow.filter(e => e.type === 'income' && (e.category === 'sales' || e.category === 'delivery_collection')).reduce((s, e) => s + e.amount, 0);
+          const revenue          = allCashFlow.filter(e => e.type === 'income'  && e.category === 'sales').reduce((s, e) => s + e.amount, 0);
           const cogs             = allCashFlow.filter(e => e.type === 'expense' && e.category === 'cogs').reduce((s, e) => s + e.amount, 0);
           const grossProfit      = revenue - cogs;
           const operatingExpenses = allCashFlow.filter(e => e.type === 'expense' && e.category !== 'cogs').reduce((s, e) => s + e.amount, 0);
@@ -720,7 +720,127 @@ export default async function handler(req, res) {
       }
     }
 
-    return res.status(400).json({ error: 'Invalid module. Use ?module=auth|users|suppliers|expenses|cashflow|reports|financing|ledger' });
+    // ─── REGENERATE BOOKS (?module=regenerate) ────────────────────────────────
+    if (module === 'regenerate') {
+      if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+
+      const { scope = 'ledger' } = req.body || {};
+      const purchaseOrders = db.collection('purchaseOrders');
+      const ledgerCol      = db.collection('ledgerEntries');
+      const cfCol          = db.collection('cashFlow');
+      const log            = [];
+
+      // 1. Delete all PO-linked ledger entries
+      const ledgerDel = await ledgerCol.deleteMany({ referenceType: { $in: ['po_advance', 'po_goods_received', 'po_shortage', 'po_shortage_refund', 'po_shortage_goods'] } });
+      log.push(`Deleted ${ledgerDel.deletedCount} ledger entries`);
+
+      let cashDel = { deletedCount: 0 };
+      if (scope === 'full') {
+        // Delete all PO-linked cashflow entries (advance payments, inventory assets, shortage refunds)
+        cashDel = await cfCol.deleteMany({ referenceType: { $in: ['po_advance', 'po_receipt', 'po_shortage_refund', 'advance_payment'] } });
+        log.push(`Deleted ${cashDel.deletedCount} cashflow entries`);
+      }
+
+      // 2. Rebuild from all POs
+      const allPOs = await purchaseOrders.find({}).toArray();
+      let ledgerCreated = 0;
+      let cashCreated   = 0;
+
+      for (const po of allPOs) {
+        const poId        = po._id.toString();
+        const supplierName = po.supplier?.name || '';
+        const supplierId   = po.supplierId || poId; // fallback to poId if no supplierId
+        const poDate       = po.createdAt || new Date();
+
+        // Find supplier by name if no supplierId
+        let resolvedSupplierId = supplierId;
+        if (!po.supplierId && supplierName) {
+          const sup = await db.collection('suppliers').findOne({ name: supplierName });
+          if (sup) resolvedSupplierId = sup._id.toString();
+        }
+
+        // ── Advance payments ──────────────────────────────────────────────────
+        if (po.advancePayments?.length) {
+          for (const adv of po.advancePayments) {
+            // Ledger: debit (we paid supplier)
+            await ledgerCol.insertOne({
+              partyType: 'supplier', partyId: resolvedSupplierId, partyName: supplierName,
+              entryType: 'debit', amount: adv.amount,
+              description: `Advance payment — ${po.poNumber}`,
+              referenceType: 'po_advance', referenceId: poId,
+              paymentMode: adv.paymentMode || 'cash',
+              date: adv.date || poDate, createdAt: new Date(),
+            });
+            ledgerCreated++;
+
+            // Cashflow (only in full scope)
+            if (scope === 'full') {
+              await cfCol.insertOne({
+                type: 'expense', category: 'advance_payment',
+                amount: adv.amount,
+                description: `Advance — ${po.poNumber} (${supplierName})`,
+                referenceType: 'po_advance', referenceId: poId,
+                paymentMode: adv.paymentMode || 'cash',
+                date: adv.date || poDate, createdAt: new Date(),
+              });
+              cashCreated++;
+            }
+          }
+        }
+
+        // ── Goods received ────────────────────────────────────────────────────
+        if (po.status === 'received' && po.totalAmount > 0) {
+          // Ledger: credit (we received goods = we owe supplier)
+          await ledgerCol.insertOne({
+            partyType: 'supplier', partyId: resolvedSupplierId, partyName: supplierName,
+            entryType: 'credit', amount: po.receivedAmount || po.totalAmount,
+            description: `Goods received — ${po.poNumber}`,
+            referenceType: 'po_goods_received', referenceId: poId,
+            date: po.receivedAt || poDate, createdAt: new Date(),
+          });
+          ledgerCreated++;
+        }
+
+        // ── Shortage ──────────────────────────────────────────────────────────
+        if (po.shortageItems?.length && po.shortageValue > 0) {
+          await ledgerCol.insertOne({
+            partyType: 'supplier', partyId: resolvedSupplierId, partyName: supplierName,
+            entryType: 'debit', amount: po.shortageValue,
+            description: `Short delivery credit — ${po.poNumber}`,
+            referenceType: 'po_shortage', referenceId: poId,
+            date: po.receivedAt || poDate, createdAt: new Date(),
+          });
+          ledgerCreated++;
+
+          // If shortage was resolved via refund
+          if (po.shortageResolved && po.shortageResolveType === 'refund' && po.shortageRefundAmount > 0) {
+            await ledgerCol.insertOne({
+              partyType: 'supplier', partyId: resolvedSupplierId, partyName: supplierName,
+              entryType: 'debit', amount: po.shortageRefundAmount,
+              description: `Shortage refund received — ${po.poNumber}`,
+              referenceType: 'po_shortage_refund', referenceId: poId,
+              date: po.shortageResolvedAt || poDate, createdAt: new Date(),
+            });
+            ledgerCreated++;
+          }
+        }
+
+        log.push(`PO ${po.poNumber}: rebuilt`);
+      }
+
+      log.push(`Total: ${ledgerCreated} ledger entries created, ${cashCreated} cashflow entries created`);
+
+      return res.status(200).json({
+        success: true,
+        ledgerDeleted: ledgerDel.deletedCount,
+        ledgerCreated,
+        cashDeleted: cashDel.deletedCount,
+        cashCreated,
+        log,
+      });
+    }
+
+    return res.status(400).json({ error: 'Invalid module. Use ?module=auth|users|suppliers|expenses|cashflow|reports|financing|ledger|regenerate' });
   } catch (error) {
     console.error('Business API error:', error);
     return res.status(500).json({ error: 'Database error', details: error.message });
