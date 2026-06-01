@@ -589,7 +589,7 @@ function CustomersModule({ showMsg }: any) {
                     )}
                     {customer.lastOrderDate && (
                       <div className="text-xs text-gray-400">
-                        Last order: {new Date(customer.lastOrderDate).toLocaleDateString('en-IN')}
+                        Last order: {customer.lastOrderDate ? new Date(customer.lastOrderDate).toLocaleDateString('en-IN') : '—'}
                       </div>
                     )}
                   </div>
@@ -624,7 +624,7 @@ function CustomersModule({ showMsg }: any) {
                             <div key={sale._id} className="flex items-center justify-between bg-gray-50 rounded-lg p-2.5">
                               <div>
                                 <p className="text-xs font-bold text-gray-800">{sale.saleNumber}</p>
-                                <p className="text-[10px] text-gray-400">{new Date(sale.date).toLocaleDateString('en-IN')} · {sale.items?.length} item{sale.items?.length !== 1 ? 's' : ''}</p>
+                                <p className="text-[10px] text-gray-400">{sale.date ? new Date(sale.date).toLocaleDateString('en-IN') : '—'} · {sale.items?.length} item{sale.items?.length !== 1 ? 's' : ''}</p>
                                 <div className="flex flex-wrap gap-1 mt-1">
                                   {sale.items?.slice(0, 3).map((item: any, i: number) => (
                                     <span key={i} className="text-[9px] bg-white border border-gray-200 px-1.5 py-0.5 rounded-full text-gray-500">{item.productName}</span>
@@ -868,7 +868,7 @@ function OrdersModule({ showMsg }: any) {
                 <div className="flex-1 min-w-0">
                   <p className="font-black text-sm text-gray-900">{order.customerName}</p>
                   <p className="text-xs text-gray-400">{order.orderId} · {order.customerPhone}</p>
-                  <p className="text-xs text-gray-400">{new Date(order.createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</p>
+                  <p className="text-xs text-gray-400">{order.createdAt ? new Date(order.createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '—'}</p>
                 </div>
                 <div className="text-right shrink-0">
                   <p className="font-black text-base text-[#FA5600]">Rs. {Number(order.totalAmount).toFixed(2)}</p>
@@ -1286,7 +1286,7 @@ function SalesModule({ showMsg }: any) {
                 <div>
                   <p className="font-black text-sm text-gray-900">{sale.customerName || 'Walk-in'}</p>
                   <p className="text-xs text-gray-400">{sale.saleNumber} · {sale.customerPhone}</p>
-                  <p className="text-xs text-gray-400">{new Date(sale.date).toLocaleDateString('en-IN')}</p>
+                  <p className="text-xs text-gray-400">{sale.date ? new Date(sale.date).toLocaleDateString('en-IN') : '—'}</p>
                 </div>
                 <div className="text-right shrink-0">
                   <p className="font-black text-lg text-[#FA5600]">{fmt(sale.totalAmount)}</p>
@@ -1507,7 +1507,7 @@ function PurchaseOrdersModule({ showMsg }: any) {
                 <div>
                   <p className="font-black text-sm text-gray-900">{po.poNumber}</p>
                   <p className="text-xs text-gray-400">{po.supplier?.name || 'No supplier'} · {po.items?.length} item{po.items?.length !== 1 ? 's' : ''}</p>
-                  <p className="text-xs text-gray-400">{new Date(po.createdAt).toLocaleDateString('en-IN')}</p>
+                  <p className="text-xs text-gray-400">{po.createdAt ? new Date(po.createdAt).toLocaleDateString('en-IN') : '—'}</p>
                   {po.notes && <p className="text-xs text-gray-400 italic mt-0.5">"{po.notes}"</p>}
                 </div>
                 <div className="text-right shrink-0">
@@ -1552,7 +1552,7 @@ function PurchaseOrdersModule({ showMsg }: any) {
                         <span className="text-red-700">Owed by {po.supplier?.name || 'supplier'}</span>
                         <span className="text-red-700">{fmt(po.shortageValue)}</span>
                       </div>
-                      {po.shortageResolveType && <p className="text-[10px] text-green-600 font-bold">Resolved via {po.shortageResolveType === 'refund' ? `refund of ${fmt(po.shortageRefundAmount)}` : 'goods received'} on {new Date(po.shortageResolvedAt).toLocaleDateString('en-IN')}</p>}
+                      {po.shortageResolveType && <p className="text-[10px] text-green-600 font-bold">Resolved via {po.shortageResolveType === 'refund' ? `refund of ${fmt(po.shortageRefundAmount)}` : 'goods received'} on {po.shortageResolvedAt ? new Date(po.shortageResolvedAt).toLocaleDateString('en-IN') : '—'}</p>}
                     </div>
                   )}
 
@@ -1882,7 +1882,7 @@ function CashflowModule({ showMsg }: any) {
               </div>
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-bold text-gray-900 truncate">{entry.description || entry.category}</p>
-                <p className="text-[10px] text-gray-400">{entry.category} · {entry.paymentMode || 'cash'} · {new Date(entry.date).toLocaleDateString('en-IN')}</p>
+                <p className="text-[10px] text-gray-400">{entry.category || '—'} · {entry.paymentMode || 'cash'} · {entry.date ? new Date(entry.date).toLocaleDateString('en-IN') : '—'}</p>
               </div>
               <p className={`font-black text-sm shrink-0 ${entry.type === 'income' ? 'text-green-600' : 'text-red-500'}`}>{entry.type === 'income' ? '+' : '-'}{fmt(entry.amount)}</p>
               <button onClick={() => deleteEntry(entry._id)} className="text-gray-300 hover:text-red-400 transition shrink-0"><Trash2 className="w-3.5 h-3.5" /></button>
@@ -1976,7 +1976,7 @@ function ExpensesModule({ showMsg }: any) {
               <div className="w-8 h-8 rounded-full bg-red-100 flex items-center justify-center shrink-0"><TrendingDown className="w-4 h-4 text-red-500" /></div>
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-bold text-gray-900">{exp.description || exp.category}</p>
-                <p className="text-[10px] text-gray-400">{exp.category} · {exp.paymentMode} · {new Date(exp.date).toLocaleDateString('en-IN')}</p>
+                <p className="text-[10px] text-gray-400">{exp.category} · {exp.paymentMode} · {exp.date ? new Date(exp.date).toLocaleDateString('en-IN') : '—'}</p>
               </div>
               <p className="font-black text-sm text-red-600 shrink-0">-{fmt(exp.amount)}</p>
               <button onClick={() => deleteExpense(exp._id)} className="text-gray-300 hover:text-red-400 transition shrink-0"><Trash2 className="w-3.5 h-3.5" /></button>
@@ -2894,7 +2894,7 @@ function FinancingModule({ showMsg }: any) {
                   </div>
                   <p className="text-[10px] text-gray-400 mt-0.5">
                     {e.source ? `${e.source} · ` : ''}
-                    {new Date(e.date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+                    {e.date ? new Date(e.date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : '—'}
                     {e.cashAmount > 0 && e.bankAmount > 0 && ` · 💵 ₹${e.cashAmount?.toLocaleString('en-IN')} + 🏦 ₹${e.bankAmount?.toLocaleString('en-IN')}`}
                     {e.notes ? ` · ${e.notes}` : ''}
                   </p>
