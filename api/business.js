@@ -272,8 +272,10 @@ export default async function handler(req, res) {
         const allEntries = await col.find({}).toArray();
 
         // ── PROPER 3-TIER P&L ────────────────────────────────────────────────
-        // Excluded from P&L: financing (capital/loans), inventory_asset (PO purchases)
-        const PL_EXCLUDE = ['financing', 'inventory_asset'];
+        // Excluded from P&L: financing (capital/loans), inventory_asset (PO balance payments),
+        // advance_payment + supplier_payment (PO advance payments) — inventory cost is already
+        // captured in cogs when goods are sold; counting PO payments again double-counts it.
+        const PL_EXCLUDE = ['financing', 'inventory_asset', 'advance_payment', 'supplier_payment'];
 
         // Revenue = sales income only (filtered period)
         const revenue = entries
@@ -424,8 +426,10 @@ export default async function handler(req, res) {
           const { from, to } = req.query;
           const dateFilter = {};
           if (from || to) { dateFilter.date = {}; if (from) dateFilter.date.$gte = new Date(from); if (to) dateFilter.date.$lte = new Date(to); }
-          // Exclude financing and inventory_asset from P&L
-          const PL_EXCLUDE = ['financing', 'inventory_asset'];
+          // Exclude from P&L: financing (capital/loans), inventory_asset (PO balance payments),
+          // advance_payment + supplier_payment (PO advance/post-receive payments).
+          // Inventory cost hits P&L only as cogs when goods are sold — not when purchased.
+          const PL_EXCLUDE = ['financing', 'inventory_asset', 'advance_payment', 'supplier_payment'];
           const allCashFlow = await cashFlow.find({ ...dateFilter, category: { $nin: PL_EXCLUDE } }).toArray();
 
           const revenue          = allCashFlow.filter(e => e.type === 'income'  && e.category === 'sales').reduce((s, e) => s + e.amount, 0);
