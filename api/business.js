@@ -769,62 +769,113 @@ export default async function handler(req, res) {
         }
 
         // ── Advance payments ──────────────────────────────────────────────────
-        if (po.advancePayments?.length) {
-          for (const adv of po.advancePayments) {
-            // Ledger: debit (we paid supplier) — referenceType matches purchase-orders.js advance_payment action
-            await ledgerCol.insertOne({
-              partyType: 'supplier', partyId: resolvedSupplierId, partyName: supplierName,
-              entryType: 'debit', amount: adv.amount,
-              description: `Advance payment — ${po.poNumber}`,
-              referenceType: 'advance_payment', referenceId: poId,
-              paymentMode: adv.paymentMode || 'cash',
-              date: adv.date || poDate, createdAt: new Date(),
-            });
-            ledgerCreated++;
+        // IMPORTANT: po.advancePayments does NOT exist on PO documents.
+        // Advance payments are written to cashFlow with referenceType 'po_advance'.
+        // We read them from cashFlow to rebuild the ledger debit entries correctly.
+        const advCfEntries = await cfCol.find({
+          referenceId: poId,
+          referenceType: { $in: ['po_advance', 'advance_payment'] },
+        }).toArray();
 
-            // Cashflow (only in full scope) — referenceType matches purchase-orders.js advance_payment action
-            if (scope === 'full') {
-              await cfCol.insertOne({
-                type: 'expense', category: 'advance_payment',
-                amount: adv.amount,
-                description: `Advance Payment — PO ${po.poNumber} — ${supplierName}`,
-                referenceType: 'po_advance', referenceId: poId,
-                paymentMode: adv.paymentMode || 'cash',
-                date: adv.date || poDate, createdAt: new Date(),
-              });
-              cashCreated++;
-            }
-          }
-        }
-
-        // ── Goods received ────────────────────────────────────────────────────
-        if (po.status === 'received' && po.totalAmount > 0) {
-          // Ledger: credit (we received goods = we owe supplier)
-          // referenceType 'purchase_order' matches what purchase-orders.js receive action writes
+        for (const adv of advCfEntries) {
           await ledgerCol.insertOne({
             partyType: 'supplier', partyId: resolvedSupplierId, partyName: supplierName,
-            entryType: 'credit',
-            amount: po.receivedAmount || po.totalAmount,
-            description: `Goods received — ${po.poNumber}`,
-            referenceType: 'purchase_order', referenceId: poId,
-            date: po.receivedAt || poDate, createdAt: new Date(),
+            entryType: 'debit', amount: adv.amount,
+            description: `Advance payment — ${po.poNumber}`,
+            referenceType: 'advance_payment', referenceId: poId,
+            paymentMode: adv.paymentMode || 'cash',
+            date: adv.date || poDate, createdAt: new Date(),
           });
           ledgerCreated++;
         }
 
-        // ── Shortage ──────────────────────────────────────────────────────────
-        // NOTE: purchase-orders.js does NOT create a shortage debit ledger entry on receive.
-        // The ledger balance is already correct from goods-received credit minus advance debits.
-        // Adding a shortage debit here would double-count. So we only rebuild the shortage
-        // refund entry if the shortage was resolved via refund.
-        if (po.shortageItems?.length && po.shortageValue > 0) {
-          // If shortage was resolved via refund — matches purchase-orders.js resolve_shortage action
-          if (po.shortageResolved && po.shortageResolveType === 'refund' && po.shortageRefundAmount > 0) {
+        // Fallback: if no cashFlow records exist but PO shows paidAmount, rebuild from that
+        if (advCfEntries.length === 0 && (po.paidAmount || 0) > 0) {
+          await ledgerCol.insertOne({
+            partyType: 'supplier', partyId: resolvedSupplierId, partyName: supplierName,
+            entryType: 'debit', amount: po.paidAmount,
+            description: `Advance payment — ${po.poNumber}`,
+            referenceType: 'advance_payment', referenceId: poId,
+            paymentMode: 'cash',
+            date: poDate, createdAt: new Date(),
+          });
+          ledgerCreated++;
+
+          if (scope === 'full') {
+            await cfCol.insertOne({
+              type: 'expense', category: 'advance_payment',
+              amount: po.paidAmount,
+              description: `Advance Payment — PO ${po.poNumber} — ${supplierName}`,
+              referenceType: 'po_advance', referenceId: poId,
+              paymentMode: 'cash',
+              date: poDate, createdAt: new Date(),
+            });
+            cashCreated++;
+          }
+        }
+
+        // ── Goods received ────────────────────────────────────────────────────
+        if (['received', 'partially_returned', 'returned'].includes(po.status)) {
+          // Calculate received value from receivedItems if available, else fall back to totalAmount.
+          // po.receivedAmount does NOT exist — must compute it.
+          const receivedValue = po.receivedItems
+            ? po.receivedItems.reduce((s, i) => s + (Number(i.quantityReceived ?? i.quantity) * Number(i.costPrice || 0)), 0)
+            : (po.totalAmount || 0);
+
+          if (receivedValue > 0) {
             await ledgerCol.insertOne({
               partyType: 'supplier', partyId: resolvedSupplierId, partyName: supplierName,
-              entryType: 'debit', amount: po.shortageRefundAmount,
+              entryType: 'credit',
+              amount: receivedValue,
+              description: `Goods received — ${po.poNumber}`,
+              referenceType: 'purchase_order', referenceId: poId,
+              date: po.receivedDate || po.receivedAt || poDate, createdAt: new Date(),
+            });
+            ledgerCreated++;
+          }
+        }
+
+        // ── Shortage debit (unresolved) ───────────────────────────────────────
+        // Supplier owes us for goods not delivered. This debit reduces what we owe them.
+        if (po.shortageItems?.length && po.shortageValue > 0 && !po.shortageResolved) {
+          await ledgerCol.insertOne({
+            partyType: 'supplier', partyId: resolvedSupplierId, partyName: supplierName,
+            entryType: 'debit', amount: po.shortageValue,
+            description: `Shortage / goods not received — ${po.poNumber} (${po.shortageItems.map(i => `${i.productName}: ${i.shortageQty} short`).join(', ')})`,
+            referenceType: 'po_shortage', referenceId: poId,
+            date: po.receivedDate || po.receivedAt || poDate, createdAt: new Date(),
+          });
+          ledgerCreated++;
+        }
+
+        // ── Shortage resolved ─────────────────────────────────────────────────
+        if (po.shortageItems?.length && po.shortageValue > 0 && po.shortageResolved) {
+          // Always write the original shortage debit first
+          await ledgerCol.insertOne({
+            partyType: 'supplier', partyId: resolvedSupplierId, partyName: supplierName,
+            entryType: 'debit', amount: po.shortageValue,
+            description: `Shortage / goods not received — ${po.poNumber}`,
+            referenceType: 'po_shortage', referenceId: poId,
+            date: po.receivedDate || po.receivedAt || poDate, createdAt: new Date(),
+          });
+          ledgerCreated++;
+
+          // Then write the resolution entry that clears it
+          if (po.shortageResolveType === 'refund' && po.shortageRefundAmount > 0) {
+            await ledgerCol.insertOne({
+              partyType: 'supplier', partyId: resolvedSupplierId, partyName: supplierName,
+              entryType: 'credit', amount: po.shortageRefundAmount,
               description: `Shortage refund received — ${po.poNumber}`,
               referenceType: 'po_shortage_refund', referenceId: poId,
+              date: po.shortageResolvedAt || poDate, createdAt: new Date(),
+            });
+            ledgerCreated++;
+          } else if (po.shortageResolveType === 'goods') {
+            await ledgerCol.insertOne({
+              partyType: 'supplier', partyId: resolvedSupplierId, partyName: supplierName,
+              entryType: 'credit', amount: po.shortageValue,
+              description: `Shortage resolved (goods delivered) — ${po.poNumber}`,
+              referenceType: 'po_shortage_goods', referenceId: poId,
               date: po.shortageResolvedAt || poDate, createdAt: new Date(),
             });
             ledgerCreated++;
