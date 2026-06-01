@@ -274,9 +274,23 @@ export default async function handler(req, res) {
               paymentMode: null, notes: '',
               date: new Date(), createdAt: new Date(),
             });
-            // NOTE: No separate shortage debit entry needed.
-            // The balance is already correct from advance paid vs goods received.
-            // Adding a short_delivery debit would double-count the shortage.
+
+            // ── Shortage debit: supplier owes us for goods not delivered ──
+            // Credit = what supplier invoiced (totalReceivedValue based on ordered value)
+            // But we only received part of the goods, so the shortage value must be
+            // debited back — reducing what we owe them (or making them owe us).
+            if (totalShortageValue > 0) {
+              await ledgerCol.insertOne({
+                partyType: 'supplier', partyId: resolvedSupplierId,
+                partyName: po.supplier?.name || '',
+                entryType: 'debit',
+                amount: totalShortageValue,
+                description: `Shortage / goods not received — PO ${po.poNumber} (${shortageItems.map(i => `${i.productName}: ${i.shortageQty} short`).join(', ')})`,
+                referenceType: 'po_shortage', referenceId: id,
+                paymentMode: null, notes: '',
+                date: new Date(), createdAt: new Date(),
+              });
+            }
           }
         }
 
@@ -475,6 +489,26 @@ export default async function handler(req, res) {
           const refundAmt = Number(amount) || po.shortageValue || 0;
           await cashFlow.insertOne({ type: 'income', category: 'po_shortage_refund', amount: refundAmt, paymentMode: rMode || 'cash', description: `Shortage Refund — PO ${po.poNumber} — ${po.supplier?.name || 'Supplier'}${rNotes ? ` — ${rNotes}` : ''}`, referenceId: id, referenceType: 'po_resolution', poNumber: po.poNumber, supplierName: po.supplier?.name || '', date: new Date(), createdAt: new Date() });
           await cashFlow.updateMany({ referenceId: id, referenceType: 'po_shortage' }, { $set: { resolved: true, resolvedAt: new Date(), resolvedAmount: refundAmt } });
+
+          // ── Ledger: credit entry to settle the shortage debit (supplier paid us back) ──
+          let refundSupplierId = po.supplierId || null;
+          if (!refundSupplierId && po.supplier?.name) {
+            const supplierDoc = await db.collection('suppliers').findOne({ name: po.supplier.name });
+            if (supplierDoc) refundSupplierId = supplierDoc._id.toString();
+          }
+          if (refundSupplierId) {
+            await ledgerCol.insertOne({
+              partyType: 'supplier', partyId: refundSupplierId,
+              partyName: po.supplier?.name || '',
+              entryType: 'credit',
+              amount: refundAmt,
+              description: `Shortage refund received — PO ${po.poNumber}${rNotes ? ` — ${rNotes}` : ''}`,
+              referenceType: 'po_shortage_refund', referenceId: id,
+              paymentMode: rMode || 'cash', notes: rNotes || '',
+              date: new Date(), createdAt: new Date(),
+            });
+          }
+
           await orders.updateOne({ _id: new ObjectId(id) }, { $set: { shortageResolved: true, shortageResolvedAt: new Date(), shortageResolveType: 'refund', shortageRefundAmount: refundAmt, updatedAt: new Date() } });
           return res.status(200).json({ success: true, message: `Refund of ₹${refundAmt} recorded.` });
         }
@@ -498,6 +532,30 @@ export default async function handler(req, res) {
             }
           }
           await cashFlow.updateMany({ referenceId: id, referenceType: 'po_shortage' }, { $set: { resolved: true, resolvedAt: new Date(), resolveType: 'goods' } });
+
+          // ── Ledger: credit entry to settle the shortage debit (supplier delivered missing goods) ──
+          const resolvedShortageValue = (resolvedItems || po.shortageItems).reduce((sum, item) => {
+            const qty = Number(item.resolvedQty || item.shortageQty);
+            return sum + qty * Number(item.costPrice || 0);
+          }, 0);
+          let goodsSupplierId = po.supplierId || null;
+          if (!goodsSupplierId && po.supplier?.name) {
+            const supplierDoc = await db.collection('suppliers').findOne({ name: po.supplier.name });
+            if (supplierDoc) goodsSupplierId = supplierDoc._id.toString();
+          }
+          if (goodsSupplierId && resolvedShortageValue > 0) {
+            await ledgerCol.insertOne({
+              partyType: 'supplier', partyId: goodsSupplierId,
+              partyName: po.supplier?.name || '',
+              entryType: 'credit',
+              amount: resolvedShortageValue,
+              description: `Shortage resolved (goods delivered) — PO ${po.poNumber}`,
+              referenceType: 'po_shortage_goods', referenceId: id,
+              paymentMode: null, notes: '',
+              date: new Date(), createdAt: new Date(),
+            });
+          }
+
           await orders.updateOne({ _id: new ObjectId(id) }, { $set: { shortageResolved: true, shortageResolvedAt: new Date(), shortageResolveType: 'goods', updatedAt: new Date() } });
           return res.status(200).json({ success: true, message: 'Missing goods received. Stock updated.' });
         }
