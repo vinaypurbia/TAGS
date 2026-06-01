@@ -264,11 +264,16 @@ export default async function handler(req, res) {
             if (supplierDoc) resolvedSupplierId = supplierDoc._id.toString();
           }
           if (resolvedSupplierId) {
+            // Credit = full ordered value (what the supplier invoiced).
+            // The shortage debit below claws back the missing portion.
+            // Using only totalReceivedValue here would under-credit and cause
+            // the net balance to show double the shortage amount owed.
+            const invoicedAmount = po.totalAmount || (totalReceivedValue + totalShortageValue);
             await ledgerCol.insertOne({
               partyType: 'supplier', partyId: resolvedSupplierId,
               partyName: po.supplier?.name || '',
               entryType: 'credit',
-              amount: totalReceivedValue,
+              amount: invoicedAmount,
               description: `Goods received — PO ${po.poNumber} (${totalReceived}/${totalOrdered} units)`,
               referenceType: 'purchase_order', referenceId: id,
               paymentMode: null, notes: '',
@@ -276,9 +281,8 @@ export default async function handler(req, res) {
             });
 
             // ── Shortage debit: supplier owes us for goods not delivered ──
-            // Credit = what supplier invoiced (totalReceivedValue based on ordered value)
-            // But we only received part of the goods, so the shortage value must be
-            // debited back — reducing what we owe them (or making them owe us).
+            // This claws back the shortage portion from the invoice credit above,
+            // so net = (full invoice) - (advance paid) - (shortage) = correct balance.
             if (totalShortageValue > 0) {
               await ledgerCol.insertOne({
                 partyType: 'supplier', partyId: resolvedSupplierId,
