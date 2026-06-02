@@ -1875,7 +1875,7 @@ function CashflowModule({ showMsg }: any) {
 
       {loading ? <LoadingCards count={4} /> : data.entries?.length === 0 ? <EmptyState icon="💰" text="No cash flow entries for this period" /> : (
         <div className="space-y-2">
-          {data.entries?.map((entry: any) => (
+          {data.entries?.filter((entry: any) => entry.category !== 'cogs').map((entry: any) => (
             <div key={entry._id} className="bg-white rounded-xl border border-gray-200 p-3 flex items-center gap-3">
               <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${entry.type === 'income' ? 'bg-green-100' : 'bg-red-100'}`}>
                 {entry.type === 'income' ? <TrendingUp className="w-4 h-4 text-green-600" /> : <TrendingDown className="w-4 h-4 text-red-500" />}
