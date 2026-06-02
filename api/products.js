@@ -1,4 +1,34 @@
 import { MongoClient, ObjectId } from 'mongodb';
+import { v2 as cloudinary } from 'cloudinary';
+
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+});
+
+// ── Helper: re-host any external image URL on Cloudinary ────────────────────
+// Facebook CDN, Google Images, WhatsApp media etc. expire or block hotlinking.
+// This downloads the image server-side and returns a permanent Cloudinary URL.
+async function ensureCloudinaryImage(url) {
+  if (!url || url.trim() === '') return '';
+  // Already on Cloudinary — no action needed
+  if (url.includes('res.cloudinary.com') || url.includes('cloudinary.com')) return url;
+  // Local blob URL from browser — can't fetch server-side, skip
+  if (url.startsWith('blob:') || url.startsWith('data:')) return url;
+  try {
+    const result = await cloudinary.uploader.upload(url, {
+      folder: 'tags-products',
+      transformation: [{ width: 800, height: 800, crop: 'limit', quality: 'auto' }],
+    });
+    return result.secure_url;
+  } catch (err) {
+    // If Cloudinary can't fetch it (expired CDN, auth-blocked), keep original URL
+    // as a graceful fallback — don't fail the whole product save
+    console.warn('ensureCloudinaryImage: could not re-host', url, '—', err.message);
+    return url;
+  }
+}
 
 const uri = process.env.TAGS_MONGO;
 const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN;
@@ -412,6 +442,11 @@ export default async function handler(req, res) {
 
     if (req.method === 'POST') {
       const product = { ...req.body, createdAt: new Date() };
+
+      // Re-host any external image URL on Cloudinary so it never expires
+      if (product.image) product.image = await ensureCloudinaryImage(product.image);
+      if (product.imageUrl) product.imageUrl = product.image || product.imageUrl;
+
       const result = await collection.insertOne(product);
       const insertedId = result.insertedId.toString();
 
@@ -458,6 +493,10 @@ export default async function handler(req, res) {
       delete updateData._id;
       updateData.updatedAt = new Date();
 
+      // Re-host any external image URL on Cloudinary so it never expires
+      if (updateData.image) updateData.image = await ensureCloudinaryImage(updateData.image);
+      if (updateData.imageUrl && updateData.image) updateData.imageUrl = updateData.image;
+
       const result = await collection.updateOne(
         { _id: new ObjectId(id) },
         { $set: updateData }
@@ -495,6 +534,38 @@ export default async function handler(req, res) {
       }
 
       return res.status(200).json({ success: true });
+    }
+
+    // ── One-time migration: re-host all external images to Cloudinary ──────────
+    // GET /api/products?migrate_images=true
+    // Finds all products with non-Cloudinary image URLs and re-hosts them.
+    // Safe to run multiple times — skips images already on Cloudinary.
+    if (req.method === 'GET' && req.query.migrate_images === 'true') {
+      const allProducts = await collection.find({
+        image: { $exists: true, $ne: '', $not: /res\.cloudinary\.com/ }
+      }).toArray();
+
+      let fixed = 0, skipped = 0, failed = 0;
+      const results = [];
+
+      for (const p of allProducts) {
+        const originalUrl = p.image || '';
+        if (!originalUrl || originalUrl.includes('cloudinary.com')) { skipped++; continue; }
+
+        const newUrl = await ensureCloudinaryImage(originalUrl);
+        if (newUrl !== originalUrl) {
+          await collection.updateOne(
+            { _id: p._id },
+            { $set: { image: newUrl, imageUrl: newUrl, updatedAt: new Date() } }
+          );
+          fixed++;
+          results.push({ name: p.name, from: originalUrl.slice(0, 60), to: newUrl.slice(0, 60) });
+        } else {
+          failed++;
+          results.push({ name: p.name, error: 'Could not re-host — original URL kept' });
+        }
+      }
+      return res.status(200).json({ success: true, fixed, skipped, failed, results });
     }
 
     return res.status(405).json({ error: 'Method not allowed' });
