@@ -767,7 +767,7 @@ export default async function handler(req, res) {
             // sales
             'sale', 'sale_cogs',
             // orders / delivery
-            'order_delivery', 'order_cogs',
+            'order_delivery', 'order_cogs', 'order',
             // purchase orders
             'po_advance', 'purchase_order', 'po_receipt', 'po_resolution',
             'po_shortage_refund', 'advance_payment', 'po_return', 'ledger_payment',
