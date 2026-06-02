@@ -12,6 +12,30 @@ export const config = {
   },
 };
 
+// ── Helper: is this a Cloudinary URL already? ──────────────────────────────
+function isCloudinaryUrl(url) {
+  return url && (url.includes('res.cloudinary.com') || url.includes('cloudinary.com'));
+}
+
+// ── Helper: fetch an external image and upload to Cloudinary ────────────────
+// Handles Facebook CDN, Google, WhatsApp, and any other external image URLs.
+// Returns the permanent Cloudinary URL.
+async function fetchAndUploadToCloudinary(externalUrl) {
+  // If already on Cloudinary, return as-is
+  if (isCloudinaryUrl(externalUrl)) return externalUrl;
+
+  // Use Cloudinary's built-in fetch-from-URL upload — no manual download needed
+  const result = await cloudinary.uploader.upload(externalUrl, {
+    folder: 'tags-products',
+    transformation: [{ width: 800, height: 800, crop: 'limit', quality: 'auto' }],
+    // 'fetch' type tells Cloudinary to download from the URL directly
+    // This bypasses 403s from Facebook CDN since Cloudinary fetches server-side
+  });
+  return result.secure_url;
+}
+
+export { fetchAndUploadToCloudinary };
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
@@ -20,7 +44,34 @@ export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
   try {
-    // Read raw binary from request
+    // ── Mode 1: Upload from external URL (?from_url=true) ──────────────────
+    // Used when saving a product with an external image URL (Facebook, Google, etc.)
+    // Cloudinary downloads it server-side, bypassing CDN restrictions.
+    if (req.query.from_url === 'true') {
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      const body = JSON.parse(Buffer.concat(chunks).toString());
+      const { url } = body;
+
+      if (!url) return res.status(400).json({ error: 'url is required' });
+      if (isCloudinaryUrl(url)) {
+        // Already on Cloudinary — return as-is, no re-upload needed
+        return res.status(200).json({ success: true, url, alreadyCloudinary: true });
+      }
+
+      const result = await cloudinary.uploader.upload(url, {
+        folder: 'tags-products',
+        transformation: [{ width: 800, height: 800, crop: 'limit', quality: 'auto' }],
+      });
+
+      return res.status(200).json({
+        success: true,
+        url: result.secure_url,
+        publicId: result.public_id,
+      });
+    }
+
+    // ── Mode 2: Upload from raw binary (default — camera/file picker) ───────
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
     const buffer = Buffer.concat(chunks);
