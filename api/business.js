@@ -760,24 +760,20 @@ export default async function handler(req, res) {
 
       let cashDelCount = 0;
       if (scope === 'full') {
-        // Wipe every cashflow entry that is auto-generated — keep only manual ones
-        // (manual entries have referenceType: null/undefined or 'manual')
-        const cashDel = await cfCol.deleteMany({
+        // Step A: delete by referenceType (covers all properly-tagged auto-generated entries)
+        const cashDel1 = await cfCol.deleteMany({
           referenceType: { $in: [
-            // sales
             'sale', 'sale_cogs',
-            // orders / delivery
             'order_delivery', 'order_cogs', 'order',
-            // purchase orders
             'po_advance', 'purchase_order', 'po_receipt', 'po_resolution',
             'po_shortage_refund', 'advance_payment', 'po_return', 'ledger_payment',
-            // expenses
-            'expense',
-            // financing
-            'financing',
+            'expense', 'financing',
           ]},
         });
-        cashDelCount = cashDel.deletedCount;
+        // Step B: delete ALL delivery_collection entries regardless of referenceType
+        // Catches legacy entries written by old AdminPanel bug with no referenceType
+        const cashDel2 = await cfCol.deleteMany({ category: 'delivery_collection' });
+        cashDelCount = cashDel1.deletedCount + cashDel2.deletedCount;
         log.push(`Deleted ${cashDelCount} cashflow entries`);
       }
 
