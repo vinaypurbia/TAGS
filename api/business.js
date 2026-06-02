@@ -725,57 +725,82 @@ export default async function handler(req, res) {
     }
 
     // ─── REGENERATE BOOKS (?module=regenerate) ────────────────────────────────
+    //
+    // scope = 'ledger' (default) → rebuild PO ledger entries only
+    // scope = 'full'             → rebuild ALL cashflow entries from source documents:
+    //   • sales         → referenceType: 'sale', 'sale_cogs'
+    //   • orders        → referenceType: 'order_delivery', 'order_cogs'
+    //   • expenses      → referenceType: 'expense'
+    //   • financing     → referenceType: 'financing'
+    //   • purchase orders → referenceType: 'po_advance', 'purchase_order', etc.
+    //   • ledger payments → referenceType: 'ledger_payment'
+    //
+    // 'full' wipes ALL cashflow entries and rebuilds from scratch — this also
+    // fixes any duplicates (e.g. double delivery_collection from the old frontend bug).
     if (module === 'regenerate') {
       if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
       const { scope = 'ledger' } = req.body || {};
       const purchaseOrders = db.collection('purchaseOrders');
+      const ordersCol      = db.collection('orders');
+      const salesCol       = db.collection('sales');
+      const expensesCol    = db.collection('expenses');
+      const finCol         = db.collection('financing');
+      const inventoryCol   = db.collection('inventory');
       const ledgerCol      = db.collection('ledgerEntries');
       const cfCol          = db.collection('cashFlow');
       const log            = [];
 
-      // 1. Delete all PO-linked ledger entries
-      // referenceTypes match exactly what purchase-orders.js writes:
-      //   advance_payment → advance_payment action ledger debit
-      //   purchase_order  → receive action ledger credit (goods received)
-      const ledgerDel = await ledgerCol.deleteMany({ referenceType: { $in: ['po_advance', 'advance_payment', 'purchase_order', 'po_shortage', 'po_shortage_refund', 'po_shortage_goods', 'po_goods_received'] } });
-      log.push(`Deleted ${ledgerDel.deletedCount} ledger entries`);
+      // ── STEP 1: Delete stale entries ─────────────────────────────────────────
+      const ledgerDel = await ledgerCol.deleteMany({
+        referenceType: { $in: ['po_advance', 'advance_payment', 'purchase_order', 'po_shortage',
+          'po_shortage_refund', 'po_shortage_goods', 'po_goods_received'] },
+      });
+      log.push(`Deleted ${ledgerDel.deletedCount} PO ledger entries`);
 
-      let cashDel = { deletedCount: 0 };
+      let cashDelCount = 0;
       if (scope === 'full') {
-        // Delete all PO-linked cashflow entries
-        // referenceTypes match exactly what purchase-orders.js writes:
-        //   po_advance      → advance_payment action cashflow expense
-        //   purchase_order  → receive action balance payment cashflow expense
-        //   po_resolution   → resolve_shortage refund cashflow income
-        //   po_return       → return_to_supplier cashflow income
-        //   ledger_payment  → pay action cashflow expense
-        cashDel = await cfCol.deleteMany({ referenceType: { $in: ['po_advance', 'purchase_order', 'po_receipt', 'po_resolution', 'po_shortage_refund', 'advance_payment', 'po_return', 'ledger_payment'] } });
-        log.push(`Deleted ${cashDel.deletedCount} cashflow entries`);
+        // Wipe every cashflow entry that is auto-generated — keep only manual ones
+        // (manual entries have referenceType: null/undefined or 'manual')
+        const cashDel = await cfCol.deleteMany({
+          referenceType: { $in: [
+            // sales
+            'sale', 'sale_cogs',
+            // orders / delivery
+            'order_delivery', 'order_cogs',
+            // purchase orders
+            'po_advance', 'purchase_order', 'po_receipt', 'po_resolution',
+            'po_shortage_refund', 'advance_payment', 'po_return', 'ledger_payment',
+            // expenses
+            'expense',
+            // financing
+            'financing',
+          ]},
+        });
+        cashDelCount = cashDel.deletedCount;
+        log.push(`Deleted ${cashDelCount} cashflow entries`);
       }
 
-      // 2. Rebuild from all POs
-      const allPOs = await purchaseOrders.find({}).toArray();
       let ledgerCreated = 0;
       let cashCreated   = 0;
 
+      // ── STEP 2: Rebuild PO ledger entries (always) ───────────────────────────
+      const allPOs = await purchaseOrders.find({}).toArray();
+
       for (const po of allPOs) {
-        const poId        = po._id.toString();
+        const poId         = po._id.toString();
         const supplierName = po.supplier?.name || '';
-        const supplierId   = po.supplierId || poId; // fallback to poId if no supplierId
         const poDate       = po.createdAt || new Date();
 
-        // Find supplier by name if no supplierId
-        let resolvedSupplierId = supplierId;
-        if (!po.supplierId && supplierName) {
+        let resolvedSupplierId = po.supplierId || null;
+        if (!resolvedSupplierId && supplierName) {
           const sup = await db.collection('suppliers').findOne({ name: supplierName });
           if (sup) resolvedSupplierId = sup._id.toString();
         }
+        if (!resolvedSupplierId) resolvedSupplierId = poId; // last-resort fallback
 
-        // ── Advance payments ──────────────────────────────────────────────────
-        // IMPORTANT: po.advancePayments does NOT exist on PO documents.
-        // Advance payments are written to cashFlow with referenceType 'po_advance'.
-        // We read them from cashFlow to rebuild the ledger debit entries correctly.
+        // ── Advance payments ────────────────────────────────────────────────────
+        // Read from cashFlow (source of truth for advance amounts)
         const advCfEntries = await cfCol.find({
           referenceId: poId,
           referenceType: { $in: ['po_advance', 'advance_payment'] },
@@ -793,8 +818,17 @@ export default async function handler(req, res) {
           ledgerCreated++;
         }
 
-        // Fallback: if no cashFlow records exist but PO shows paidAmount, rebuild from that
-        if (advCfEntries.length === 0 && (po.paidAmount || 0) > 0) {
+        // Fallback: if full scope wiped cashFlow but PO has paidAmount, recreate both
+        if (scope === 'full' && advCfEntries.length === 0 && (po.paidAmount || 0) > 0) {
+          await cfCol.insertOne({
+            type: 'expense', category: 'advance_payment',
+            amount: po.paidAmount,
+            description: `Advance Payment — PO ${po.poNumber} — ${supplierName}`,
+            referenceType: 'po_advance', referenceId: poId,
+            paymentMode: 'cash',
+            date: poDate, createdAt: new Date(),
+          });
+          cashCreated++;
           await ledgerCol.insertOne({
             partyType: 'supplier', partyId: resolvedSupplierId, partyName: supplierName,
             entryType: 'debit', amount: po.paidAmount,
@@ -804,43 +838,41 @@ export default async function handler(req, res) {
             date: poDate, createdAt: new Date(),
           });
           ledgerCreated++;
-
-          if (scope === 'full') {
-            await cfCol.insertOne({
-              type: 'expense', category: 'advance_payment',
-              amount: po.paidAmount,
-              description: `Advance Payment — PO ${po.poNumber} — ${supplierName}`,
-              referenceType: 'po_advance', referenceId: poId,
-              paymentMode: 'cash',
-              date: poDate, createdAt: new Date(),
-            });
-            cashCreated++;
-          }
         }
 
-        // ── Goods received ────────────────────────────────────────────────────
+        // ── Goods received ──────────────────────────────────────────────────────
         if (['received', 'partially_returned', 'returned'].includes(po.status)) {
-          // Credit = full ordered value (po.totalAmount) — what the supplier invoiced.
-          // Do NOT use receivedItems sum here: that gives only the received portion,
-          // which under-credits and makes the net balance show 2× the shortage.
-          // The shortage debit below separately claws back the undelivered amount.
           const invoicedAmount = po.totalAmount || 0;
-
           if (invoicedAmount > 0) {
             await ledgerCol.insertOne({
               partyType: 'supplier', partyId: resolvedSupplierId, partyName: supplierName,
-              entryType: 'credit',
-              amount: invoicedAmount,
+              entryType: 'credit', amount: invoicedAmount,
               description: `Goods received — ${po.poNumber}`,
               referenceType: 'purchase_order', referenceId: poId,
               date: po.receivedDate || po.receivedAt || poDate, createdAt: new Date(),
             });
             ledgerCreated++;
+
+            // Rebuild balance-due-on-delivery cashflow entry if scope=full
+            if (scope === 'full') {
+              const advancePaid = po.paidAmount || 0;
+              const balanceDue  = Math.max(0, invoicedAmount - advancePaid);
+              if (balanceDue > 0.01) {
+                await cfCol.insertOne({
+                  type: 'expense', category: 'inventory_asset', amount: balanceDue,
+                  paymentMode: po.paymentMode || 'cash',
+                  description: `Balance Payment on Delivery — PO ${po.poNumber} — ${supplierName}`,
+                  referenceId: poId, referenceType: 'purchase_order',
+                  poNumber: po.poNumber, supplierName,
+                  date: po.receivedDate || po.receivedAt || poDate, createdAt: new Date(),
+                });
+                cashCreated++;
+              }
+            }
           }
         }
 
-        // ── Shortage debit (unresolved) ───────────────────────────────────────
-        // Supplier owes us for goods not delivered. This debit reduces what we owe them.
+        // ── Shortage debit (unresolved) ─────────────────────────────────────────
         if (po.shortageItems?.length && po.shortageValue > 0 && !po.shortageResolved) {
           await ledgerCol.insertOne({
             partyType: 'supplier', partyId: resolvedSupplierId, partyName: supplierName,
@@ -852,9 +884,8 @@ export default async function handler(req, res) {
           ledgerCreated++;
         }
 
-        // ── Shortage resolved ─────────────────────────────────────────────────
+        // ── Shortage resolved ───────────────────────────────────────────────────
         if (po.shortageItems?.length && po.shortageValue > 0 && po.shortageResolved) {
-          // Always write the original shortage debit first
           await ledgerCol.insertOne({
             partyType: 'supplier', partyId: resolvedSupplierId, partyName: supplierName,
             entryType: 'debit', amount: po.shortageValue,
@@ -864,7 +895,6 @@ export default async function handler(req, res) {
           });
           ledgerCreated++;
 
-          // Then write the resolution entry that clears it
           if (po.shortageResolveType === 'refund' && po.shortageRefundAmount > 0) {
             await ledgerCol.insertOne({
               partyType: 'supplier', partyId: resolvedSupplierId, partyName: supplierName,
@@ -886,7 +916,163 @@ export default async function handler(req, res) {
           }
         }
 
-        log.push(`PO ${po.poNumber}: rebuilt`);
+        log.push(`PO ${po.poNumber}: ledger rebuilt`);
+      }
+
+      // ── STEP 3: Rebuild all cashflow entries (scope=full only) ───────────────
+      if (scope === 'full') {
+
+        // ── 3a. Sales (direct POS/walk-in sales) ─────────────────────────────
+        // Only rebuild sales that are NOT linked to a whatsapp order
+        // (whatsapp order cashflow is rebuilt from orders in step 3b)
+        const allSales = await salesCol.find({ paymentMode: { $ne: 'whatsapp' } }).toArray();
+        for (const sale of allSales) {
+          const saleId   = sale._id.toString();
+          const saleDate = sale.date || sale.createdAt || new Date();
+
+          if (sale.paymentMode === 'mixed') {
+            const cashAmt  = Number(sale.mixedCashAmount)  || 0;
+            const otherAmt = Number(sale.mixedOtherAmount) || 0;
+            if (cashAmt > 0) {
+              await cfCol.insertOne({
+                type: 'income', category: 'sales', amount: cashAmt,
+                paymentMode: 'cash',
+                description: `Sale ${sale.saleNumber} — Cash portion — ${sale.customerName || 'Customer'}`,
+                referenceId: saleId, referenceType: 'sale',
+                date: saleDate, createdAt: new Date(),
+              });
+              cashCreated++;
+            }
+            if (otherAmt > 0) {
+              await cfCol.insertOne({
+                type: 'income', category: 'sales', amount: otherAmt,
+                paymentMode: sale.mixedOtherMode || 'upi',
+                description: `Sale ${sale.saleNumber} — ${(sale.mixedOtherMode || 'upi').toUpperCase()} portion — ${sale.customerName || 'Customer'}`,
+                referenceId: saleId, referenceType: 'sale',
+                date: saleDate, createdAt: new Date(),
+              });
+              cashCreated++;
+            }
+          } else {
+            await cfCol.insertOne({
+              type: 'income', category: 'sales', amount: sale.totalAmount || 0,
+              paymentMode: sale.paymentMode || 'cash',
+              description: `Sale ${sale.saleNumber} — ${sale.customerName || 'Customer'}`,
+              referenceId: saleId, referenceType: 'sale',
+              date: saleDate, createdAt: new Date(),
+            });
+            cashCreated++;
+          }
+
+          // COGS for this sale
+          let totalCOGS = 0;
+          for (const item of (sale.items || [])) {
+            if (!item.productId) continue;
+            const inv = await inventoryCol.findOne({ productId: item.productId });
+            if (inv && inv.costPrice > 0) totalCOGS += inv.costPrice * (Number(item.quantity) || 1);
+          }
+          if (totalCOGS > 0) {
+            await cfCol.insertOne({
+              type: 'expense', category: 'cogs', amount: totalCOGS,
+              description: `Cost of goods — Sale ${sale.saleNumber}`,
+              referenceId: saleId, referenceType: 'sale_cogs',
+              date: saleDate, createdAt: new Date(),
+            });
+            cashCreated++;
+          }
+          log.push(`Sale ${sale.saleNumber}: cashflow rebuilt`);
+        }
+
+        // ── 3b. Orders (whatsapp/delivery orders) ────────────────────────────
+        const allOrders = await ordersCol.find({ status: 'delivered' }).toArray();
+        for (const order of allOrders) {
+          const orderId   = order._id.toString();
+          const orderDate = order.deliveredAt || order.updatedAt || order.createdAt || new Date();
+
+          // Only write delivery_collection if cash was collected on delivery
+          const collectedAmount = Number(order.amountCollected) || order.totalAmount || 0;
+          if (collectedAmount > 0 && order.paymentMode !== 'already_paid') {
+            await cfCol.insertOne({
+              type: 'income', category: 'delivery_collection',
+              amount: collectedAmount,
+              description: `Delivery collected – Order ${order.orderId || orderId} (${order.customerName})`,
+              referenceId: orderId, referenceType: 'order_delivery',
+              collectedBy: order.collectedBy || null,
+              collectorName: order.collectorName || null,
+              orderId: order.orderId || orderId,
+              paymentMode: order.paymentMode || 'cash',
+              date: orderDate, createdAt: new Date(),
+            });
+            cashCreated++;
+          }
+
+          // COGS for this order
+          let totalCOGS = 0;
+          for (const item of (order.items || [])) {
+            if (!item.productId) continue;
+            const inv = await inventoryCol.findOne({ productId: item.productId });
+            if (inv && inv.costPrice > 0) totalCOGS += inv.costPrice * (Number(item.quantity) || 1);
+          }
+          if (totalCOGS > 0) {
+            await cfCol.insertOne({
+              type: 'expense', category: 'cogs', amount: totalCOGS,
+              description: `Cost of goods – Order ${order.orderId || orderId}`,
+              referenceId: orderId, referenceType: 'order_cogs',
+              date: orderDate, createdAt: new Date(),
+            });
+            cashCreated++;
+          }
+          log.push(`Order ${order.orderId || orderId}: cashflow rebuilt`);
+        }
+
+        // ── 3c. Expenses ──────────────────────────────────────────────────────
+        const allExpenses = await expensesCol.find({}).toArray();
+        for (const exp of allExpenses) {
+          await cfCol.insertOne({
+            type: 'expense', category: exp.category || 'other',
+            amount: Number(exp.amount) || 0,
+            description: exp.description || exp.category,
+            paymentMode: exp.paymentMode || 'cash',
+            referenceId: exp._id.toString(), referenceType: 'expense',
+            date: exp.date || exp.createdAt || new Date(), createdAt: new Date(),
+          });
+          cashCreated++;
+        }
+        log.push(`Rebuilt ${allExpenses.length} expense cashflow entries`);
+
+        // ── 3d. Financing ─────────────────────────────────────────────────────
+        const INCOME_FIN  = ['opening_capital', 'capital_infusion', 'loan_received'];
+        const TYPE_LABELS = {
+          opening_capital: 'Opening Capital', capital_infusion: 'Capital Infusion',
+          loan_received: 'Loan Received', loan_repayment: 'Loan Repayment',
+          owner_withdrawal: 'Owner Withdrawal',
+        };
+        const allFin = await finCol.find({}).toArray();
+        for (const fin of allFin) {
+          const finId  = fin._id.toString();
+          const cfType = INCOME_FIN.includes(fin.type) ? 'income' : 'expense';
+          const desc   = `${TYPE_LABELS[fin.type] || fin.type}${fin.source ? ' — ' + fin.source : ''}`;
+          const finDate = fin.date || fin.createdAt || new Date();
+          const cashAmt = Number(fin.cashAmount) || 0;
+          const bankAmt = Number(fin.bankAmount) || 0;
+          const total   = Number(fin.amount) || 0;
+          if (cashAmt > 0 && bankAmt > 0) {
+            await cfCol.insertOne({ type: cfType, category: 'financing', amount: cashAmt,
+              paymentMode: 'cash', description: `${desc} (Cash)`,
+              referenceId: finId, referenceType: 'financing', date: finDate, createdAt: new Date() });
+            await cfCol.insertOne({ type: cfType, category: 'financing', amount: bankAmt,
+              paymentMode: 'bank', description: `${desc} (Bank)`,
+              referenceId: finId, referenceType: 'financing', date: finDate, createdAt: new Date() });
+            cashCreated += 2;
+          } else {
+            const paymentMode = bankAmt > 0 ? 'bank' : cashAmt > 0 ? 'cash' : 'other';
+            await cfCol.insertOne({ type: cfType, category: 'financing', amount: total,
+              paymentMode, description: desc,
+              referenceId: finId, referenceType: 'financing', date: finDate, createdAt: new Date() });
+            cashCreated++;
+          }
+        }
+        log.push(`Rebuilt ${allFin.length} financing cashflow entries`);
       }
 
       log.push(`Total: ${ledgerCreated} ledger entries created, ${cashCreated} cashflow entries created`);
@@ -895,7 +1081,7 @@ export default async function handler(req, res) {
         success: true,
         ledgerDeleted: ledgerDel.deletedCount,
         ledgerCreated,
-        cashDeleted: cashDel.deletedCount,
+        cashDeleted: cashDelCount,
         cashCreated,
         log,
       });
