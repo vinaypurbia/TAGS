@@ -311,7 +311,7 @@ export default async function handler(req, res) {
           .filter(e => e.type === 'income'  && CASH_MODES.includes(e.paymentMode) && e.category !== 'financing')
           .reduce((s, e) => s + e.amount, 0);
         const cashOut = allEntries
-          .filter(e => e.type === 'expense' && CASH_MODES.includes(e.paymentMode) && e.category !== 'financing')
+          .filter(e => e.type === 'expense' && CASH_MODES.includes(e.paymentMode) && e.category !== 'financing' && e.category !== 'cogs')
           .reduce((s, e) => s + e.amount, 0);
         // Add financing cash inflows (opening capital cash portion) to cash position
         const finCashIn  = allEntries
@@ -328,7 +328,7 @@ export default async function handler(req, res) {
           .filter(e => e.type === 'income'  && BANK_MODES.includes(e.paymentMode) && e.category !== 'financing')
           .reduce((s, e) => s + e.amount, 0);
         const bankOut = allEntries
-          .filter(e => e.type === 'expense' && BANK_MODES.includes(e.paymentMode) && e.category !== 'financing')
+          .filter(e => e.type === 'expense' && BANK_MODES.includes(e.paymentMode) && e.category !== 'financing' && e.category !== 'cogs')
           .reduce((s, e) => s + e.amount, 0);
         const finBankIn  = allEntries
           .filter(e => e.type === 'income'  && e.category === 'financing' && e.paymentMode === 'bank')
@@ -339,7 +339,7 @@ export default async function handler(req, res) {
         const cashAtBank = Math.max(0, bankIn + finBankIn - bankOut - finBankOut);
 
         return res.status(200).json({
-          entries,
+          entries: entries.filter(e => e.category !== 'cogs'),
           summary: {
             income:           operatingIncome,
             revenue,
@@ -544,7 +544,7 @@ export default async function handler(req, res) {
         const totalLoans      = entries.filter(e => e.type === 'loan_received').reduce((s, e) => s + e.amount, 0);
         const totalRepaid     = entries.filter(e => e.type === 'loan_repayment').reduce((s, e) => s + e.amount, 0);
         return res.status(200).json({
-          entries,
+          entries: entries.filter(e => e.category !== 'cogs'),
           summary: {
             totalCapital,
             totalWithdrawn,
