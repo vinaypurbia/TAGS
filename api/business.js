@@ -925,7 +925,7 @@ export default async function handler(req, res) {
         // ── 3a. Sales (direct POS/walk-in sales) ─────────────────────────────
         // Only rebuild sales that are NOT linked to a whatsapp order
         // (whatsapp order cashflow is rebuilt from orders in step 3b)
-        const allSales = await salesCol.find({ paymentMode: { $ne: 'whatsapp' } }).toArray();
+        const allSales = await salesCol.find({ paymentMode: { $ne: 'whatsapp' }, $or: [{ orderId: { $exists: false } }, { orderId: null }, { orderId: '' }] }).toArray();
         for (const sale of allSales) {
           const saleId   = sale._id.toString();
           const saleDate = sale.date || sale.createdAt || new Date();
