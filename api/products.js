@@ -280,6 +280,38 @@ export default async function handler(req, res) {
       } = req.query;
 
       // ── Special ops ───────────────────────────────────────────
+      // ── One-time migration: re-host all external images to Cloudinary ──────
+      if (req.query.migrate_images === 'true') {
+        const allProducts = await collection.find({
+          $or: [
+            { image: { $exists: true, $ne: '', $not: /res\.cloudinary\.com/ } },
+            { imageUrl: { $exists: true, $ne: '', $not: /res\.cloudinary\.com/ } },
+          ]
+        }).toArray();
+
+        let fixed = 0, skipped = 0, failed = 0;
+        const results = [];
+
+        for (const p of allProducts) {
+          const originalUrl = (p.image || p.imageUrl || '').trim();
+          if (!originalUrl || originalUrl.includes('cloudinary.com')) { skipped++; continue; }
+
+          const newUrl = await ensureCloudinaryImage(originalUrl);
+          if (newUrl !== originalUrl && newUrl.includes('cloudinary.com')) {
+            await collection.updateOne(
+              { _id: p._id },
+              { $set: { image: newUrl, imageUrl: newUrl, updatedAt: new Date() } }
+            );
+            fixed++;
+            results.push({ name: p.name, status: 'fixed', from: originalUrl.slice(0, 80) });
+          } else {
+            failed++;
+            results.push({ name: p.name, status: 'failed', url: originalUrl.slice(0, 80) });
+          }
+        }
+        return res.status(200).json({ success: true, fixed, skipped, failed, total: allProducts.length, results });
+      }
+
       if (syncMeta === 'true') {
         const result = await syncMetaToMongo(collection);
         return res.status(200).json({
