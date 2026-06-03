@@ -16,6 +16,9 @@ interface Product {
   imageUrl?: string;
   imageUrls?: string[];
   sku?: string;
+  availableStock?: number;
+  trackInventory?: boolean;
+  stock?: { availableStock?: number; trackInventory?: boolean };
 }
 
 interface CartItem extends Product {
@@ -69,6 +72,7 @@ export default function POSPage() {
   const [mixedOtherMode, setMixedOtherMode] = useState<'upi'|'card'>('upi');
   const [notes, setNotes] = useState('');
   const [checkoutLoading, setCheckoutLoading] = useState(false);
+  const [outOfStockWarning, setOutOfStockWarning] = useState<{ items: string[]; onConfirm: () => void } | null>(null);
   const [success, setSuccess] = useState(false);
   const [lastSaleNumber, setLastSaleNumber] = useState('');
 
@@ -173,9 +177,35 @@ export default function POSPage() {
   const discountAmt = Math.min(discount, subtotal);
   const total = subtotal - discountAmt;
 
+  // Helper to get available stock for a product
+  function getAvailableStock(p: Product): number | null {
+    if (p.stock?.trackInventory || p.trackInventory) {
+      return p.stock?.availableStock ?? p.availableStock ?? null;
+    }
+    return null;
+  }
+
   // Checkout — payload matches SalesModule handleSubmit exactly
   async function handleCheckout() {
     if (cart.length === 0) return;
+
+    // ── OUT OF STOCK WARNING ─────────────────────────────────────
+    const outOfStockItems = cart.filter(i => {
+      const stock = getAvailableStock(i);
+      return stock !== null && stock <= 0;
+    });
+    if (outOfStockItems.length > 0) {
+      setOutOfStockWarning({
+        items: outOfStockItems.map(i => i.name),
+        onConfirm: () => { setOutOfStockWarning(null); proceedCheckout(); },
+      });
+      return;
+    }
+    // ── END STOCK WARNING ────────────────────────────────────────
+    proceedCheckout();
+  }
+
+  async function proceedCheckout() {
     setCheckoutLoading(true);
     try {
       const payload = {
@@ -215,6 +245,41 @@ export default function POSPage() {
     } finally {
       setCheckoutLoading(false);
     }
+  }
+
+  // ── Out of stock warning modal ──────────────────────────────
+  if (outOfStockWarning) {
+    return (
+      <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+        <div className="bg-white rounded-2xl p-6 max-w-sm w-full shadow-2xl">
+          <div className="text-4xl text-center mb-3">⚠️</div>
+          <h2 className="text-lg font-black text-gray-900 text-center mb-2">Out of Stock</h2>
+          <p className="text-sm text-gray-600 text-center mb-4">
+            The following item{outOfStockWarning.items.length > 1 ? 's are' : ' is'} currently out of stock:
+          </p>
+          <ul className="mb-4 space-y-1">
+            {outOfStockWarning.items.map((name, i) => (
+              <li key={i} className="text-sm font-bold text-red-600 bg-red-50 rounded-lg px-3 py-2">• {name}</li>
+            ))}
+          </ul>
+          <p className="text-xs text-gray-500 text-center mb-5">
+            You can still proceed — stock will go negative until replenished via a Purchase Order.
+          </p>
+          <div className="flex gap-3">
+            <button
+              onClick={() => setOutOfStockWarning(null)}
+              className="flex-1 py-2.5 rounded-xl border-2 border-gray-200 text-gray-600 font-black text-sm hover:border-gray-300 transition">
+              Cancel
+            </button>
+            <button
+              onClick={outOfStockWarning.onConfirm}
+              className="flex-1 py-2.5 rounded-xl bg-[#FA5600] text-white font-black text-sm hover:bg-[#E04A00] transition">
+              Proceed Anyway
+            </button>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   // ── Success screen ────────────────────────────────────────────
