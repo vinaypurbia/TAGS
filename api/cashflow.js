@@ -50,6 +50,12 @@ export default async function handler(req, res) {
           const key = `owner::`;
           if (balanceMap[key]) { balanceMap[key].balance -= e.amount; balanceMap[key].handedOver += e.amount; }
         });
+        // Subtract cash_settled entries — these are the admin settle confirmations
+        const settled = await cashFlow.find({ category: 'cash_settled' }).toArray();
+        settled.forEach((e) => {
+          const key = `${e.collectedBy}::${e.collectorName || ''}`;
+          if (balanceMap[key]) { balanceMap[key].balance -= e.amount; balanceMap[key].handedOver += e.amount; }
+        });
         const result = Object.values(balanceMap).filter((c) => c.balance > 0);
         return res.status(200).json(result);
       }
@@ -70,7 +76,7 @@ export default async function handler(req, res) {
 
       if (summary === 'true') {
         // P&L excluded — balance sheet movements, not operating P&L
-        const PL_EXCLUDE = ['financing', 'inventory_asset', 'advance_payment', 'supplier_payment', 'ledger_payment', 'po_shortage_receivable', 'po_shortage_refund', 'supplier_return_refund'];
+        const PL_EXCLUDE = ['financing', 'inventory_asset', 'advance_payment', 'supplier_payment', 'ledger_payment', 'po_shortage_receivable', 'po_shortage_refund', 'supplier_return_refund', 'cash_handover', 'owner_deposit', 'cash_settled'];
         const all = await cashFlow.find({ ...filter, category: { $nin: PL_EXCLUDE } }).toArray();
 
         const revenue = all.filter((e) => e.type === 'income' && (e.category === 'sales' || e.category === 'delivery_collection')).reduce((s, e) => s + e.amount, 0);
@@ -111,10 +117,15 @@ export default async function handler(req, res) {
         });
       }
 
-      // Exclude internal transfers (cash_handover) from the visible Cash Flow list.
-      // These are internal movements between collectors and do not represent
-      // income or expense — they should not appear in the Cash Flow ledger.
-      const listFilter = { ...filter, category: { $ne: 'cash_handover' } };
+      // Exclude internal transfers from the visible Cash Flow list.
+      // cash_handover = internal movement between collector and owner (not income/expense)
+      // owner_deposit = owner settling cash to bank (not income/expense)
+      const TRANSFER_EXCLUDE = ['cash_handover', 'owner_deposit', 'cash_settled'];
+      const listFilter = { ...filter };
+      // Only apply exclusion if no specific category filter was requested
+      if (!category) {
+        listFilter.category = { $nin: TRANSFER_EXCLUDE };
+      }
       const entries = await cashFlow.find(listFilter).sort({ date: -1 }).toArray();
       return res.status(200).json(entries);
     }
