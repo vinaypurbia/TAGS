@@ -583,6 +583,31 @@ export function AdminPanel() {
     }
   };
 
+  // ── OWNER DEPOSIT TO BANK ───────────────────────────────────────────────
+  const handleOwnerDeposit = async (balance: number) => {
+    if (!window.confirm(`Mark ₹${balance.toLocaleString('en-IN')} as deposited to bank / settled?`)) return;
+    try {
+      await fetch('/api/cashflow', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'transfer',
+          category: 'owner_deposit',
+          amount: balance,
+          description: 'Owner cash deposited to bank / settled',
+          paymentMode: 'cash',
+          collectedBy: 'owner',
+          collectorName: null,
+          handoverTo: 'bank',
+          date: new Date().toISOString(),
+        }),
+      });
+      fetchCollectorBalances();
+    } catch {
+      alert('Something went wrong. Please try again.');
+    }
+  };
+
   // ── AUTH GUARD ───────────────────────────────────────────────────────────
   // Read localStorage directly for instant check — avoids the React state
   // batching delay that causes a grey flash on fresh login before user state
@@ -1100,6 +1125,13 @@ export function AdminPanel() {
                               onClick={() => setHandoverModal({ open: true, collector: c, amount: String(c.balance), submitting: false })}
                               className="text-[10px] bg-[#FA5600] text-white font-black px-2.5 py-1 rounded-full hover:bg-[#E04A00] transition whitespace-nowrap">
                               Hand Over →
+                            </button>
+                          )}
+                          {c.collectedBy === 'owner' && c.balance > 0 && (
+                            <button
+                              onClick={() => handleOwnerDeposit(c.balance)}
+                              className="text-[10px] bg-blue-600 text-white font-black px-2.5 py-1 rounded-full hover:bg-blue-700 transition whitespace-nowrap">
+                              Deposit →
                             </button>
                           )}
                         </div>
