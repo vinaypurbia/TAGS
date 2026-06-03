@@ -274,7 +274,37 @@ export default async function handler(req, res) {
         if (deliveryDate !== undefined) updateFields.deliveryDate = deliveryDate;
         if (whatsappMessage !== undefined) updateFields.whatsappMessage = whatsappMessage;
 
-        // ── DELIVERY: record payment in cashFlow + deduct stock ──────────
+        // ── CONFIRM: write cashFlow immediately for online/already_paid orders ──
+        // Logic: money is received at time of confirmation, not at delivery
+        if (status === 'confirmed') {
+          const confirmOrder = await ordersCol.findOne({ _id: new ObjectId(id) });
+          if (confirmOrder) {
+            const confirmPayMode = paymentMode || confirmOrder.paymentMode;
+            const isOnlinePaid = confirmPayMode === 'already_paid' || confirmPayMode === 'online' || confirmPayMode === 'upi' || confirmPayMode === 'card';
+            if (isOnlinePaid) {
+              const confirmAmount = Number(amountCollected) || confirmOrder.totalAmount || 0;
+              if (confirmAmount > 0) {
+                await cashFlow.insertOne({
+                  type: 'income',
+                  category: 'sales',
+                  amount: confirmAmount,
+                  description: `Online payment confirmed – Order ${confirmOrder.orderId || id} (${confirmOrder.customerName})`,
+                  referenceId: id,
+                  referenceType: 'order_confirmed',
+                  paymentMode: confirmPayMode,
+                  orderId: confirmOrder.orderId || id,
+                  date: new Date(),
+                  createdAt: new Date(),
+                });
+              }
+              updateFields.paymentStatus = 'paid';
+              updateFields.paymentMode = confirmPayMode;
+            }
+          }
+        }
+        // ── END CONFIRM CASHFLOW ──────────────────────────────────────────────
+
+        // ── DELIVERY: deduct stock + COGS only (no cashFlow for COD) ────────
         if (status === 'delivered') {
           updateFields.deliveredAt = new Date();
           if (paymentMode !== undefined) updateFields.paymentMode = paymentMode;
@@ -285,24 +315,12 @@ export default async function handler(req, res) {
 
           const deliveredOrder = await ordersCol.findOne({ _id: new ObjectId(id) });
           if (deliveredOrder) {
-            // Record income in cashFlow when delivery is confirmed
-            const collectedAmount = Number(amountCollected) || deliveredOrder.totalAmount || 0;
-            if (collectedAmount > 0 && paymentMode !== 'already_paid') {
-              await cashFlow.insertOne({
-                type: 'income',
-                category: 'delivery_collection',
-                amount: collectedAmount,
-                description: `Delivery collected – Order ${deliveredOrder.orderId || id} (${deliveredOrder.customerName})`,
-                referenceId: id,
-                referenceType: 'order_delivery',
-                collectedBy: collectedBy || null,
-                collectorName: collectorName || null,
-                orderId: deliveredOrder.orderId || id,
-                paymentMode: paymentMode || 'cash',
-                date: new Date(),
-                createdAt: new Date(),
-              });
-            }
+            // ── COD: do NOT write cashFlow here ─────────────────────────────
+            // For COD orders, cash is physically with the collector (delivery boy / owner).
+            // CashFlow income entry is written only when admin clicks "Settle"
+            // and confirms cash has been received. This keeps accounting accurate.
+            // For already_paid/online orders, cashFlow was written on Confirm — skip here too.
+            // ────────────────────────────────────────────────────────────────
 
             // Record COGS as expense using costPrice from inventory
             if (deliveredOrder.items?.length) {
