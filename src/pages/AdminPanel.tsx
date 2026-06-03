@@ -585,8 +585,8 @@ export function AdminPanel() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          type: 'income',
-          category: 'delivery_collection',
+          type: 'transfer',
+          category: 'cash_settled',
           amount: Number(amount),
           description: `Settled – ${collector.collectorName || collector.collectedBy} handed over to admin`,
           paymentMode: settleMode,
