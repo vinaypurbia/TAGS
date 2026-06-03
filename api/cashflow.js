@@ -44,6 +44,12 @@ export default async function handler(req, res) {
           const key = `${e.collectedBy}::${e.collectorName || ''}`;
           if (balanceMap[key]) { balanceMap[key].balance -= e.amount; balanceMap[key].handedOver += e.amount; }
         });
+        // Also subtract owner_deposit entries so owner balance clears after depositing
+        const deposits = await cashFlow.find({ category: 'owner_deposit' }).toArray();
+        deposits.forEach((e) => {
+          const key = `owner::`;
+          if (balanceMap[key]) { balanceMap[key].balance -= e.amount; balanceMap[key].handedOver += e.amount; }
+        });
         const result = Object.values(balanceMap).filter((c) => c.balance > 0);
         return res.status(200).json(result);
       }
@@ -105,7 +111,11 @@ export default async function handler(req, res) {
         });
       }
 
-      const entries = await cashFlow.find(filter).sort({ date: -1 }).toArray();
+      // Exclude internal transfers (cash_handover) from the visible Cash Flow list.
+      // These are internal movements between collectors and do not represent
+      // income or expense — they should not appear in the Cash Flow ledger.
+      const listFilter = { ...filter, category: { $ne: 'cash_handover' } };
+      const entries = await cashFlow.find(listFilter).sort({ date: -1 }).toArray();
       return res.status(200).json(entries);
     }
 
