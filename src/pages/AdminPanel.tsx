@@ -543,6 +543,21 @@ export function AdminPanel() {
       setPendingOrders(prev => prev.filter(o => o._id !== order._id));
       setPayModal(p => ({ ...p, open: false, order: null, submitting: false }));
       fetchCollectorBalances();
+
+      // ── THANK YOU WHATSAPP MESSAGE ───────────────────────────
+      if (order.customerPhone) {
+        const customerName = order.customerName || 'there';
+        const thankYouMsg =
+          `Hi ${customerName} 👋\n\n` +
+          `Thank you so much for your order with *TAGS*! 🎉\n\n` +
+          `We're glad we could serve you and hope you love your purchase! 😊\n\n` +
+          `Your satisfaction is our priority, and we truly look forward to serving you again soon. Your trust and support mean the world to us. 🙏\n\n` +
+          `See you next time! ✨\n— Team TAGS`;
+        const phone = order.customerPhone.replace(/[^0-9]/g, '');
+        window.open(`https://wa.me/${phone}?text=${encodeURIComponent(thankYouMsg)}`, '_blank');
+      }
+      // ── END THANK YOU MESSAGE ────────────────────────────────
+
     } catch {
       setPayModal(p => ({ ...p, submitting: false }));
       alert('Something went wrong. Please try again.');
