@@ -291,6 +291,7 @@ export function AdminPanel() {
 
   const [dashStats,     setDashStats]     = useState<any>(null);
   const [dashLoading,   setDashLoading]   = useState(false);
+  const [dashPeriod, setDashPeriod] = useState<'today'|'week'|'month'|'year'>('month');
   const [dbStats,       setDbStats]       = useState<any>(null);
   const [dbLoading,     setDbLoading]     = useState(false);
   const [cloudStats,    setCloudStats]    = useState<any>(null);
@@ -304,13 +305,14 @@ export function AdminPanel() {
   // Collector cash balances
   const [collectorBalances, setCollectorBalances] = useState<any[]>([]);
 
-  // Cash handover modal
-  const [handoverModal, setHandoverModal] = useState<{
+  // Settle modal (replaces handover + deposit — unified for all collectors)
+  const [settleModal, setSettleModal] = useState<{
     open: boolean;
     collector: any | null;
     amount: string;
+    paymentMode: 'cash' | 'bank';
     submitting: boolean;
-  }>({ open: false, collector: null, amount: '', submitting: false });
+  }>({ open: false, collector: null, amount: '', paymentMode: 'cash', submitting: false });
 
   // Payment collection modal
   const [payModal, setPayModal] = useState<{
@@ -361,8 +363,8 @@ export function AdminPanel() {
 
     // setDashLoading(true) removed — UI renders immediately, data fills in silently
     Promise.all([
-      fetch('/api/sales?period=month').then(r => r.json()).catch(() => ({})),
-      fetch('/api/business?module=cashflow&period=month').then(r => r.json()).catch(() => ({})),
+      fetch(`/api/sales?period=${dashPeriod}`).then(r => r.json()).catch(() => ({})),
+      fetch(`/api/business?module=cashflow&period=${dashPeriod}`).then(r => r.json()).catch(() => ({})),
       fetch('/api/business?module=reports&type=stock-shortage').then(r => r.json()).catch(() => []),
       fetch('/api/customers').then(r => r.json()).catch(() => ({})),
       fetch('/api/inventory').then(r => r.json()).catch(() => []),
@@ -406,7 +408,7 @@ export function AdminPanel() {
       setDashLoading(false);
       fetchCollectorBalances();
     });
-  }, [canAccessAdmin]);
+  }, [canAccessAdmin, dashPeriod]);
 
   const toggleVisibility = (id: string) => {
     setVisibility(prev => {
@@ -564,61 +566,40 @@ export function AdminPanel() {
     }
   };
 
-  const handleHandover = async () => {
-    const { collector, amount } = handoverModal;
+  // ── SETTLE: admin confirms cash/bank received from any collector ────────────
+  // This is the ONLY place a delivery_collection cashFlow income entry is written.
+  // Called when admin physically receives cash or sees bank deposit receipt.
+  const handleSettle = async () => {
+    const { collector, amount, paymentMode: settleMode } = settleModal;
     if (!collector) return;
     if (!amount || isNaN(Number(amount)) || Number(amount) <= 0) {
       alert('Please enter a valid amount.'); return;
     }
     if (Number(amount) > collector.balance) {
-      alert(`Cannot hand over more than the balance of ₹${collector.balance.toLocaleString('en-IN')}.`); return;
+      alert(`Cannot settle more than the balance of ₹${collector.balance.toLocaleString('en-IN')}.`); return;
     }
-    setHandoverModal(p => ({ ...p, submitting: true }));
+    setSettleModal(p => ({ ...p, submitting: true }));
     try {
+      // Write the actual cashFlow income entry now — money is in admin's hands
       await fetch('/api/cashflow', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          type: 'transfer',
-          category: 'cash_handover',
+          type: 'income',
+          category: 'delivery_collection',
           amount: Number(amount),
-          description: `Cash handover – ${collector.collectorName || collector.collectedBy} → Owner`,
-          paymentMode: 'cash',
+          description: `Settled – ${collector.collectorName || collector.collectedBy} handed over to admin`,
+          paymentMode: settleMode,
           collectedBy: collector.collectedBy,
           collectorName: collector.collectorName || null,
-          handoverTo: 'owner',
+          settledAt: new Date().toISOString(),
           date: new Date().toISOString(),
         }),
       });
-      setHandoverModal({ open: false, collector: null, amount: '', submitting: false });
+      setSettleModal({ open: false, collector: null, amount: '', paymentMode: 'cash', submitting: false });
       fetchCollectorBalances();
     } catch {
-      setHandoverModal(p => ({ ...p, submitting: false }));
-      alert('Something went wrong. Please try again.');
-    }
-  };
-
-  // ── OWNER DEPOSIT TO BANK ───────────────────────────────────────────────
-  const handleOwnerDeposit = async (balance: number) => {
-    if (!window.confirm(`Mark ₹${balance.toLocaleString('en-IN')} as deposited to bank / settled?`)) return;
-    try {
-      await fetch('/api/cashflow', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          type: 'transfer',
-          category: 'owner_deposit',
-          amount: balance,
-          description: 'Owner cash deposited to bank / settled',
-          paymentMode: 'cash',
-          collectedBy: 'owner',
-          collectorName: null,
-          handoverTo: 'bank',
-          date: new Date().toISOString(),
-        }),
-      });
-      fetchCollectorBalances();
-    } catch {
+      setSettleModal(p => ({ ...p, submitting: false }));
       alert('Something went wrong. Please try again.');
     }
   };
@@ -781,9 +762,25 @@ export function AdminPanel() {
           {activeSection === 'dashboard' && (
             <div className="space-y-6 max-w-5xl mx-auto">
               <div className="flex items-start justify-between gap-4 flex-wrap">
-                <div>
-                  <h2 className="text-2xl font-black text-gray-900 uppercase tracking-tight">Welcome back 👋</h2>
-                  <p className="text-sm text-gray-400">Here's what's happening with TAGS this month</p>
+                <div className="flex items-center gap-4 flex-wrap">
+                  <div>
+                    <h2 className="text-2xl font-black text-gray-900 uppercase tracking-tight">Welcome back 👋</h2>
+                    <p className="text-sm text-gray-400">
+                      TAGS ·{' '}
+                      <span className="font-bold text-[#FA5600]">
+                        {dashPeriod === 'today' ? 'Today' : dashPeriod === 'week' ? 'This Week' : dashPeriod === 'month' ? 'This Month' : 'This Year'}
+                      </span>
+                    </p>
+                  </div>
+                  <select
+                    value={dashPeriod}
+                    onChange={e => setDashPeriod(e.target.value as any)}
+                    className="text-sm font-black border-2 border-gray-200 rounded-xl px-3 py-2 bg-white text-gray-700 focus:border-[#FA5600] focus:outline-none cursor-pointer">
+                    <option value="today">Today</option>
+                    <option value="week">This Week</option>
+                    <option value="month">This Month</option>
+                    <option value="year">This Year</option>
+                  </select>
                 </div>
                 {/* ── Compact storage badges top-right ── */}
                 <div className="flex items-center gap-2 shrink-0">
@@ -1135,18 +1132,11 @@ export function AdminPanel() {
                         </div>
                         <div className="text-right shrink-0 flex items-center gap-2">
                           <p className="font-black text-base text-green-600">₹{Number(c.balance).toLocaleString('en-IN')}</p>
-                          {c.collectedBy !== 'owner' && c.balance > 0 && (
+                          {c.balance > 0 && (
                             <button
-                              onClick={() => setHandoverModal({ open: true, collector: c, amount: String(c.balance), submitting: false })}
+                              onClick={() => setSettleModal({ open: true, collector: c, amount: String(c.balance), paymentMode: 'cash', submitting: false })}
                               className="text-[10px] bg-[#FA5600] text-white font-black px-2.5 py-1 rounded-full hover:bg-[#E04A00] transition whitespace-nowrap">
-                              Hand Over →
-                            </button>
-                          )}
-                          {c.collectedBy === 'owner' && c.balance > 0 && (
-                            <button
-                              onClick={() => handleOwnerDeposit(c.balance)}
-                              className="text-[10px] bg-blue-600 text-white font-black px-2.5 py-1 rounded-full hover:bg-blue-700 transition whitespace-nowrap">
-                              Deposit →
+                              Settle ✓
                             </button>
                           )}
                         </div>
@@ -1465,48 +1455,63 @@ export function AdminPanel() {
         </main>
       </div>
 
-      {/* ── CASH HANDOVER MODAL ──────────────────────────────────────────────── */}
-      {handoverModal.open && handoverModal.collector && (
+      {/* ── SETTLE MODAL ─────────────────────────────────────────────────────── */}
+      {/* Admin confirms cash/bank receipt from collector — writes cashFlow entry */}
+      {settleModal.open && settleModal.collector && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 space-y-5">
             <div className="flex items-start justify-between">
               <div>
-                <h3 className="font-black text-gray-900 text-base uppercase tracking-widest">Cash Handover</h3>
+                <h3 className="font-black text-gray-900 text-base uppercase tracking-widest">Settle Collection</h3>
                 <p className="text-[11px] text-gray-400 mt-0.5">
-                  {handoverModal.collector.collectorName || handoverModal.collector.collectedBy.replace('_', ' ')} → Owner
+                  Confirm you have received cash/bank from{' '}
+                  {settleModal.collector.collectorName || settleModal.collector.collectedBy.replace('_', ' ')}
                 </p>
               </div>
-              <button onClick={() => setHandoverModal(p => ({ ...p, open: false }))} className="text-gray-400 hover:text-gray-600">
+              <button onClick={() => setSettleModal(p => ({ ...p, open: false }))} className="text-gray-400 hover:text-gray-600">
                 <X className="w-5 h-5" />
               </button>
             </div>
 
             <div className="bg-green-50 border border-green-200 rounded-xl px-4 py-3">
-              <p className="text-[10px] font-black uppercase tracking-widest text-green-600 mb-1">Current Balance</p>
-              <p className="text-2xl font-black text-green-700">₹{Number(handoverModal.collector.balance).toLocaleString('en-IN')}</p>
-              <p className="text-[10px] text-green-500 mt-0.5">from {handoverModal.collector.count} collection{handoverModal.collector.count !== 1 ? 's' : ''}</p>
+              <p className="text-[10px] font-black uppercase tracking-widest text-green-600 mb-1">Pending Balance</p>
+              <p className="text-2xl font-black text-green-700">₹{Number(settleModal.collector.balance).toLocaleString('en-IN')}</p>
+              <p className="text-[10px] text-green-500 mt-0.5">from {settleModal.collector.count} collection{settleModal.collector.count !== 1 ? 's' : ''}</p>
             </div>
 
             <div className="space-y-1">
-              <p className="text-[10px] font-black uppercase tracking-widest text-gray-500">Amount Being Handed Over (₹)</p>
+              <p className="text-[10px] font-black uppercase tracking-widest text-gray-500">Amount Received (₹)</p>
               <input
-                type="number" min="0" max={handoverModal.collector.balance}
-                value={handoverModal.amount}
-                onChange={e => setHandoverModal(p => ({ ...p, amount: e.target.value }))}
+                type="number" min="0" max={settleModal.collector.balance}
+                value={settleModal.amount}
+                onChange={e => setSettleModal(p => ({ ...p, amount: e.target.value }))}
                 className="w-full border-2 border-gray-200 rounded-xl px-4 py-2.5 text-sm font-bold focus:border-[#FA5600] outline-none"
                 placeholder="Enter amount"
               />
-              <p className="text-[10px] text-gray-400">This will post a cash transfer entry and reduce their balance.</p>
+            </div>
+
+            <div className="space-y-1">
+              <p className="text-[10px] font-black uppercase tracking-widest text-gray-500">Received Via</p>
+              <div className="flex gap-2">
+                {(['cash', 'bank'] as const).map(mode => (
+                  <button key={mode}
+                    onClick={() => setSettleModal(p => ({ ...p, paymentMode: mode }))}
+                    className={`flex-1 py-2 rounded-xl text-xs font-black border-2 transition ${settleModal.paymentMode === mode ? 'border-[#FA5600] bg-orange-50 text-[#FA5600]' : 'border-gray-200 text-gray-500 hover:border-gray-300'}`}>
+                    {mode === 'cash' ? '💵 Cash' : '🏦 Bank'}
+                  </button>
+                ))}
+              </div>
+              <p className="text-[10px] text-gray-400">This posts a Cash Flow income entry. Only click when money is in your hands.</p>
             </div>
 
             <div className="flex gap-3 pt-1">
-              <button onClick={() => setHandoverModal(p => ({ ...p, open: false }))}
+              <button onClick={() => setSettleModal(p => ({ ...p, open: false }))}
                 className="flex-1 py-2.5 rounded-xl border-2 border-gray-200 text-xs font-black text-gray-500 hover:border-gray-300 transition">
                 Cancel
               </button>
-              <button onClick={handleHandover} disabled={handoverModal.submitting}
-                className="flex-1 py-2.5 rounded-xl bg-green-500 text-white text-xs font-black uppercase tracking-widest hover:bg-green-600 transition disabled:opacity-60">
-                {handoverModal.submitting ? 'Saving...' : '✓ Confirm Handover'}
+              <button onClick={handleSettle} disabled={settleModal.submitting}
+                className="flex-1 py-2.5 rounded-xl bg-[#FA5600] text-white text-xs font-black uppercase tracking-widest hover:bg-[#E04A00] transition disabled:opacity-60">
+                {settleModal.submitting ? 'Saving...' : '✓ Settle'}
               </button>
             </div>
           </div>
