@@ -274,8 +274,7 @@ export default async function handler(req, res) {
         if (deliveryDate !== undefined) updateFields.deliveryDate = deliveryDate;
         if (whatsappMessage !== undefined) updateFields.whatsappMessage = whatsappMessage;
 
-        // ── DELIVERY: record payment in cashFlow only ─────────────────────
-        // Stock is NOT auto-deducted — only manual adjustment or PO receipt changes stock
+        // ── DELIVERY: record payment in cashFlow + deduct stock ──────────
         if (status === 'delivered') {
           updateFields.deliveredAt = new Date();
           if (paymentMode !== undefined) updateFields.paymentMode = paymentMode;
@@ -328,6 +327,31 @@ export default async function handler(req, res) {
                   createdAt: new Date(),
                 });
               }
+
+              // ── REAL-TIME STOCK DEDUCTION ────────────────────────────────
+              const stockMovements = db.collection('stockMovements');
+              for (const item of deliveredOrder.items) {
+                if (!item.productId) continue;
+                const qty = Number(item.quantity) || 1;
+                const invDoc = await inventoryCol.findOne({ productId: item.productId, trackInventory: true });
+                if (!invDoc) continue;
+                await inventoryCol.updateOne(
+                  { productId: item.productId, trackInventory: true },
+                  { $inc: { availableStock: -qty, currentStock: -qty } }
+                );
+                await stockMovements.insertOne({
+                  productId: item.productId,
+                  productName: item.name || item.productName || '',
+                  type: 'sale',
+                  quantityChange: -qty,
+                  reason: `Order delivered – ${deliveredOrder.orderId || id}`,
+                  referenceId: id,
+                  referenceType: 'order_delivery',
+                  date: new Date(),
+                  createdAt: new Date(),
+                });
+              }
+              // ── END STOCK DEDUCTION ────────────────────────────────────
             }
           }
         }
