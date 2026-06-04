@@ -3,7 +3,7 @@ import {
   TrendingUp, TrendingDown, DollarSign, ShoppingCart, Package,
   AlertTriangle, BarChart2, Users, FileText, Plus, Trash2,
   Check, X, Search, Phone, Mail, MapPin, ChevronDown, ChevronUp, BookOpen,
-  Edit2, UserX, UserCheck, Eye, EyeOff
+  Edit2, UserX, UserCheck, Eye, EyeOff, Truck
 } from 'lucide-react';
 import { useAuth, authHeaders } from '../context/AuthContext';
 import type { UserRole } from '../context/AuthContext';
@@ -833,25 +833,27 @@ function OrdersModule({ showMsg }: any) {
     all: orders.length,
     pending: orders.filter(o => o.status === 'pending').length,
     confirmed: orders.filter(o => o.status === 'confirmed').length,
+    out_for_delivery: orders.filter(o => o.status === 'out_for_delivery').length,
     delivered: orders.filter(o => o.status === 'delivered').length,
     cancelled: orders.filter(o => o.status === 'cancelled').length,
   };
 
   const statusColors: Record<string, string> = {
-    pending:   'bg-yellow-100 text-yellow-700',
-    confirmed: 'bg-blue-100 text-blue-700',
-    delivered: 'bg-green-100 text-green-700',
-    cancelled: 'bg-red-100 text-red-600',
+    pending:          'bg-yellow-100 text-yellow-700',
+    confirmed:        'bg-blue-100 text-blue-700',
+    out_for_delivery: 'bg-purple-100 text-purple-700',
+    delivered:        'bg-green-100 text-green-700',
+    cancelled:        'bg-red-100 text-red-600',
   };
 
   return (
     <div className="space-y-4">
       {/* Summary pills */}
       <div className="flex gap-2 flex-wrap">
-        {(['all', 'pending', 'confirmed', 'delivered', 'cancelled'] as const).map(s => (
+        {(['all', 'pending', 'confirmed', 'out_for_delivery', 'delivered', 'cancelled'] as const).map(s => (
           <button key={s} onClick={() => setStatusFilter(s)}
             className={`px-3 py-1.5 rounded-full text-xs font-black uppercase tracking-widest transition-all border-2 ${statusFilter === s ? 'bg-[#FA5600] text-white border-[#FA5600]' : 'bg-white text-gray-500 border-gray-200 hover:border-[#FA5600] hover:text-[#FA5600]'}`}>
-            {s} ({counts[s] ?? orders.length})
+            {s === 'out_for_delivery' ? `🚚 On Way (${counts.out_for_delivery})` : `${s} (${counts[s] ?? orders.length})`}
           </button>
         ))}
       </div>
@@ -864,7 +866,7 @@ function OrdersModule({ showMsg }: any) {
             <div key={order._id} className={`bg-white rounded-xl border-2 transition-all ${expandedId === order._id ? 'border-[#FA5600]' : 'border-gray-200'}`}>
               {/* Order header row */}
               <div className="flex items-center gap-3 p-4 cursor-pointer" onClick={() => setExpandedId(expandedId === order._id ? null : order._id)}>
-                <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${order.status === 'pending' ? 'bg-yellow-400 animate-pulse' : order.status === 'confirmed' ? 'bg-blue-400' : order.status === 'delivered' ? 'bg-green-400' : 'bg-red-400'}`} />
+                <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${order.status === 'pending' ? 'bg-yellow-400 animate-pulse' : order.status === 'confirmed' ? 'bg-blue-400' : order.status === 'out_for_delivery' ? 'bg-purple-500 animate-pulse' : order.status === 'delivered' ? 'bg-green-400' : 'bg-red-400'}`} />
                 <div className="flex-1 min-w-0">
                   <p className="font-black text-sm text-gray-900">{order.customerName}</p>
                   <p className="text-xs text-gray-400">{order.orderId} · {order.customerPhone}</p>
@@ -983,7 +985,7 @@ function OrdersModule({ showMsg }: any) {
                     </div>
                   )}
 
-                  {/* Already confirmed — show delivery date + mark delivered */}
+                  {/* Already confirmed — show delivery date + dispatch + mark delivered */}
                   {order.status === 'confirmed' && (
                     <div className="border-t border-gray-100 pt-3 space-y-2">
                       {order.deliveryDate && (
@@ -991,6 +993,59 @@ function OrdersModule({ showMsg }: any) {
                           📅 Delivery scheduled: {new Date(order.deliveryDate).toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' })}
                         </p>
                       )}
+                      {/* Send to Driver — dispatches order and shares tracking link */}
+                      <button
+                        onClick={async () => {
+                          // Mark as out_for_delivery
+                          await fetch('/api/customers?module=orders', {
+                            method: 'PUT',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ id: order._id, status: 'out_for_delivery' }),
+                          });
+                          fetchOrders();
+                          // Open WhatsApp to driver with delivery link
+                          const driverLink = `${window.location.origin}/deliver/${order._id}`;
+                          const msg = `🚚 *Delivery Assigned*\n\nOrder: *${order.orderId}*\nCustomer: ${order.customerName}\nPhone: ${order.customerPhone}\nAddress: ${order.deliveryAddress || order.customerAddress || 'See order'}\n\n📱 Open this link to start delivery:\n${driverLink}`;
+                          window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`, '_blank');
+                        }}
+                        className="w-full bg-blue-600 hover:bg-blue-700 text-white font-black text-xs uppercase tracking-widest py-2.5 rounded-xl transition flex items-center justify-center gap-2"
+                      >
+                        <Truck className="w-4 h-4" /> Send to Driver (Out for Delivery)
+                      </button>
+                      <button onClick={() => openDeliverModal(order)}
+                        className="w-full bg-green-500 hover:bg-green-600 text-white font-black text-xs uppercase tracking-widest py-2.5 rounded-xl transition">
+                        Mark as Delivered ✓
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Out for delivery — show driver link + mark delivered */}
+                  {order.status === 'out_for_delivery' && (
+                    <div className="border-t border-gray-100 pt-3 space-y-2">
+                      <p className="text-xs text-purple-700 font-bold bg-purple-50 rounded-lg px-3 py-2 flex items-center gap-2">
+                        <Truck className="w-3.5 h-3.5" /> Out for Delivery
+                      </p>
+                      {/* Resend driver link */}
+                      <button
+                        onClick={() => {
+                          const driverLink = `${window.location.origin}/deliver/${order._id}`;
+                          const msg = `🚚 *Delivery Link*\n\nOrder: *${order.orderId}*\nCustomer: ${order.customerName}\nAddress: ${order.deliveryAddress || order.customerAddress || ''}\n\n📱 ${driverLink}`;
+                          window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`, '_blank');
+                        }}
+                        className="w-full bg-purple-600 hover:bg-purple-700 text-white font-black text-xs uppercase tracking-widest py-2.5 rounded-xl transition flex items-center justify-center gap-2"
+                      >
+                        <Truck className="w-4 h-4" /> Resend Driver Link
+                      </button>
+                      {/* Customer tracking link */}
+                      <button
+                        onClick={() => {
+                          const trackLink = `${window.location.origin}/track/${order._id}`;
+                          navigator.clipboard.writeText(trackLink).then(() => showMsg('Tracking link copied!', 'success'));
+                        }}
+                        className="w-full bg-gray-100 hover:bg-gray-200 text-gray-700 font-black text-xs uppercase tracking-widest py-2.5 rounded-xl transition"
+                      >
+                        📋 Copy Customer Tracking Link
+                      </button>
                       <button onClick={() => openDeliverModal(order)}
                         className="w-full bg-green-500 hover:bg-green-600 text-white font-black text-xs uppercase tracking-widest py-2.5 rounded-xl transition">
                         Mark as Delivered ✓
