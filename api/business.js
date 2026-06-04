@@ -306,9 +306,11 @@ export default async function handler(req, res) {
         const operatingIncome = revenue + otherIncome;
 
         // ── CASH IN HAND: all-time cash/upi inflows - cash/upi outflows ─────
+        // Exclude internal transfers (cash_settled, cash_handover, owner_deposit) from cash position
         const CASH_MODES = ['cash', 'upi', null, undefined, ''];
+        const CASH_EXCLUDE_CATS = ['financing', 'cash_settled', 'cash_handover', 'owner_deposit'];
         const cashIn  = allEntries
-          .filter(e => e.type === 'income'  && CASH_MODES.includes(e.paymentMode) && e.category !== 'financing')
+          .filter(e => e.type === 'income'  && CASH_MODES.includes(e.paymentMode) && !CASH_EXCLUDE_CATS.includes(e.category))
           .reduce((s, e) => s + e.amount, 0);
         const cashOut = allEntries
           .filter(e => e.type === 'expense' && CASH_MODES.includes(e.paymentMode) && e.category !== 'financing' && e.category !== 'cogs')
@@ -338,8 +340,10 @@ export default async function handler(req, res) {
           .reduce((s, e) => s + e.amount, 0);
         const cashAtBank = Math.max(0, bankIn + finBankIn - bankOut - finBankOut);
 
+        // Exclude internal transfer categories from visible entries
+        const CF_HIDDEN = ['cogs', 'cash_settled', 'cash_handover', 'owner_deposit'];
         return res.status(200).json({
-          entries: entries.filter(e => e.category !== 'cogs'),
+          entries: entries.filter(e => !CF_HIDDEN.includes(e.category)),
           summary: {
             income:           operatingIncome,
             revenue,
@@ -995,27 +999,21 @@ export default async function handler(req, res) {
           // This prevents regenerate from undoing admin settle confirmations
           const collectedAmount = Number(order.amountCollected) || order.totalAmount || 0;
           if (collectedAmount > 0 && order.paymentMode !== 'already_paid') {
-            // Check if this order's collection has already been settled by admin
-            const alreadySettled = await cfCol.findOne({
-              category: 'cash_settled',
+            // Always recreate delivery_collection — it represents cash physically collected.
+            // cash_settled entries are separate admin confirmations and are never deleted by regenerate.
+            // Both can coexist: delivery_collection = cash collected, cash_settled = cash handed to admin.
+            await cfCol.insertOne({
+              type: 'income', category: 'delivery_collection',
+              amount: collectedAmount,
+              description: `Delivery collected – Order ${order.orderId || orderId} (${order.customerName})`,
+              referenceId: orderId, referenceType: 'order_delivery',
               collectedBy: order.collectedBy || null,
+              collectorName: order.collectorName || null,
+              orderId: order.orderId || orderId,
+              paymentMode: order.paymentMode || 'cash',
+              date: orderDate, createdAt: new Date(),
             });
-            // Only recreate the delivery_collection if NOT yet settled
-            // (if settled, the cash_settled entry already represents this money)
-            if (!alreadySettled) {
-              await cfCol.insertOne({
-                type: 'income', category: 'delivery_collection',
-                amount: collectedAmount,
-                description: `Delivery collected – Order ${order.orderId || orderId} (${order.customerName})`,
-                referenceId: orderId, referenceType: 'order_delivery',
-                collectedBy: order.collectedBy || null,
-                collectorName: order.collectorName || null,
-                orderId: order.orderId || orderId,
-                paymentMode: order.paymentMode || 'cash',
-                date: orderDate, createdAt: new Date(),
-              });
-              cashCreated++;
-            }
+            cashCreated++;
           }
 
           // COGS for this order
