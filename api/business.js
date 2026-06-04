@@ -991,20 +991,31 @@ export default async function handler(req, res) {
           const orderDate = order.deliveredAt || order.updatedAt || order.createdAt || new Date();
 
           // Only write delivery_collection if cash was collected on delivery
+          // AND it has not already been settled by admin (cash_settled entry exists)
+          // This prevents regenerate from undoing admin settle confirmations
           const collectedAmount = Number(order.amountCollected) || order.totalAmount || 0;
           if (collectedAmount > 0 && order.paymentMode !== 'already_paid') {
-            await cfCol.insertOne({
-              type: 'income', category: 'delivery_collection',
-              amount: collectedAmount,
-              description: `Delivery collected – Order ${order.orderId || orderId} (${order.customerName})`,
-              referenceId: orderId, referenceType: 'order_delivery',
+            // Check if this order's collection has already been settled by admin
+            const alreadySettled = await cfCol.findOne({
+              category: 'cash_settled',
               collectedBy: order.collectedBy || null,
-              collectorName: order.collectorName || null,
-              orderId: order.orderId || orderId,
-              paymentMode: order.paymentMode || 'cash',
-              date: orderDate, createdAt: new Date(),
             });
-            cashCreated++;
+            // Only recreate the delivery_collection if NOT yet settled
+            // (if settled, the cash_settled entry already represents this money)
+            if (!alreadySettled) {
+              await cfCol.insertOne({
+                type: 'income', category: 'delivery_collection',
+                amount: collectedAmount,
+                description: `Delivery collected – Order ${order.orderId || orderId} (${order.customerName})`,
+                referenceId: orderId, referenceType: 'order_delivery',
+                collectedBy: order.collectedBy || null,
+                collectorName: order.collectorName || null,
+                orderId: order.orderId || orderId,
+                paymentMode: order.paymentMode || 'cash',
+                date: orderDate, createdAt: new Date(),
+              });
+              cashCreated++;
+            }
           }
 
           // COGS for this order
