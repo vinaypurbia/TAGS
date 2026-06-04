@@ -121,11 +121,14 @@ export default async function handler(req, res) {
       // cash_handover = internal movement between collector and owner (not income/expense)
       // owner_deposit = owner settling cash to bank (not income/expense)
       const TRANSFER_EXCLUDE = ['cash_handover', 'owner_deposit', 'cash_settled'];
-      const listFilter = { ...filter };
-      // Only apply exclusion if no specific category filter was requested
-      if (!category) {
-        listFilter.category = { $nin: TRANSFER_EXCLUDE };
+      // Never show internal transfer entries in the list, even if category filter is passed
+      if (category && TRANSFER_EXCLUDE.includes(category)) {
+        return res.status(200).json([]);
       }
+      const listFilter = { ...filter };
+      listFilter.category = category
+        ? { $eq: category }
+        : { $nin: TRANSFER_EXCLUDE };
       const entries = await cashFlow.find(listFilter).sort({ date: -1 }).toArray();
       return res.status(200).json(entries);
     }
