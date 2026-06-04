@@ -770,9 +770,14 @@ export default async function handler(req, res) {
             'expense', 'financing',
           ]},
         });
-        // Step B: delete ALL delivery_collection entries regardless of referenceType
-        // Catches legacy entries written by old AdminPanel bug with no referenceType
-        const cashDel2 = await cfCol.deleteMany({ category: 'delivery_collection' });
+        // Step B: delete only system-generated delivery_collection entries (referenceType: 'order_delivery')
+        // DO NOT delete entries without referenceType or with referenceType != 'order_delivery'
+        // Those are manually created by admin (settle confirmations) and must be preserved
+        const cashDel2 = await cfCol.deleteMany({
+          category: 'delivery_collection',
+          referenceType: 'order_delivery',
+        });
+        // Also protect cash_settled, cash_handover, owner_deposit — never delete these on regenerate
         cashDelCount = cashDel1.deletedCount + cashDel2.deletedCount;
         log.push(`Deleted ${cashDelCount} cashflow entries`);
       }
