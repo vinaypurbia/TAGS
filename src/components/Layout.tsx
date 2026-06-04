@@ -111,6 +111,27 @@ export function Layout({ children }: { children: ReactNode }) {
             )}
           </nav>
 
+          {/* Account — always visible on mobile */}
+          {customer.name && customer.name !== 'Guest' && customer.customerId ? (
+            <Link
+              to="/account"
+              className="flex md:hidden items-center gap-1.5 bg-gray-100 hover:bg-gray-200 text-[#1A1A1A] px-3 py-2 rounded-full transition-colors shrink-0"
+            >
+              <User className="w-4 h-4 text-[#FA5600]" />
+              <span className="text-xs font-black uppercase tracking-widest max-w-[70px] truncate">
+                {customer.name.split(' ')[0]}
+              </span>
+            </Link>
+          ) : (
+            <button
+              onClick={() => setShowSignIn(true)}
+              className="flex md:hidden items-center gap-1.5 bg-gray-100 hover:bg-gray-200 text-[#1A1A1A] px-3 py-2 rounded-full transition-colors shrink-0"
+            >
+              <User className="w-4 h-4 text-[#FA5600]" />
+              <span className="text-xs font-black uppercase tracking-widest">Sign In</span>
+            </button>
+          )}
+
           <button
             onClick={() => {
               if (customer.customerId) {
