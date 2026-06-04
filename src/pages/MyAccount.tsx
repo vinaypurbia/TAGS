@@ -1,15 +1,17 @@
 import { useState, useEffect } from 'react';
 import { useCart } from '../context/CartContext';
-import { Phone, Mail, MapPin, MessageCircle, Package, Clock, CheckCircle, XCircle, Loader, Edit2, Save, X } from 'lucide-react';
+import { Phone, Mail, MapPin, MessageCircle, Package, Clock, CheckCircle, XCircle, Loader, Edit2, Save, X, Truck } from 'lucide-react';
+import { Link } from 'react-router-dom';
 
 // Your business WhatsApp number (with country code, no + or spaces)
 const BUSINESS_WHATSAPP = '916350021226';
 
 const STATUS_STYLES: Record<string, { color: string; icon: any; label: string }> = {
-  pending:   { color: 'bg-yellow-100 text-yellow-700', icon: Clock,         label: 'Pending' },
-  confirmed: { color: 'bg-blue-100 text-blue-700',    icon: CheckCircle,    label: 'Confirmed' },
-  delivered: { color: 'bg-green-100 text-green-700',  icon: CheckCircle,    label: 'Delivered' },
-  cancelled: { color: 'bg-red-100 text-red-700',      icon: XCircle,        label: 'Cancelled' },
+  pending:          { color: 'bg-yellow-100 text-yellow-700', icon: Clock,         label: 'Pending' },
+  confirmed:        { color: 'bg-blue-100 text-blue-700',    icon: CheckCircle,    label: 'Confirmed' },
+  out_for_delivery: { color: 'bg-purple-100 text-purple-700', icon: Truck,         label: 'Out for Delivery' },
+  delivered:        { color: 'bg-green-100 text-green-700',  icon: CheckCircle,    label: 'Delivered' },
+  cancelled:        { color: 'bg-red-100 text-red-700',      icon: XCircle,        label: 'Cancelled' },
 };
 
 export function MyAccount() {
@@ -264,6 +266,26 @@ _Please confirm availability and delivery timeline. Thank you!_`;
                         <MessageCircle className="w-3.5 h-3.5" />
                         Resend on WhatsApp
                       </button>
+                    </div>
+                  )}
+                  {/* Track Delivery — for confirmed and out_for_delivery orders */}
+                  {(order.status === 'confirmed' || order.status === 'out_for_delivery') && (
+                    <div className="mt-2">
+                      <Link
+                        to={`/track/${order._id || order.orderId}`}
+                        className="inline-flex items-center gap-1.5 text-[11px] font-black uppercase tracking-widest text-blue-600 hover:text-blue-700 bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded-lg transition"
+                      >
+                        <Truck className="w-3.5 h-3.5" />
+                        Track Delivery
+                      </Link>
+                    </div>
+                  )}
+                  {/* Delivered badge */}
+                  {order.status === 'delivered' && (
+                    <div className="mt-3 pt-3 border-t border-gray-100">
+                      <span className="inline-flex items-center gap-1.5 text-[11px] font-black uppercase tracking-widest text-green-600 bg-green-50 px-3 py-1.5 rounded-lg">
+                        <CheckCircle className="w-3.5 h-3.5" /> Delivered
+                      </span>
                     </div>
                   )}
                 </div>
