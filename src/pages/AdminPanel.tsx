@@ -1,4 +1,5 @@
 import { StockVisibilityPanel } from '../components/StockVisibilityPanel';
+import AdminPushSetup from '../components/AdminPushSetup';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
@@ -1422,6 +1423,12 @@ export function AdminPanel() {
 
               {/* ── Change Password card ── */}
               <ChangePasswordCard />
+
+              {/* ── Delivery Notifications ── */}
+              <div className="bg-white rounded-2xl border border-gray-200 p-5 shadow-sm">
+                <p className="text-xs font-black uppercase tracking-widest text-gray-500 mb-4 pb-3 border-b border-gray-100">Delivery Notifications</p>
+                <AdminPushSetup />
+              </div>
 
               {/* ── Module Visibility ── */}
               <div className="bg-white rounded-2xl border border-gray-200 p-5 shadow-sm">
