@@ -17,6 +17,8 @@ import { Contact } from './pages/Contact';
 import { AdminPanel } from './pages/AdminPanel';
 import EditProductForm from './pages/EditProductForm';
 import { MyAccount } from './pages/MyAccount';
+import TrackOrder from './pages/TrackOrder';
+import DriverDeliver from './pages/DriverDeliver';
 
 // Captures the install prompt on Android Chrome
 let deferredInstallPrompt: any = null;
@@ -298,6 +300,8 @@ function AppShell() {
           <Route path="/pos-login" element={<PosLoginPage />} />
           <Route path="/pos" element={<POSPage />} />
           <Route path="/products/:id/edit" element={<EditProductForm />} />
+          <Route path="/track/:orderId" element={<TrackOrder />} />
+          <Route path="/deliver/:orderId" element={<DriverDeliver />} />
           <Route path="/*" element={
             <Layout>
               <Routes>
