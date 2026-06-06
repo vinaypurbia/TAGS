@@ -1,6 +1,6 @@
 import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
 
-export type UserRole = 'admin' | 'manager' | 'associate' | 'cashier';
+export type UserRole = 'admin' | 'manager' | 'associate' | 'cashier' | 'delivery_boy';
 
 export interface AuthUser {
   id: string;
@@ -19,6 +19,7 @@ interface AuthContextType {
   isManager: boolean;
   isAssociate: boolean;
   isCashier: boolean;
+  isDeliveryBoy: boolean;
   canAccessAdmin: boolean;
   canAccessPOS: boolean;
 }
@@ -26,7 +27,7 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType>({
   user: null, token: null, isLoading: true,
   login: () => {}, logout: () => {},
-  isAdmin: false, isManager: false, isAssociate: false, isCashier: false,
+  isAdmin: false, isManager: false, isAssociate: false, isCashier: false, isDeliveryBoy: false,
   canAccessAdmin: false, canAccessPOS: false,
 });
 
@@ -86,11 +87,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const isManager = user?.role === 'manager';
   const isAssociate = user?.role === 'associate';
   const isCashier = user?.role === 'cashier';
+  const isDeliveryBoy = user?.role === 'delivery_boy';
   const canAccessAdmin = isAdmin || isManager;
   const canAccessPOS = !!user;
 
   return (
-    <AuthContext.Provider value={{ user, token, isLoading, login, logout, isAdmin, isManager, isAssociate, isCashier, canAccessAdmin, canAccessPOS }}>
+    <AuthContext.Provider value={{ user, token, isLoading, login, logout, isAdmin, isManager, isAssociate, isCashier, isDeliveryBoy, canAccessAdmin, canAccessPOS }}>
       {children}
     </AuthContext.Provider>
   );
