@@ -214,59 +214,6 @@ function CustomerSearchInput({ value, customers, onSelect, onChange, placeholder
   );
 }
 
-
-// ─── AssignAndDispatch — shown on confirmed orders ───────────────────────────
-function AssignAndDispatch({ order, onDone, showMsg }: { order: any; onDone: () => void; showMsg: (t: string, k: string) => void }) {
-  const { token } = useAuth();
-  const [drivers, setDrivers] = React.useState<any[]>([]);
-  const [selectedDriver, setSelectedDriver] = React.useState('');
-  const [assigning, setAssigning] = React.useState(false);
-
-  React.useEffect(() => {
-    fetch('/api/business?module=delivery&action=all_drivers', {
-      headers: { Authorization: `Bearer ${token}` },
-    }).then(r => r.json()).then(d => { if (Array.isArray(d)) setDrivers(d); }).catch(() => {});
-  }, [token]);
-
-  async function handleAssign() {
-    if (!selectedDriver) { showMsg('Please select a driver', 'error'); return; }
-    const driver = drivers.find(d => d._id === selectedDriver);
-    setAssigning(true);
-    try {
-      const res = await fetch('/api/business?module=delivery&action=assign', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ orderId: order._id, driverId: selectedDriver, driverName: driver?.name }),
-      });
-      if (res.ok) {
-        showMsg(`✅ Assigned to ${driver?.name}!`, 'success');
-        onDone();
-        const driverLink = `${window.location.origin}/deliver/${order._id}`;
-        const msg = `🚚 *New Delivery Assigned!*\n\nOrder: *${order.orderId}*\nCustomer: ${order.customerName}\nPhone: ${order.customerPhone || ''}\nAddress: ${order.deliveryAddress || order.customerAddress || ''}\n\n📱 Open your delivery app:\n${driverLink}`;
-        const waNum = driver?.phone ? driver.phone.replace(/[^0-9]/g, '') : '';
-        window.open(waNum ? `https://wa.me/${waNum}?text=${encodeURIComponent(msg)}` : `https://wa.me/?text=${encodeURIComponent(msg)}`, '_blank');
-      } else { showMsg('Assignment failed', 'error'); }
-    } catch { showMsg('Network error', 'error'); }
-    finally { setAssigning(false); }
-  }
-
-  return (
-    <div className="space-y-2">
-      <select value={selectedDriver} onChange={e => setSelectedDriver(e.target.value)}
-        className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold focus:border-blue-500 outline-none bg-white">
-        <option value="">— Select Delivery Boy —</option>
-        {drivers.map(d => <option key={d._id} value={d._id}>{d.name}</option>)}
-        {drivers.length === 0 && <option disabled>No delivery boys added yet</option>}
-      </select>
-      <button onClick={handleAssign} disabled={assigning || !selectedDriver}
-        className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white font-black text-xs uppercase tracking-widest py-2.5 rounded-xl transition flex items-center justify-center gap-2">
-        <Truck className="w-4 h-4" />
-        {assigning ? 'Assigning...' : 'Assign & Send to Driver'}
-      </button>
-    </div>
-  );
-}
-
 export function BusinessEmbed() {
   const [module, setModule] = useState<Module>('dashboard');
   const [message, setMessage] = useState({ text: '', type: '' });
@@ -1046,7 +993,25 @@ function OrdersModule({ showMsg }: any) {
                           📅 Delivery scheduled: {new Date(order.deliveryDate).toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' })}
                         </p>
                       )}
-                      <AssignAndDispatch order={order} onDone={fetchOrders} showMsg={showMsg} />
+                      {/* Send to Driver — dispatches order and shares tracking link */}
+                      <button
+                        onClick={async () => {
+                          // Mark as out_for_delivery
+                          await fetch('/api/customers?module=orders', {
+                            method: 'PUT',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ id: order._id, status: 'out_for_delivery' }),
+                          });
+                          fetchOrders();
+                          // Open WhatsApp to driver with delivery link
+                          const driverLink = `${window.location.origin}/deliver/${order._id}`;
+                          const msg = `🚚 *Delivery Assigned*\n\nOrder: *${order.orderId}*\nCustomer: ${order.customerName}\nPhone: ${order.customerPhone}\nAddress: ${order.deliveryAddress || order.customerAddress || 'See order'}\n\n📱 Open this link to start delivery:\n${driverLink}`;
+                          window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`, '_blank');
+                        }}
+                        className="w-full bg-blue-600 hover:bg-blue-700 text-white font-black text-xs uppercase tracking-widest py-2.5 rounded-xl transition flex items-center justify-center gap-2"
+                      >
+                        <Truck className="w-4 h-4" /> Send to Driver (Out for Delivery)
+                      </button>
                       <button onClick={() => openDeliverModal(order)}
                         className="w-full bg-green-500 hover:bg-green-600 text-white font-black text-xs uppercase tracking-widest py-2.5 rounded-xl transition">
                         Mark as Delivered ✓
@@ -3038,13 +3003,14 @@ function StatusBadge({ status }: { status: string }) {
 
 // ─── USERS MODULE (admin only) ────────────────────────────────────────────────
 const ROLE_COLORS: Record<UserRole, string> = {
-  admin:     'bg-purple-100 text-purple-800',
-  manager:   'bg-blue-100 text-blue-700',
-  associate: 'bg-orange-100 text-orange-700',
-  cashier:   'bg-green-100 text-green-700',
+  admin:        'bg-purple-100 text-purple-800',
+  manager:      'bg-blue-100 text-blue-700',
+  associate:    'bg-orange-100 text-orange-700',
+  cashier:      'bg-green-100 text-green-700',
+  delivery_boy: 'bg-indigo-100 text-indigo-700',
 };
 const ROLE_LABELS: Record<UserRole, string> = {
-  admin: 'Admin', manager: 'Manager', associate: 'Associate', cashier: 'Cashier',
+  admin: 'Admin', manager: 'Manager', associate: 'Associate', cashier: 'Cashier', delivery_boy: 'Delivery Boy',
 };
 
 function UsersModule({ showMsg }: any) {
@@ -3057,7 +3023,7 @@ function UsersModule({ showMsg }: any) {
   const [showPass, setShowPass] = useState(false);
   const [formLoading, setFormLoading] = useState(false);
 
-  const isPinRole = ['associate', 'cashier'].includes(form.role);
+  const isPinRole = ['associate', 'cashier', 'delivery_boy'].includes(form.role);
 
   // Build request headers using the JWT token from AuthContext
   function usersHeaders(withContentType = false): Record<string, string> {
@@ -3095,7 +3061,7 @@ function UsersModule({ showMsg }: any) {
     if (['admin', 'manager'].includes(form.role) && !editUser && (!form.email || !form.password)) {
       showMsg('Email and password required for this role.', 'error'); return;
     }
-    if (['associate', 'cashier'].includes(form.role) && !editUser && form.pin.length < 4) {
+    if (['associate', 'cashier', 'delivery_boy'].includes(form.role) && !editUser && form.pin.length < 4) {
       showMsg('4-digit PIN required.', 'error'); return;
     }
     setFormLoading(true);
@@ -3104,7 +3070,7 @@ function UsersModule({ showMsg }: any) {
       if (editUser) body.id = editUser._id;
       if (form.email) body.email = form.email;
       if (['admin', 'manager'].includes(form.role) && form.password) body.password = form.password;
-      if (['associate', 'cashier'].includes(form.role) && form.pin) body.pin = form.pin;
+      if (['associate', 'cashier', 'delivery_boy'].includes(form.role) && form.pin) body.pin = form.pin;
       const res = await fetch('/api/business?module=users', {
         method: editUser ? 'PUT' : 'POST',
         headers: usersHeaders(true),
@@ -3168,6 +3134,7 @@ function UsersModule({ showMsg }: any) {
                 <option value="manager">Manager (reports + POS)</option>
                 <option value="associate">Associate (POS only)</option>
                 <option value="cashier">Cashier (checkout only)</option>
+                <option value="delivery_boy">Delivery Boy (delivery app + PIN)</option>
               </select>
             </div>
             <div>
