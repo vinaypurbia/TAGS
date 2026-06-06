@@ -25,14 +25,16 @@ const ROLE_COLORS: Record<UserRole, string> = {
   admin:     'bg-purple-100 text-purple-800',
   manager:   'bg-blue-100 text-blue-700',
   associate: 'bg-orange-100 text-orange-700',
-  cashier:   'bg-green-100 text-green-700',
+  cashier:      'bg-green-100 text-green-700',
+  delivery_boy: 'bg-purple-100 text-purple-700',
 };
 
 const ROLE_LABELS: Record<UserRole, string> = {
   admin:     'Admin',
   manager:   'Manager',
   associate: 'Associate',
-  cashier:   'Cashier',
+  cashier:      'Cashier',
+  delivery_boy: 'Delivery Boy',
 };
 
 export function UsersModule({ showMsg }: { showMsg: (text: string, type: string) => void }) {
@@ -47,7 +49,7 @@ export function UsersModule({ showMsg }: { showMsg: (text: string, type: string)
   const [showPass, setShowPass] = useState(false);
   const [formLoading, setFormLoading] = useState(false);
 
-  const isPinRole = ['associate', 'cashier'].includes(form.role);
+  const isPinRole = ['associate', 'cashier', 'delivery_boy'].includes(form.role);
 
   useEffect(() => { loadUsers(); }, []);
 
@@ -80,7 +82,7 @@ export function UsersModule({ showMsg }: { showMsg: (text: string, type: string)
     if (['admin', 'manager'].includes(form.role) && !editUser && (!form.email || !form.password)) {
       showMsg('Email and password required for this role.', 'error'); return;
     }
-    if (['associate', 'cashier'].includes(form.role) && !editUser && form.pin.length < 4) {
+    if (['associate', 'cashier', 'delivery_boy'].includes(form.role) && !editUser && form.pin.length < 4) {
       showMsg('4-digit PIN required.', 'error'); return;
     }
 
@@ -92,7 +94,7 @@ export function UsersModule({ showMsg }: { showMsg: (text: string, type: string)
       if (['admin', 'manager'].includes(form.role)) {
         if (form.password) body.password = form.password;
       }
-      if (['associate', 'cashier'].includes(form.role)) {
+      if (['associate', 'cashier', 'delivery_boy'].includes(form.role)) {
         if (form.pin) body.pin = form.pin;
       }
 
@@ -188,6 +190,7 @@ export function UsersModule({ showMsg }: { showMsg: (text: string, type: string)
                 <option value="manager">Manager (reports + POS)</option>
                 <option value="associate">Associate (POS only)</option>
                 <option value="cashier">Cashier (checkout only)</option>
+                <option value="delivery_boy">Delivery Boy (delivery app + PIN)</option>
               </select>
             </div>
 
