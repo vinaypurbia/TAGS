@@ -24,7 +24,7 @@ export default function PosLoginPage() {
       const data = await res.json();
       if (!res.ok) { setError(data.error || 'Invalid PIN'); setPin(''); return; }
       login(data.token, data.user);
-      navigate('/pos');
+      navigate(data.user.role === 'delivery_boy' ? '/driver' : '/pos');
     } catch {
       setError('Network error. Please try again.');
       setPin('');
