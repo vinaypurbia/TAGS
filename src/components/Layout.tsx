@@ -1,18 +1,21 @@
 import { ReactNode, useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { Link, useNavigate } from 'react-router-dom';
-import { ShoppingBag, Phone, Mail, MapPin, Search } from 'lucide-react';
+import { ShoppingBag, Phone, Mail, MapPin, Search, Lock } from 'lucide-react';
 import { useCart } from '../context/CartContext';
 import { CustomerRegistrationModal } from './CustomerRegistrationModal';
 import { User } from 'lucide-react';
 import { useAppData } from '../context/AppDataContext';
 import { ChatBot } from './ChatBot';
+import { useAuth } from '../context/AuthContext';
 
 export function Layout({ children }: { children: ReactNode }) {
   const { totalItems, customer, setShowSignIn, setRedirectAfterAuth } = useCart();
   const { categories, banner, isLoaded } = useAppData();
+  const { user, isDeliveryBoy } = useAuth();
   const navigate = useNavigate();
   const [searchQuery, setSearchQuery] = useState('');
+  const [showStaffModal, setShowStaffModal] = useState(false);
   const tickerRef = useRef<HTMLDivElement>(null);
 
   // Build promo lines from shared banner data
@@ -110,27 +113,6 @@ export function Layout({ children }: { children: ReactNode }) {
               </button>
             )}
           </nav>
-
-          {/* Account — always visible on mobile */}
-          {customer.name && customer.name !== 'Guest' && customer.customerId ? (
-            <Link
-              to="/account"
-              className="flex md:hidden items-center gap-1.5 bg-gray-100 hover:bg-gray-200 text-[#1A1A1A] px-3 py-2 rounded-full transition-colors shrink-0"
-            >
-              <User className="w-4 h-4 text-[#FA5600]" />
-              <span className="text-xs font-black uppercase tracking-widest max-w-[70px] truncate">
-                {customer.name.split(' ')[0]}
-              </span>
-            </Link>
-          ) : (
-            <button
-              onClick={() => setShowSignIn(true)}
-              className="flex md:hidden items-center gap-1.5 bg-gray-100 hover:bg-gray-200 text-[#1A1A1A] px-3 py-2 rounded-full transition-colors shrink-0"
-            >
-              <User className="w-4 h-4 text-[#FA5600]" />
-              <span className="text-xs font-black uppercase tracking-widest">Sign In</span>
-            </button>
-          )}
 
           <button
             onClick={() => {
@@ -237,8 +219,70 @@ export function Layout({ children }: { children: ReactNode }) {
 
         <div className="mt-8 pt-4 border-t border-white/10 text-center text-[10px] text-white/40 normal-case">
           © 2025 TAGS. All rights reserved.
+          <button
+            onClick={() => setShowStaffModal(true)}
+            className="ml-4 text-white/20 hover:text-white/40 transition-colors text-[10px]"
+          >
+            Staff Login
+          </button>
         </div>
       </footer>
+
+      {/* ── Staff Login Modal ─────────────────────────────────────────────── */}
+      {showStaffModal && (
+        <div className="fixed inset-0 z-[9999] flex items-end justify-center bg-black/60 px-4 pb-6"
+          onClick={() => setShowStaffModal(false)}>
+          <div className="bg-[#1A1A1A] rounded-2xl w-full max-w-sm p-6 space-y-4"
+            onClick={e => e.stopPropagation()}>
+
+            {/* Header */}
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Lock className="w-4 h-4 text-[#FA5600]" />
+                <p className="font-black text-white text-sm uppercase tracking-widest">Staff Login</p>
+              </div>
+              <button onClick={() => setShowStaffModal(false)}
+                className="text-white/30 hover:text-white/60 text-lg leading-none">✕</button>
+            </div>
+
+            <p className="text-white/40 text-xs">Choose your login type below.</p>
+
+            {/* PIN Login — for Delivery Boy, Associate, Cashier */}
+            <button
+              onClick={() => { setShowStaffModal(false); navigate('/pos-login'); }}
+              className="w-full bg-white/10 hover:bg-[#FA5600] text-white rounded-xl px-4 py-4 text-left transition-all group"
+            >
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 bg-white/10 group-hover:bg-white/20 rounded-xl flex items-center justify-center text-xl shrink-0">
+                  🔢
+                </div>
+                <div>
+                  <p className="font-black text-sm">PIN Login</p>
+                  <p className="text-white/50 text-xs mt-0.5">Delivery Boy · Associate · Cashier</p>
+                </div>
+              </div>
+            </button>
+
+            {/* Email Login — for Admin, Manager */}
+            <button
+              onClick={() => { setShowStaffModal(false); navigate('/login'); }}
+              className="w-full bg-white/10 hover:bg-[#FA5600] text-white rounded-xl px-4 py-4 text-left transition-all group"
+            >
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 bg-white/10 group-hover:bg-white/20 rounded-xl flex items-center justify-center text-xl shrink-0">
+                  📧
+                </div>
+                <div>
+                  <p className="font-black text-sm">Email Login</p>
+                  <p className="text-white/50 text-xs mt-0.5">Admin · Manager</p>
+                </div>
+              </div>
+            </button>
+
+          </div>
+        </div>
+      )}
+
       <CustomerRegistrationModal />
       {createPortal(<ChatBot />, document.body)}
     </div>
