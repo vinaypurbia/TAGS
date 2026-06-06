@@ -84,7 +84,7 @@ export default async function handler(req, res) {
       if (action === 'pin' && req.method === 'POST') {
         const { pin } = req.body;
         if (!pin) return res.status(400).json({ error: 'PIN required' });
-        const allPinUsers = await db.collection('users').find({ role: { $in: ['associate', 'cashier'] }, active: true }).toArray();
+        const allPinUsers = await db.collection('users').find({ role: { $in: ['associate', 'cashier', 'delivery_boy'] }, active: true }).toArray();
         let matched = null;
         for (const u of allPinUsers) {
           if (u.pinHash && await bcrypt.compare(String(pin), u.pinHash)) { matched = u; break; }
@@ -137,7 +137,7 @@ export default async function handler(req, res) {
         if (!auth) return res.status(403).json({ error: 'Admin access required' });
         const { name, email, role, password, pin } = req.body;
         if (!name || !role) return res.status(400).json({ error: 'Name and role required' });
-        const validRoles = ['admin', 'manager', 'associate', 'cashier'];
+        const validRoles = ['admin', 'manager', 'associate', 'cashier', 'delivery_boy'];
         if (!validRoles.includes(role)) return res.status(400).json({ error: 'Invalid role' });
         const doc = { name, role, active: true, createdAt: new Date(), updatedAt: new Date(), createdBy: auth.userId };
         if (['admin', 'manager'].includes(role)) {
@@ -147,10 +147,11 @@ export default async function handler(req, res) {
           doc.email = email.toLowerCase();
           doc.passwordHash = await bcrypt.hash(password, 10);
         }
-        if (['associate', 'cashier'].includes(role)) {
+        if (['associate', 'cashier', 'delivery_boy'].includes(role)) {
           if (!pin || String(pin).length < 4) return res.status(400).json({ error: '4-digit PIN required' });
           doc.pinHash = await bcrypt.hash(String(pin), 10);
           if (email) doc.email = email.toLowerCase();
+          if (req.body.phone) doc.phone = req.body.phone;
         }
         const result = await col.insertOne(doc);
         return res.status(201).json({ success: true, _id: result.insertedId });
@@ -1097,7 +1098,86 @@ export default async function handler(req, res) {
       });
     }
 
-    return res.status(400).json({ error: 'Invalid module. Use ?module=auth|users|suppliers|expenses|cashflow|reports|financing|ledger|regenerate' });
+    // ─── DELIVERY MODULE ─────────────────────────────────────────────────────
+    if (module === 'delivery') {
+      const { action } = req.query;
+      const ordersCol = db.collection('orders');
+      const driverLoc = db.collection('driverLocations');
+      const pushSubs  = db.collection('pushSubscriptions');
+      const usersCol  = db.collection('users');
+
+      // GET: list all active delivery boys (for admin assign dropdown)
+      if (req.method === 'GET' && action === 'all_drivers') {
+        const auth = requireAuth(req, ['admin', 'manager']);
+        if (!auth) return res.status(403).json({ error: 'Forbidden' });
+        const drivers = await usersCol.find(
+          { role: 'delivery_boy', active: true },
+          { projection: { passwordHash: 0, pinHash: 0 } }
+        ).toArray();
+        return res.status(200).json(drivers);
+      }
+
+      // GET: driver's own assigned orders
+      if (req.method === 'GET' && action === 'my_orders') {
+        const auth = requireAuth(req, ['delivery_boy']);
+        if (!auth) return res.status(403).json({ error: 'Forbidden' });
+        const myOrders = await ordersCol.find(
+          { assignedDriverId: auth.userId, status: { $in: ['confirmed', 'out_for_delivery'] } }
+        ).sort({ createdAt: -1 }).toArray();
+        return res.status(200).json(myOrders);
+      }
+
+      if (req.method === 'PUT') {
+        // Assign driver to order
+        if (action === 'assign') {
+          const auth = requireAuth(req, ['admin', 'manager']);
+          if (!auth) return res.status(403).json({ error: 'Forbidden' });
+          const { orderId, driverId, driverName } = req.body;
+          if (!orderId || !driverId) return res.status(400).json({ error: 'orderId and driverId required' });
+          await ordersCol.updateOne(
+            { _id: new ObjectId(orderId) },
+            { $set: { assignedDriverId: driverId, assignedDriverName: driverName || '', status: 'out_for_delivery', updatedAt: new Date() } }
+          );
+          // Push notification to driver
+          const driverSub = await pushSubs.findOne({ adminId: `driver-${driverId}` });
+          if (driverSub && process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
+            try {
+              const webpush = await import('web-push');
+              webpush.default.setVapidDetails(
+                `mailto:${process.env.ADMIN_EMAIL || 'admin@yourdomain.com'}`,
+                process.env.VAPID_PUBLIC_KEY, process.env.VAPID_PRIVATE_KEY
+              );
+              const order = await ordersCol.findOne({ _id: new ObjectId(orderId) });
+              const payload = JSON.stringify({
+                title: '🚚 New Delivery Assigned!',
+                body: `Order ${order?.orderId || orderId} → ${order?.customerName || 'Customer'}`,
+                orderId, url: `/deliver/${orderId}`,
+              });
+              await webpush.default.sendNotification(driverSub.subscription, payload);
+            } catch (e) { console.error('Driver push failed:', e.message); }
+          }
+          return res.status(200).json({ success: true });
+        }
+
+        // Driver registers push subscription
+        if (action === 'push_subscribe') {
+          const auth = requireAuth(req, ['delivery_boy']);
+          if (!auth) return res.status(403).json({ error: 'Forbidden' });
+          const { subscription } = req.body;
+          if (!subscription) return res.status(400).json({ error: 'subscription required' });
+          await pushSubs.updateOne(
+            { adminId: `driver-${auth.userId}` },
+            { $set: { adminId: `driver-${auth.userId}`, subscription, updatedAt: new Date() } },
+            { upsert: true }
+          );
+          return res.status(200).json({ success: true });
+        }
+      }
+
+      return res.status(400).json({ error: 'Invalid delivery action' });
+    }
+
+    return res.status(400).json({ error: 'Invalid module. Use ?module=auth|users|suppliers|expenses|cashflow|reports|financing|ledger|regenerate|delivery' });
   } catch (error) {
     console.error('Business API error:', error);
     return res.status(500).json({ error: 'Database error', details: error.message });
