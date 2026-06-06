@@ -190,11 +190,28 @@ export default async function handler(req, res) {
 
     if (module === 'orders') {
       const ordersCol = db.collection('orders');
-      // FIX: unified collection name — cashFlow (camelCase) matches all other files
       const cashFlow = db.collection('cashFlow');
+      const driverLoc = db.collection('driverLocations');
 
       if (req.method === 'GET') {
-        const { customerId, orderId: oid } = req.query;
+        const { customerId, orderId: oid, action, id } = req.query;
+
+        // ── Driver location for customer tracking map ────────────────────────
+        if (action === 'location' && oid) {
+          const loc = await driverLoc.findOne({ orderId: oid });
+          if (!loc) return res.status(404).json({ error: 'No location yet' });
+          return res.status(200).json({ lat: loc.lat, lng: loc.lng, updatedAt: loc.updatedAt });
+        }
+
+        // ── Single order by _id (TrackOrder + DriverDeliver pages) ──────────
+        if (id) {
+          let order = null;
+          try { order = await ordersCol.findOne({ _id: new ObjectId(id) }); } catch {}
+          if (!order) order = await ordersCol.findOne({ orderId: id });
+          if (!order) return res.status(404).json({ error: 'Order not found' });
+          return res.status(200).json(order);
+        }
+
         const filter = {};
         if (customerId) filter.customerId = customerId;
         if (oid) filter.orderId = oid;
@@ -264,9 +281,111 @@ export default async function handler(req, res) {
       if (req.method === 'PUT') {
         const {
           id, status, notes, deliveryDate, whatsappMessage,
-          paymentMode, amountCollected, collectedBy, collectorName
+          paymentMode, amountCollected, collectedBy, collectorName,
+          action, lat, lng, driverName, cashCollected, paymentCollectedMode,
         } = req.body;
         if (!id) return res.status(400).json({ error: 'ID required' });
+
+        // ── Driver saves GPS location ────────────────────────────────────────
+        if (action === 'save_location') {
+          if (!lat || !lng) return res.status(400).json({ error: 'lat and lng required' });
+          let order = null;
+          try { order = await ordersCol.findOne({ _id: new ObjectId(id) }); } catch {}
+          if (!order) order = await ordersCol.findOne({ orderId: id });
+          const locationKey = order?.orderId || id;
+          await driverLoc.updateOne(
+            { orderId: locationKey },
+            { $set: { orderId: locationKey, lat: Number(lat), lng: Number(lng), updatedAt: new Date() } },
+            { upsert: true }
+          );
+          return res.status(200).json({ success: true });
+        }
+
+        // ── Driver marks delivered (DriverDeliver page) ──────────────────────
+        if (action === 'complete_delivery') {
+          let order = null;
+          try { order = await ordersCol.findOne({ _id: new ObjectId(id) }); } catch {}
+          if (!order) order = await ordersCol.findOne({ orderId: id });
+          if (!order) return res.status(404).json({ error: 'Order not found' });
+          const locationKey = order?.orderId || id;
+          const isCOD = ['cod', 'cash', 'whatsapp'].includes((order.paymentMode || '').toLowerCase());
+          const paidAmt = Number(order.paidAmount || order.amountCollected || 0);
+          const totalAmt = Number(order.totalAmount || 0);
+          const cashDue = isCOD ? totalAmt : Math.max(0, totalAmt - paidAmt);
+          const collectedAmt = Number(cashCollected || cashDue || 0);
+          const collectMode = paymentCollectedMode || 'cash';
+          const delivFields = {
+            status: 'delivered', deliveredAt: new Date(), updatedAt: new Date(),
+            paymentMode: collectMode, amountCollected: collectedAmt,
+            collectedBy: 'delivery_boy', collectorName: driverName || '',
+            paymentStatus: cashDue > 0 ? 'collected' : 'paid',
+          };
+          if (order.items?.length) {
+            const inventoryCol = db.collection('inventory');
+            const stockMovements = db.collection('stockMovements');
+            let totalCOGS = 0;
+            for (const item of order.items) {
+              if (!item.productId) continue;
+              const inv = await inventoryCol.findOne({ productId: item.productId });
+              if (inv?.costPrice > 0) totalCOGS += inv.costPrice * (Number(item.quantity) || 1);
+            }
+            if (totalCOGS > 0) {
+              await cashFlow.insertOne({
+                type: 'expense', category: 'cogs', amount: totalCOGS,
+                description: `Cost of goods – Order ${order.orderId || id}`,
+                referenceId: id, referenceType: 'order_cogs',
+                date: new Date(), createdAt: new Date(),
+              });
+            }
+            for (const item of order.items) {
+              if (!item.productId) continue;
+              const qty = Number(item.quantity) || 1;
+              const invDoc = await inventoryCol.findOne({ productId: item.productId, trackInventory: true });
+              if (!invDoc) continue;
+              await inventoryCol.updateOne(
+                { productId: item.productId, trackInventory: true },
+                { $inc: { availableStock: -qty, currentStock: -qty } }
+              );
+              await stockMovements.insertOne({
+                productId: item.productId, productName: item.name || item.productName || '',
+                type: 'sale', quantityChange: -qty,
+                reason: `Order delivered – ${order.orderId || id}`,
+                referenceId: id, referenceType: 'order_delivery',
+                date: new Date(), createdAt: new Date(),
+              });
+            }
+          }
+          await ordersCol.updateOne({ _id: order._id }, { $set: delivFields });
+          if (order.orderId) {
+            await sales.updateOne({ orderId: order.orderId }, { $set: { status: 'delivered', deliveredAt: new Date(), updatedAt: new Date() } });
+          }
+          await driverLoc.deleteOne({ orderId: locationKey });
+          const waServerUrl = process.env.WA_SERVER_URL;
+          if (waServerUrl && order.customerPhone) {
+            const phone = order.customerPhone.replace(/[^0-9]/g, '');
+            const custMsg = cashDue > 0
+              ? `✅ Hello ${order.customerName}! Your order *${order.orderId}* has been delivered.\n\n💰 Cash collected: ₹${collectedAmt.toLocaleString('en-IN')}\n\nThank you for shopping with TAGS! 🛍️`
+              : `✅ Hello ${order.customerName}! Your order *${order.orderId}* has been delivered.\n\nThank you for shopping with TAGS! 🛍️`;
+            fetch(`${waServerUrl}/send`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ phone, message: custMsg }) }).catch(() => {});
+          }
+          if (waServerUrl && process.env.ADMIN_WHATSAPP_NUMBER) {
+            const adminMsg = cashDue > 0
+              ? `🚚 *Delivery Confirmed*\n\nOrder: *${order.orderId}*\nCustomer: ${order.customerName}\nDriver: ${driverName || 'Driver'}\n\n💵 *Collect ₹${collectedAmt.toLocaleString('en-IN')} from driver*\nMode: ${collectMode}`
+              : `🚚 *Delivery Confirmed*\n\nOrder: *${order.orderId}*\nCustomer: ${order.customerName}\nDriver: ${driverName || 'Driver'}\n\n✅ Fully paid in advance.`;
+            fetch(`${waServerUrl}/send`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ phone: process.env.ADMIN_WHATSAPP_NUMBER, message: adminMsg }) }).catch(() => {});
+          }
+          if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
+            try {
+              const webpush = await import('web-push');
+              webpush.default.setVapidDetails(`mailto:${process.env.ADMIN_EMAIL || 'admin@yourdomain.com'}`, process.env.VAPID_PUBLIC_KEY, process.env.VAPID_PRIVATE_KEY);
+              const allSubs = await db.collection('pushSubscriptions').find({ adminId: { $not: /^driver-/ } }).toArray();
+              const pushBody = cashDue > 0 ? `Collect ₹${collectedAmt.toLocaleString('en-IN')} from ${driverName || 'driver'} (${collectMode})` : `Order delivered to ${order.customerName}. Fully paid.`;
+              const payload = JSON.stringify({ title: `🚚 Delivered: ${order.orderId}`, body: pushBody, orderId: id });
+              await Promise.allSettled(allSubs.map(sub => webpush.default.sendNotification(sub.subscription, payload).catch(() => {})));
+            } catch (e) { console.error('Push error:', e.message); }
+          }
+          return res.status(200).json({ success: true, message: 'Delivery confirmed' });
+        }
 
         const updateFields = { updatedAt: new Date() };
         if (status !== undefined) updateFields.status = status;
