@@ -3,135 +3,100 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { MapPin, Package, CheckCircle, Clock, Phone, Truck } from 'lucide-react';
 import TrackingMap from '../components/TrackingMap';
 
-interface DriverLocation {
-  lat: number;
-  lng: number;
-  updatedAt: string;
-}
-
+interface DriverLocation { lat: number; lng: number; updatedAt: string; }
 interface OrderInfo {
-  _id: string;
-  saleNumber?: string;
-  orderId?: string;
-  status: string;
-  customerName: string;
-  customerAddress?: string;
-  deliveryAddress?: string;
-  totalAmount: number;
-  paymentMode: string;
+  _id: string; saleNumber?: string; orderId?: string; status: string;
+  customerName: string; customerAddress?: string; deliveryAddress?: string;
+  totalAmount: number; paymentMode: string; deliveredAt?: string;
   items: { productName: string; quantity: number; price: number }[];
-  deliveredAt?: string;
 }
 
 const STATUS_STEPS = ['pending', 'confirmed', 'out_for_delivery', 'delivered'];
 const STATUS_LABELS: Record<string, string> = {
-  pending: 'Order Placed',
-  confirmed: 'Confirmed',
-  out_for_delivery: 'Out for Delivery',
-  delivered: 'Delivered',
+  pending: 'Order Placed', confirmed: 'Confirmed',
+  out_for_delivery: 'Out for Delivery', delivered: 'Delivered',
 };
 
 export default function TrackOrder() {
   const { orderId } = useParams<{ orderId: string }>();
   const navigate = useNavigate();
-
   const [order, setOrder] = useState<OrderInfo | null>(null);
   const [driverLoc, setDriverLoc] = useState<DriverLocation | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
-  // Fetch order details
+  // Fetch order — try customers API first (WhatsApp orders), fallback to sales
   const fetchOrder = useCallback(async () => {
     if (!orderId) return;
     try {
-      const res = await fetch(`/api/sales?id=${orderId}`);
-      if (!res.ok) {
-        // Also try by orderId string (customer orders)
-        const res2 = await fetch(`/api/customers?module=orders&orderId=${orderId}`);
-        if (res2.ok) {
-          const data = await res2.json();
-          setOrder(data);
-        } else {
-          setError('Order not found');
-        }
-        return;
+      // Try by _id first
+      const r1 = await fetch(`/api/customers?module=orders&id=${orderId}`);
+      if (r1.ok) { setOrder(await r1.json()); setLoading(false); return; }
+      // Try by orderId string
+      const r2 = await fetch(`/api/customers?module=orders&orderId=${orderId}`);
+      if (r2.ok) {
+        const data = await r2.json();
+        const found = data.orders?.[0] || null;
+        if (found) { setOrder(found); setLoading(false); return; }
       }
-      const data = await res.json();
-      setOrder(data);
-    } catch {
-      setError('Failed to load order');
-    } finally {
-      setLoading(false);
-    }
+      // Fallback: sales API
+      const r3 = await fetch(`/api/sales?id=${orderId}`);
+      if (r3.ok) { setOrder(await r3.json()); setLoading(false); return; }
+      setError('Order not found'); setLoading(false);
+    } catch { setError('Failed to load order'); setLoading(false); }
   }, [orderId]);
 
-  // Fetch driver GPS location
+  // Fetch driver GPS — uses orderId string as the key (consistent with driver save)
   const fetchLocation = useCallback(async () => {
     if (!orderId) return;
     try {
-      const res = await fetch(`/api/sales?action=location&orderId=${orderId}`);
-      if (res.ok) {
-        const data = await res.json();
-        setDriverLoc(data);
-        setLastUpdated(new Date());
-      }
-    } catch {
-      // location not available yet — silent
-    }
-  }, [orderId]);
+      // First try to get the order's orderId string for location lookup
+      const locationKey = order?.orderId || orderId;
+      const res = await fetch(`/api/customers?module=orders&action=location&orderId=${locationKey}`);
+      if (res.ok) { setDriverLoc(await res.json()); setLastUpdated(new Date()); }
+    } catch {}
+  }, [orderId, order?.orderId]);
 
-  useEffect(() => {
-    fetchOrder();
-    fetchLocation();
-  }, [fetchOrder, fetchLocation]);
+  useEffect(() => { fetchOrder(); }, [fetchOrder]);
+  useEffect(() => { if (order) fetchLocation(); }, [order?._id]);
 
-  // Poll driver location every 5 seconds when out for delivery
+  // Poll every 5 seconds while out for delivery
   useEffect(() => {
     if (!order || order.status === 'delivered') return;
-    const interval = setInterval(() => {
-      fetchLocation();
-      fetchOrder(); // also refresh order status
-    }, 5000);
+    const interval = setInterval(() => { fetchLocation(); fetchOrder(); }, 5000);
     return () => clearInterval(interval);
-  }, [order?.status, fetchLocation, fetchOrder]);
+  }, [order?.status]);
 
   const currentStep = STATUS_STEPS.indexOf(order?.status || 'pending');
   const isOutForDelivery = order?.status === 'out_for_delivery';
   const isDelivered = order?.status === 'delivered';
 
-  if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50">
-        <div className="text-center">
-          <div className="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
-          <p className="text-gray-500">Loading your order...</p>
-        </div>
+  if (loading) return (
+    <div className="min-h-screen flex items-center justify-center bg-gray-50">
+      <div className="text-center">
+        <div className="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
+        <p className="text-gray-500">Loading your order...</p>
       </div>
-    );
-  }
+    </div>
+  );
 
-  if (error || !order) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
-        <div className="text-center">
-          <Package className="w-16 h-16 text-gray-300 mx-auto mb-4" />
-          <h2 className="text-xl font-semibold text-gray-700 mb-2">Order Not Found</h2>
-          <p className="text-gray-500 mb-6">{error || 'This tracking link may have expired.'}</p>
-          <button onClick={() => navigate('/')} className="bg-blue-600 text-white px-6 py-2 rounded-lg">
-            Go Home
-          </button>
-        </div>
+  if (error || !order) return (
+    <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
+      <div className="text-center">
+        <Package className="w-16 h-16 text-gray-300 mx-auto mb-4" />
+        <h2 className="text-xl font-semibold text-gray-700 mb-2">Order Not Found</h2>
+        <p className="text-gray-500 mb-6">{error}</p>
+        <button onClick={() => navigate('/')} className="bg-blue-600 text-white px-6 py-2 rounded-lg">Go Home</button>
       </div>
-    );
-  }
+    </div>
+  );
 
-  const orderRef = order.saleNumber || order.orderId || orderId;
+  const orderRef = order.orderId || order.saleNumber || orderId;
 
   return (
     <div className="min-h-screen bg-gray-50">
-      {/* Header */}
-      <div className="bg-white border-b px-4 py-4 flex items-center gap-3 shadow-sm">
+      <div className="bg-white border-b px-4 py-4 flex items-center gap-3 shadow-sm sticky top-0 z-10">
         <Truck className="w-6 h-6 text-blue-600" />
         <div>
           <h1 className="font-bold text-gray-800 text-lg">Track Order</h1>
@@ -145,7 +110,6 @@ export default function TrackOrder() {
       </div>
 
       <div className="max-w-lg mx-auto px-4 py-6 space-y-5">
-
         {/* Live Map */}
         {(isOutForDelivery || (driverLoc && !isDelivered)) ? (
           <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
@@ -162,15 +126,12 @@ export default function TrackOrder() {
             </div>
             <div style={{ height: '280px' }}>
               {driverLoc ? (
-                <TrackingMap
-                  lat={driverLoc.lat}
-                  lng={driverLoc.lng}
-                />
+                <TrackingMap lat={driverLoc.lat} lng={driverLoc.lng} />
               ) : (
                 <div className="h-full flex items-center justify-center bg-gray-100">
                   <div className="text-center text-gray-400">
                     <MapPin className="w-8 h-8 mx-auto mb-2" />
-                    <p className="text-sm">Waiting for driver location...</p>
+                    <p className="text-sm">Waiting for driver to start GPS...</p>
                   </div>
                 </div>
               )}
@@ -181,11 +142,17 @@ export default function TrackOrder() {
             <CheckCircle className="w-14 h-14 text-green-500 mx-auto mb-3" />
             <h2 className="text-xl font-bold text-green-800">Delivered!</h2>
             <p className="text-green-600 text-sm mt-1">
-              Your order was delivered{order.deliveredAt ? ` on ${new Date(order.deliveredAt).toLocaleString('en-IN')}` : ''}.
+              {order.deliveredAt ? `Delivered on ${new Date(order.deliveredAt).toLocaleString('en-IN')}` : 'Your order has been delivered.'}
             </p>
-            <p className="text-green-600 text-sm mt-1">You'll receive a WhatsApp confirmation shortly.</p>
+            <p className="text-green-600 text-sm mt-1">Check your WhatsApp for confirmation.</p>
           </div>
-        ) : null}
+        ) : (
+          <div className="bg-blue-50 border border-blue-200 rounded-2xl p-5 text-center">
+            <Truck className="w-10 h-10 text-blue-400 mx-auto mb-2" />
+            <p className="text-blue-700 font-semibold text-sm">Your order is being prepared</p>
+            <p className="text-blue-500 text-xs mt-1">Live tracking will appear here once your order is out for delivery.</p>
+          </div>
+        )}
 
         {/* Progress Steps */}
         <div className="bg-white rounded-2xl shadow-sm p-5">
@@ -198,24 +165,14 @@ export default function TrackOrder() {
               return (
                 <div key={step} className="flex items-start gap-3">
                   <div className="flex flex-col items-center">
-                    <div className={`w-8 h-8 rounded-full flex items-center justify-center border-2 transition-all ${
-                      done
-                        ? 'bg-blue-600 border-blue-600 text-white'
-                        : 'bg-white border-gray-200 text-gray-300'
-                    } ${active ? 'ring-4 ring-blue-100' : ''}`}>
+                    <div className={`w-8 h-8 rounded-full flex items-center justify-center border-2 transition-all ${done ? 'bg-blue-600 border-blue-600 text-white' : 'bg-white border-gray-200 text-gray-300'} ${active ? 'ring-4 ring-blue-100' : ''}`}>
                       {done ? <CheckCircle className="w-4 h-4" /> : <Clock className="w-4 h-4" />}
                     </div>
-                    {!isLast && (
-                      <div className={`w-0.5 h-8 mt-0.5 ${idx < currentStep ? 'bg-blue-600' : 'bg-gray-200'}`} />
-                    )}
+                    {!isLast && <div className={`w-0.5 h-8 mt-0.5 ${idx < currentStep ? 'bg-blue-600' : 'bg-gray-200'}`} />}
                   </div>
                   <div className="pt-1 pb-6">
-                    <p className={`text-sm font-semibold ${done ? 'text-gray-800' : 'text-gray-400'}`}>
-                      {STATUS_LABELS[step]}
-                    </p>
-                    {active && !isDelivered && (
-                      <p className="text-xs text-blue-500 mt-0.5">Current status</p>
-                    )}
+                    <p className={`text-sm font-semibold ${done ? 'text-gray-800' : 'text-gray-400'}`}>{STATUS_LABELS[step]}</p>
+                    {active && !isDelivered && <p className="text-xs text-blue-500 mt-0.5">Current status</p>}
                   </div>
                 </div>
               );
@@ -239,12 +196,11 @@ export default function TrackOrder() {
             </div>
             <div className="flex justify-between text-sm text-gray-500">
               <span>Payment</span>
-              <span className="capitalize">{order.paymentMode === 'cod' ? '💵 Cash on Delivery' : '✅ Paid'}</span>
+              <span className="capitalize">{['cod','whatsapp','cash'].includes(order.paymentMode?.toLowerCase()) ? '💵 Cash on Delivery' : '✅ Paid'}</span>
             </div>
           </div>
         </div>
 
-        {/* Delivery Address */}
         {(order.deliveryAddress || order.customerAddress) && (
           <div className="bg-white rounded-2xl shadow-sm p-5 flex gap-3">
             <MapPin className="w-5 h-5 text-blue-500 mt-0.5 flex-shrink-0" />
@@ -255,7 +211,6 @@ export default function TrackOrder() {
           </div>
         )}
 
-        {/* Support */}
         <div className="bg-blue-50 rounded-2xl p-4 flex items-center gap-3">
           <Phone className="w-5 h-5 text-blue-500" />
           <div>
@@ -263,7 +218,6 @@ export default function TrackOrder() {
             <p className="text-xs text-blue-600">Contact us on WhatsApp for any delivery issues.</p>
           </div>
         </div>
-
       </div>
     </div>
   );
