@@ -1,9 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { requestNotificationPermission, useFirebaseNotifications } from './hooks/useNotifications';
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { CartProvider } from './context/CartContext';
 import { AppDataProvider, useAppData } from './context/AppDataContext';
-import { AuthProvider } from './context/AuthContext';
+import { AuthProvider, useAuth } from './context/AuthContext';
 import LoginPage from './pages/LoginPage';
 import PosLoginPage from './pages/PosLoginPage';
 import POSPage from './pages/POSPage';
@@ -20,6 +20,21 @@ import { MyAccount } from './pages/MyAccount';
 import TrackOrder from './pages/TrackOrder';
 import DriverDeliver from './pages/DriverDeliver';
 import DriverPanel from './pages/DriverPanel';
+
+// ── Role-based route guard ─────────────────────────────────────────────────────
+// Redirects unauthenticated users to /pos-login, and routes each role to their
+// correct home if they try to access a page they shouldn't.
+function RoleGuard({ allow, redirectTo, children }: {
+  allow: ('admin' | 'manager' | 'associate' | 'cashier' | 'delivery_boy')[];
+  redirectTo: string;
+  children: React.ReactNode;
+}) {
+  const { user, isLoading } = useAuth();
+  if (isLoading) return null;
+  if (!user) return <Navigate to="/pos-login" replace />;
+  if (!allow.includes(user.role as any)) return <Navigate to={redirectTo} replace />;
+  return <>{children}</>;
+}
 
 // Captures the install prompt on Android Chrome
 let deferredInstallPrompt: any = null;
@@ -299,11 +314,19 @@ function AppShell() {
           <Route path="/admin" element={<AdminPanel />} />
           <Route path="/login" element={<LoginPage />} />
           <Route path="/pos-login" element={<PosLoginPage />} />
-          <Route path="/pos" element={<POSPage />} />
+          <Route path="/pos" element={
+            <RoleGuard allow={['admin', 'manager', 'associate', 'cashier']} redirectTo="/driver">
+              <POSPage />
+            </RoleGuard>
+          } />
           <Route path="/products/:id/edit" element={<EditProductForm />} />
           <Route path="/track/:orderId" element={<TrackOrder />} />
           <Route path="/deliver/:orderId" element={<DriverDeliver />} />
-          <Route path="/driver" element={<DriverPanel />} />
+          <Route path="/driver" element={
+            <RoleGuard allow={['delivery_boy']} redirectTo="/pos">
+              <DriverPanel />
+            </RoleGuard>
+          } />
           <Route path="/*" element={
             <Layout>
               <Routes>
