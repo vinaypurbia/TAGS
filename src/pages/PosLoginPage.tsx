@@ -1,45 +1,39 @@
 import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { Delete } from 'lucide-react';
+import { Eye, EyeOff } from 'lucide-react';
 
 export default function PosLoginPage() {
   const { login } = useAuth();
   const navigate = useNavigate();
-  const [pin, setPin] = useState('');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPass, setShowPass] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
-  const PAD = ['1','2','3','4','5','6','7','8','9','','0','⌫'];
-
-  async function submitPin(pinValue: string) {
+  async function handleLogin() {
+    if (!username.trim() || !password) { setError('Username and password are required.'); return; }
     setError('');
     setLoading(true);
     try {
-      const res = await fetch('/api/business?module=auth&action=pin', {
+      const res = await fetch('/api/business?module=auth&action=staff-login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pin: pinValue }),
+        body: JSON.stringify({ username: username.trim(), password }),
       });
       const data = await res.json();
-      if (!res.ok) { setError(data.error || 'Invalid PIN'); setPin(''); return; }
+      if (!res.ok) { setError(data.error || 'Invalid credentials'); return; }
       login(data.token, data.user);
       navigate(data.user.role === 'delivery_boy' ? '/driver' : '/pos');
     } catch {
       setError('Network error. Please try again.');
-      setPin('');
     } finally {
       setLoading(false);
     }
   }
 
-  function pressKey(key: string) {
-    if (key === '⌫') { setPin(p => p.slice(0, -1)); setError(''); return; }
-    if (pin.length >= 6) return;
-    const next = pin + key;
-    setPin(next);
-    if (next.length >= 4) submitPin(next);
-  }
+  const inputCls = 'w-full bg-white/5 border border-white/10 rounded-2xl px-4 py-4 text-white text-sm font-bold focus:ring-2 focus:ring-[#FA5600] focus:border-[#FA5600] outline-none placeholder-white/20 transition';
 
   return (
     <div className="min-h-screen bg-[#1A1A1A] flex items-center justify-center px-4">
@@ -49,35 +43,65 @@ export default function PosLoginPage() {
           <div className="text-4xl font-black tracking-tighter uppercase mb-1 text-white">
             <span className="text-[#FA5600]">T</span>AGS
           </div>
-          <p className="text-[10px] font-bold uppercase tracking-widest text-white/40">POS Login</p>
+          <p className="text-[10px] font-bold uppercase tracking-widest text-white/40">Staff Login</p>
         </div>
 
-        {/* PIN dots */}
-        <div className="flex justify-center gap-3 mb-8">
-          {[0,1,2,3,4,5].map(i => (
-            <div key={i} className={`w-3 h-3 rounded-full transition-all duration-150 ${i < pin.length ? 'bg-[#FA5600] scale-110' : 'bg-white/20'}`} />
-          ))}
-        </div>
+        <div className="space-y-3">
+          {/* Username */}
+          <div>
+            <label className="text-[10px] font-black uppercase tracking-widest text-white/40 block mb-1.5">Username or Email</label>
+            <input
+              type="text"
+              value={username}
+              onChange={e => { setUsername(e.target.value); setError(''); }}
+              onKeyDown={e => e.key === 'Enter' && handleLogin()}
+              placeholder="Your name or email"
+              autoComplete="username"
+              className={inputCls}
+              disabled={loading}
+            />
+          </div>
 
-        {error && <div className="mb-6 text-center text-xs font-bold text-red-400 uppercase tracking-widest">{error}</div>}
-        {loading && <div className="mb-6 text-center text-xs font-bold text-[#FA5600] uppercase tracking-widest animate-pulse">Verifying...</div>}
-
-        {/* Number pad */}
-        <div className="grid grid-cols-3 gap-3 mb-8">
-          {PAD.map((key, i) => {
-            if (key === '') return <div key={i} />;
-            return (
+          {/* Password */}
+          <div>
+            <label className="text-[10px] font-black uppercase tracking-widest text-white/40 block mb-1.5">Password</label>
+            <div className="relative">
+              <input
+                type={showPass ? 'text' : 'password'}
+                value={password}
+                onChange={e => { setPassword(e.target.value); setError(''); }}
+                onKeyDown={e => e.key === 'Enter' && handleLogin()}
+                placeholder="Enter your password"
+                autoComplete="current-password"
+                className={inputCls + ' pr-12'}
+                disabled={loading}
+              />
               <button
-                key={i} onClick={() => pressKey(key)} disabled={loading}
-                className={`h-16 rounded-2xl text-white font-black text-xl transition-all duration-100 active:scale-95 disabled:opacity-40 ${key === '⌫' ? 'bg-white/10 hover:bg-white/20 flex items-center justify-center' : 'bg-white/10 hover:bg-[#FA5600] hover:shadow-lg'}`}
+                type="button"
+                onClick={() => setShowPass(v => !v)}
+                className="absolute right-4 top-1/2 -translate-y-1/2 text-white/30 hover:text-white/60 transition"
               >
-                {key === '⌫' ? <Delete className="w-5 h-5" /> : key}
+                {showPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
               </button>
-            );
-          })}
+            </div>
+          </div>
+
+          {error && (
+            <div className="text-center text-xs font-bold text-red-400 uppercase tracking-widest bg-red-400/10 rounded-xl px-3 py-2">
+              {error}
+            </div>
+          )}
+
+          <button
+            onClick={handleLogin}
+            disabled={loading}
+            className="w-full bg-[#FA5600] text-white font-black text-sm uppercase tracking-widest py-4 rounded-2xl hover:bg-[#E04A00] transition active:scale-95 disabled:opacity-50 mt-2"
+          >
+            {loading ? 'Signing in…' : 'Sign In'}
+          </button>
         </div>
 
-        <div className="text-center">
+        <div className="text-center mt-8">
           <Link to="/login" className="text-[10px] font-bold uppercase tracking-widest text-white/40 hover:text-white/70 transition-colors">
             Admin / Manager? Sign in with email →
           </Link>
