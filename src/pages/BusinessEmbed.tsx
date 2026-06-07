@@ -214,30 +214,51 @@ function CustomerSearchInput({ value, customers, onSelect, onChange, placeholder
   );
 }
 
+// All modules that can be assigned to staff by admin
+const ALL_MODULES = [
+  { id: 'dashboard',       label: '📊 Dashboard' },
+  { id: 'orders',          label: '📦 Orders' },
+  { id: 'sales',           label: '🛒 Sales' },
+  { id: 'purchase-orders', label: '📋 Purchase Orders' },
+  { id: 'cashflow',        label: '💰 Cash Flow' },
+  { id: 'expenses',        label: '🧾 Expenses' },
+  { id: 'customers',       label: '👥 Customers' },
+  { id: 'suppliers',       label: '🏭 Suppliers' },
+  { id: 'reports',         label: '📈 Reports' },
+  { id: 'financing',       label: '💼 Financing' },
+  { id: 'ledger',          label: '📒 AP/AR Ledger' },
+  { id: 'users',           label: '👤 Users' },
+  { id: 'regenerate',      label: '🔄 Regenerate' },
+];
+
 export function BusinessEmbed() {
   const [module, setModule] = useState<Module>('dashboard');
   const [message, setMessage] = useState({ text: '', type: '' });
+  const { canAccess, isAdmin } = useAuth();
 
   const showMsg = (text: string, type: string) => {
     setMessage({ text, type });
     setTimeout(() => setMessage({ text: '', type: '' }), 3000);
   };
 
-  const tabs = [
-    { id: 'dashboard', label: 'Dashboard', icon: BarChart2 },
-    { id: 'orders', label: 'Orders', icon: ShoppingCart },
-    { id: 'sales', label: 'Sales', icon: ShoppingCart },
-    { id: 'purchase-orders', label: 'Purchase Orders', icon: Package },
-    { id: 'cashflow', label: 'Cash Flow', icon: DollarSign },
-    { id: 'expenses', label: 'Expenses', icon: TrendingDown },
-    { id: 'financing', label: 'Financing', icon: TrendingUp },
-    { id: 'customers', label: 'Customers', icon: Users },
-    { id: 'suppliers', label: 'Suppliers', icon: Users },
-    { id: 'ledger',    label: 'AP/AR Ledger', icon: BookOpen },
-    { id: 'reports', label: 'Reports', icon: FileText },
-    { id: 'users', label: 'Users', icon: Users },
-    { id: 'regenerate', label: '🔄 Regenerate', icon: FileText },
+  const allTabs = [
+    { id: 'dashboard',       label: 'Dashboard',       icon: BarChart2  },
+    { id: 'orders',          label: 'Orders',           icon: ShoppingCart },
+    { id: 'sales',           label: 'Sales',            icon: ShoppingCart },
+    { id: 'purchase-orders', label: 'Purchase Orders',  icon: Package    },
+    { id: 'cashflow',        label: 'Cash Flow',        icon: DollarSign },
+    { id: 'expenses',        label: 'Expenses',         icon: TrendingDown },
+    { id: 'financing',       label: 'Financing',        icon: TrendingUp },
+    { id: 'customers',       label: 'Customers',        icon: Users      },
+    { id: 'suppliers',       label: 'Suppliers',        icon: Users      },
+    { id: 'ledger',          label: 'AP/AR Ledger',     icon: BookOpen   },
+    { id: 'reports',         label: 'Reports',          icon: FileText   },
+    { id: 'users',           label: 'Users',            icon: Users      },
+    { id: 'regenerate',      label: '🔄 Regenerate',    icon: FileText   },
   ];
+
+  // Filter tabs based on user's allowed modules — admin sees all
+  const tabs = allTabs.filter(tab => canAccess(tab.id));
 
   return (
     <div className="space-y-4">
@@ -3020,6 +3041,8 @@ function UsersModule({ showMsg }: any) {
   const [showForm, setShowForm] = useState(false);
   const [editUser, setEditUser] = useState<any>(null);
   const [form, setForm] = useState({ name: '', email: '', role: 'associate' as UserRole, password: '', pin: '' });
+  const [allowedModules, setAllowedModules] = useState<string[]>([]);
+  const [showPermissions, setShowPermissions] = useState(false);
   const [showPass, setShowPass] = useState(false);
   const [formLoading, setFormLoading] = useState(false);
 
@@ -3048,12 +3071,16 @@ function UsersModule({ showMsg }: any) {
   const openAdd = () => {
     setEditUser(null);
     setForm({ name: '', email: '', role: 'associate', password: '', pin: '' });
+    setAllowedModules([]);
+    setShowPermissions(false);
     setShowPass(false); setShowForm(true);
   };
 
   const openEdit = (u: any) => {
     setEditUser(u);
     setForm({ name: u.name, email: u.email || '', role: u.role, password: '', pin: '' });
+    setAllowedModules(Array.isArray(u.allowedModules) ? u.allowedModules : []);
+    setShowPermissions(false);
     setShowPass(false); setShowForm(true);
   };
 
@@ -3070,7 +3097,7 @@ function UsersModule({ showMsg }: any) {
     }
     setFormLoading(true);
     try {
-      const body: any = { name: form.name, role: form.role };
+      const body: any = { name: form.name, role: form.role, allowedModules };
       if (editUser) body.id = editUser._id;
       if (form.email) body.email = form.email;
       if (['admin', 'manager'].includes(form.role) && form.password) body.password = form.password;
@@ -3170,6 +3197,65 @@ function UsersModule({ showMsg }: any) {
               </div>
             )}
           </div>
+          {/* ── Module Permissions ── */}
+          {form.role !== 'admin' && (
+            <div className="border-2 border-gray-100 rounded-xl overflow-hidden">
+              <button
+                type="button"
+                onClick={() => setShowPermissions(v => !v)}
+                className="w-full flex items-center justify-between px-4 py-3 bg-gray-50 hover:bg-gray-100 transition"
+              >
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-black text-gray-700">🔐 Module Permissions</span>
+                  {allowedModules.length > 0 && (
+                    <span className="text-[10px] font-black bg-[#FA5600] text-white px-2 py-0.5 rounded-full">
+                      {allowedModules.length} modules
+                    </span>
+                  )}
+                  {allowedModules.length === 0 && (
+                    <span className="text-[10px] font-bold text-gray-400">(all modules — click to restrict)</span>
+                  )}
+                </div>
+                <span className="text-gray-400 text-sm">{showPermissions ? '▲' : '▼'}</span>
+              </button>
+
+              {showPermissions && (
+                <div className="p-4 space-y-3">
+                  <div className="flex items-center justify-between mb-1">
+                    <p className="text-xs text-gray-500">Check the modules this user can access.</p>
+                    <div className="flex gap-2">
+                      <button type="button" onClick={() => setAllowedModules(ALL_MODULES.map(m => m.id))}
+                        className="text-[10px] font-black text-[#FA5600] hover:underline">All</button>
+                      <button type="button" onClick={() => setAllowedModules([])}
+                        className="text-[10px] font-black text-gray-400 hover:underline">None</button>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    {ALL_MODULES.map(m => (
+                      <label key={m.id} className="flex items-center gap-2 cursor-pointer group">
+                        <input
+                          type="checkbox"
+                          checked={allowedModules.includes(m.id)}
+                          onChange={e => {
+                            if (e.target.checked) setAllowedModules(prev => [...prev, m.id]);
+                            else setAllowedModules(prev => prev.filter(x => x !== m.id));
+                          }}
+                          className="w-4 h-4 accent-[#FA5600] cursor-pointer"
+                        />
+                        <span className="text-xs font-bold text-gray-700 group-hover:text-[#FA5600] transition">{m.label}</span>
+                      </label>
+                    ))}
+                  </div>
+                  {allowedModules.length === 0 && (
+                    <p className="text-[10px] text-amber-600 font-bold bg-amber-50 rounded-lg px-3 py-2">
+                      ⚠️ No modules selected — user will see all modules. Select specific modules to restrict access.
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
           <div className="flex gap-2">
             <button onClick={() => withDupCheck(`user-${form.name}-${form.role}`, editUser ? 'Update User' : 'Create User', handleSubmit)} disabled={formLoading}
               className="flex-1 bg-[#FA5600] text-white font-black text-sm uppercase tracking-widest py-3 rounded-xl hover:bg-[#E04A00] transition disabled:opacity-60">
