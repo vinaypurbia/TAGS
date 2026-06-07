@@ -359,7 +359,7 @@ export default async function handler(req, res) {
 
         // Revenue = sales income only (filtered period)
         const revenue = entries
-          .filter(e => e.type === 'income' && (e.category === 'sales' || e.category === 'delivery_collection'))
+          .filter(e => e.category === 'cash_settled')
           .reduce((s, e) => s + e.amount, 0);
 
         // COGS = cost of goods sold per sale
@@ -421,7 +421,7 @@ export default async function handler(req, res) {
         const cashAtBank = Math.max(0, bankIn + finBankIn - bankOut - finBankOut);
 
         // Exclude internal transfer categories from visible entries
-        const CF_HIDDEN = ['cogs', 'cash_settled', 'cash_handover', 'owner_deposit'];
+        const CF_HIDDEN = ['cogs', 'delivery_collection', 'cash_handover', 'owner_deposit'];
         return res.status(200).json({
           entries: entries.filter(e => !CF_HIDDEN.includes(e.category)),
           summary: {
