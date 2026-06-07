@@ -692,6 +692,7 @@ function CustomersModule({ showMsg }: any) {
 
 // ─── ORDERS MODULE ────────────────────────────────────────────────────────────
 function OrdersModule({ showMsg }: any) {
+  const { token } = useAuth();
   const [orders, setOrders] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState('all');
@@ -701,6 +702,10 @@ function OrdersModule({ showMsg }: any) {
   const [paymentStatuses, setPaymentStatuses] = useState<Record<string, string>>({});
   const [partialAmounts, setPartialAmounts] = useState<Record<string, string>>({});
   const [products, setProducts] = useState<any[]>([]);
+  const [drivers, setDrivers] = useState<any[]>([]);
+  const [assigningOrderId, setAssigningOrderId] = useState<string | null>(null);
+  const [selectedDriverId, setSelectedDriverId] = useState<Record<string, string>>({});
+  const [assignLoading, setAssignLoading] = useState(false);
 
   // Payment collection modal state
   const [payModal, setPayModal] = useState<{
@@ -761,8 +766,37 @@ function OrdersModule({ showMsg }: any) {
       .finally(() => setLoading(false));
   };
 
+  const fetchDrivers = () => {
+    fetch('/api/business?module=delivery&action=all_drivers', {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then(r => r.json())
+      .then(data => setDrivers(Array.isArray(data) ? data : []))
+      .catch(() => {});
+  };
+
+  const assignDriver = async (order: any) => {
+    const driverId = selectedDriverId[order._id];
+    if (!driverId) { showMsg('Please select a driver first.', 'error'); return; }
+    const driver = drivers.find(d => d._id === driverId);
+    setAssignLoading(true);
+    try {
+      const res = await fetch('/api/business?module=delivery&action=assign', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ orderId: order._id, driverId, driverName: driver?.name || '' }),
+      });
+      if (!res.ok) { const d = await res.json(); showMsg(d.error || 'Failed to assign driver.', 'error'); return; }
+      showMsg(`✅ Order assigned to ${driver?.name}!`, 'success');
+      setAssigningOrderId(null);
+      fetchOrders();
+    } catch { showMsg('Network error.', 'error'); }
+    finally { setAssignLoading(false); }
+  };
+
   useEffect(() => {
     fetchOrders();
+    fetchDrivers();
     fetch('/api/products?limit=200').then(r => r.json()).then(d => setProducts(Array.isArray(d) ? d : (d.products || []))).catch(() => {});
   }, []);
 
@@ -1014,25 +1048,43 @@ function OrdersModule({ showMsg }: any) {
                           📅 Delivery scheduled: {new Date(order.deliveryDate).toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' })}
                         </p>
                       )}
-                      {/* Send to Driver — dispatches order and shares tracking link */}
-                      <button
-                        onClick={async () => {
-                          // Mark as out_for_delivery
-                          await fetch('/api/customers?module=orders', {
-                            method: 'PUT',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ id: order._id, status: 'out_for_delivery' }),
-                          });
-                          fetchOrders();
-                          // Open WhatsApp to driver with delivery link
-                          const driverLink = `${window.location.origin}/deliver/${order._id}`;
-                          const msg = `🚚 *Delivery Assigned*\n\nOrder: *${order.orderId}*\nCustomer: ${order.customerName}\nPhone: ${order.customerPhone}\nAddress: ${order.deliveryAddress || order.customerAddress || 'See order'}\n\n📱 Open this link to start delivery:\n${driverLink}`;
-                          window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`, '_blank');
-                        }}
-                        className="w-full bg-blue-600 hover:bg-blue-700 text-white font-black text-xs uppercase tracking-widest py-2.5 rounded-xl transition flex items-center justify-center gap-2"
-                      >
-                        <Truck className="w-4 h-4" /> Send to Driver (Out for Delivery)
-                      </button>
+                      {/* Assign to Driver */}
+                      {assigningOrderId === order._id ? (
+                        <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 space-y-2">
+                          <p className="text-xs font-black uppercase tracking-widest text-blue-700">Assign to Driver</p>
+                          {drivers.length === 0 ? (
+                            <p className="text-xs text-gray-500 font-bold">No active delivery drivers found. Add a driver in Users settings.</p>
+                          ) : (
+                            <select
+                              value={selectedDriverId[order._id] || ''}
+                              onChange={e => setSelectedDriverId(p => ({ ...p, [order._id]: e.target.value }))}
+                              className="w-full border-2 border-blue-200 rounded-lg px-3 py-2 text-sm font-bold focus:border-blue-500 outline-none bg-white"
+                            >
+                              <option value="">— Select driver —</option>
+                              {drivers.map(d => (
+                                <option key={d._id} value={d._id}>{d.name}</option>
+                              ))}
+                            </select>
+                          )}
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => assignDriver(order)}
+                              disabled={assignLoading || !selectedDriverId[order._id]}
+                              className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-black text-xs uppercase tracking-widest py-2 rounded-lg transition disabled:opacity-50 flex items-center justify-center gap-1"
+                            >
+                              <Truck className="w-3.5 h-3.5" /> {assignLoading ? 'Assigning…' : 'Assign & Dispatch'}
+                            </button>
+                            <button onClick={() => setAssigningOrderId(null)} className="px-3 bg-gray-100 text-gray-600 font-bold text-xs rounded-lg hover:bg-gray-200 transition">Cancel</button>
+                          </div>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => { setAssigningOrderId(order._id); fetchDrivers(); }}
+                          className="w-full bg-blue-600 hover:bg-blue-700 text-white font-black text-xs uppercase tracking-widest py-2.5 rounded-xl transition flex items-center justify-center gap-2"
+                        >
+                          <Truck className="w-4 h-4" /> Assign to Driver
+                        </button>
+                      )}
                       <button onClick={() => openDeliverModal(order)}
                         className="w-full bg-green-500 hover:bg-green-600 text-white font-black text-xs uppercase tracking-widest py-2.5 rounded-xl transition">
                         Mark as Delivered ✓
@@ -1045,18 +1097,45 @@ function OrdersModule({ showMsg }: any) {
                     <div className="border-t border-gray-100 pt-3 space-y-2">
                       <p className="text-xs text-purple-700 font-bold bg-purple-50 rounded-lg px-3 py-2 flex items-center gap-2">
                         <Truck className="w-3.5 h-3.5" /> Out for Delivery
+                        {order.assignedDriverName && <span className="ml-auto text-purple-500">Driver: {order.assignedDriverName}</span>}
                       </p>
-                      {/* Resend driver link */}
-                      <button
-                        onClick={() => {
-                          const driverLink = `${window.location.origin}/deliver/${order._id}`;
-                          const msg = `🚚 *Delivery Link*\n\nOrder: *${order.orderId}*\nCustomer: ${order.customerName}\nAddress: ${order.deliveryAddress || order.customerAddress || ''}\n\n📱 ${driverLink}`;
-                          window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`, '_blank');
-                        }}
-                        className="w-full bg-purple-600 hover:bg-purple-700 text-white font-black text-xs uppercase tracking-widest py-2.5 rounded-xl transition flex items-center justify-center gap-2"
-                      >
-                        <Truck className="w-4 h-4" /> Resend Driver Link
-                      </button>
+                      {/* Reassign driver */}
+                      {assigningOrderId === order._id ? (
+                        <div className="bg-purple-50 border border-purple-200 rounded-xl p-3 space-y-2">
+                          <p className="text-xs font-black uppercase tracking-widest text-purple-700">Reassign to Driver</p>
+                          {drivers.length === 0 ? (
+                            <p className="text-xs text-gray-500 font-bold">No active delivery drivers found.</p>
+                          ) : (
+                            <select
+                              value={selectedDriverId[order._id] || ''}
+                              onChange={e => setSelectedDriverId(p => ({ ...p, [order._id]: e.target.value }))}
+                              className="w-full border-2 border-purple-200 rounded-lg px-3 py-2 text-sm font-bold focus:border-purple-500 outline-none bg-white"
+                            >
+                              <option value="">— Select driver —</option>
+                              {drivers.map(d => (
+                                <option key={d._id} value={d._id}>{d.name}</option>
+                              ))}
+                            </select>
+                          )}
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => assignDriver(order)}
+                              disabled={assignLoading || !selectedDriverId[order._id]}
+                              className="flex-1 bg-purple-600 hover:bg-purple-700 text-white font-black text-xs uppercase tracking-widest py-2 rounded-lg transition disabled:opacity-50 flex items-center justify-center gap-1"
+                            >
+                              <Truck className="w-3.5 h-3.5" /> {assignLoading ? 'Assigning…' : 'Reassign & Notify'}
+                            </button>
+                            <button onClick={() => setAssigningOrderId(null)} className="px-3 bg-gray-100 text-gray-600 font-bold text-xs rounded-lg hover:bg-gray-200 transition">Cancel</button>
+                          </div>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => { setAssigningOrderId(order._id); fetchDrivers(); }}
+                          className="w-full bg-purple-600 hover:bg-purple-700 text-white font-black text-xs uppercase tracking-widest py-2.5 rounded-xl transition flex items-center justify-center gap-2"
+                        >
+                          <Truck className="w-4 h-4" /> Reassign Driver
+                        </button>
+                      )}
                       {/* Customer tracking link */}
                       <button
                         onClick={() => {
@@ -3040,11 +3119,14 @@ function UsersModule({ showMsg }: any) {
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [editUser, setEditUser] = useState<any>(null);
-  const [form, setForm] = useState({ name: '', email: '', role: 'associate' as UserRole, password: '' });
+  const [form, setForm] = useState({ name: '', email: '', role: 'associate' as UserRole, password: '', pin: '' });
   const [allowedModules, setAllowedModules] = useState<string[]>([]);
   const [showPermissions, setShowPermissions] = useState(false);
   const [showPass, setShowPass] = useState(false);
   const [formLoading, setFormLoading] = useState(false);
+
+  const isPinRole = ['associate', 'cashier'].includes(form.role);
+  const isDeliveryBoyRole = form.role === 'delivery_boy';
 
   // Build request headers using the JWT token from AuthContext
   function usersHeaders(withContentType = false): Record<string, string> {
@@ -3065,25 +3147,17 @@ function UsersModule({ showMsg }: any) {
 
   useEffect(() => { loadUsers(); }, []);
 
-  const ROLE_DEFAULT_MODULES: Record<string, string[]> = {
-    admin:        [],
-    manager:      [],
-    associate:    ['orders', 'sales', 'customers'],
-    cashier:      ['sales', 'customers'],
-    delivery_boy: ['orders'],
-  };
-
   const openAdd = () => {
     setEditUser(null);
-    setForm({ name: '', email: '', role: 'associate', password: '' });
-    setAllowedModules(ROLE_DEFAULT_MODULES['associate']);
+    setForm({ name: '', email: '', role: 'associate', password: '', pin: '' });
+    setAllowedModules([]);
     setShowPermissions(false);
     setShowPass(false); setShowForm(true);
   };
 
   const openEdit = (u: any) => {
     setEditUser(u);
-    setForm({ name: u.name, email: u.email || '', role: u.role, password: '' });
+    setForm({ name: u.name, email: u.email || '', role: u.role, password: '', pin: '' });
     setAllowedModules(Array.isArray(u.allowedModules) ? u.allowedModules : []);
     setShowPermissions(false);
     setShowPass(false); setShowForm(true);
@@ -3091,18 +3165,23 @@ function UsersModule({ showMsg }: any) {
 
   const handleSubmit = async () => {
     if (!form.name) { showMsg('Name is required.', 'error'); return; }
-    if (['admin', 'manager'].includes(form.role) && !editUser && !form.email) {
-      showMsg('Email is required for admin/manager.', 'error'); return;
+    if (['admin', 'manager'].includes(form.role) && !editUser && (!form.email || !form.password)) {
+      showMsg('Email and password required for this role.', 'error'); return;
     }
-    if (!editUser && (!form.password || form.password.length < 6)) {
-      showMsg('Password is required (min 6 characters).', 'error'); return;
+    if (['associate', 'cashier'].includes(form.role) && !editUser && form.pin.length < 4) {
+      showMsg('4-digit PIN required.', 'error'); return;
+    }
+    if (form.role === 'delivery_boy' && !editUser && !form.password) {
+      showMsg('Password required for delivery boy.', 'error'); return;
     }
     setFormLoading(true);
     try {
       const body: any = { name: form.name, role: form.role, allowedModules };
       if (editUser) body.id = editUser._id;
       if (form.email) body.email = form.email;
-      if (form.password) body.password = form.password;
+      if (['admin', 'manager'].includes(form.role) && form.password) body.password = form.password;
+      if (['associate', 'cashier'].includes(form.role) && form.pin) body.pin = form.pin;
+      if (form.role === 'delivery_boy' && form.password) body.password = form.password;
       const res = await fetch('/api/business?module=users', {
         method: editUser ? 'PUT' : 'POST',
         headers: usersHeaders(true),
@@ -3160,12 +3239,7 @@ function UsersModule({ showMsg }: any) {
             </div>
             <div>
               <label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">Role *</label>
-              <select value={form.role} onChange={e => {
-                  const newRole = e.target.value as UserRole;
-                  const defaults = ROLE_DEFAULT_MODULES[newRole] || [];
-                  setForm(f => ({ ...f, role: newRole, password: '' }));
-                  if (!editUser) setAllowedModules(defaults);
-                }}
+              <select value={form.role} onChange={e => setForm(f => ({ ...f, role: e.target.value as UserRole, pin: '', password: '' }))}
                 className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none bg-white">
                 <option value="admin">Admin (full access)</option>
                 <option value="manager">Manager (reports + POS)</option>
@@ -3175,22 +3249,32 @@ function UsersModule({ showMsg }: any) {
               </select>
             </div>
             <div>
-              <label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">Email {['admin','manager'].includes(form.role) ? '*' : '(optional)'}</label>
+              <label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">Email {isPinRole || isDeliveryBoyRole ? '(optional)' : '*'}</label>
               <input type="email" value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} placeholder="staff@tags.com"
                 className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none" />
             </div>
-            <div>
-              <label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">
-                Password {editUser ? '(leave blank to keep)' : '* (min 6 characters)'}
-              </label>
-              <div className="relative">
-                <input type={showPass ? 'text' : 'password'} value={form.password} onChange={e => setForm(f => ({ ...f, password: e.target.value }))} placeholder="Min 6 characters"
-                  className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none pr-10" />
-                <button type="button" onClick={() => setShowPass(v => !v)} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600">
-                  {showPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                </button>
+            {(!isPinRole || isDeliveryBoyRole) && (
+              <div>
+                <label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">
+                  Password {editUser ? '(leave blank to keep)' : '*'}{isDeliveryBoyRole ? ' — used for Staff Login' : ''}
+                </label>
+                <div className="relative">
+                  <input type={showPass ? 'text' : 'password'} value={form.password} onChange={e => setForm(f => ({ ...f, password: e.target.value }))} placeholder="Min 6 characters"
+                    className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none pr-10" />
+                  <button type="button" onClick={() => setShowPass(v => !v)} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600">
+                    {showPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
               </div>
-            </div>
+            )}
+            {isPinRole && (
+              <div>
+                <label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">PIN {editUser ? '(leave blank to keep)' : '* (4–6 digits)'}</label>
+                <input type="password" inputMode="numeric" value={form.pin}
+                  onChange={e => setForm(f => ({ ...f, pin: e.target.value.replace(/\D/g, '').slice(0, 6) }))} placeholder="e.g. 1234"
+                  className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none" />
+              </div>
+            )}
           </div>
           {/* ── Module Permissions ── */}
           {form.role !== 'admin' && (
@@ -3209,10 +3293,6 @@ function UsersModule({ showMsg }: any) {
                   )}
                   {allowedModules.length === 0 && (
                     <span className="text-[10px] font-bold text-gray-400">(all modules — click to restrict)</span>
-                  )}
-                  {allowedModules.length > 0 && ROLE_DEFAULT_MODULES[form.role]?.length > 0 &&
-                    JSON.stringify([...allowedModules].sort()) === JSON.stringify([...ROLE_DEFAULT_MODULES[form.role]].sort()) && (
-                    <span className="text-[10px] font-bold text-blue-400">(role defaults)</span>
                   )}
                 </div>
                 <span className="text-gray-400 text-sm">{showPermissions ? '▲' : '▼'}</span>
