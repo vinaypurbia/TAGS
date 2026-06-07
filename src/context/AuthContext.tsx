@@ -94,7 +94,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const isCashier = user?.role === 'cashier';
   const isDeliveryBoy = user?.role === 'delivery_boy';
   const canAccessAdmin = isAdmin || isManager;
-  const canAccessPOS = !!user;
+  const canAccessPOS = !!user && !isDeliveryBoy;  // delivery_boy has their own /driver panel
 
   // null means all access (admin/manager) — array means restricted
   const allowedModules: string[] | null = isAdmin
