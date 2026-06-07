@@ -95,6 +95,31 @@ export default async function handler(req, res) {
         return res.status(200).json({ token, user: { id: matched._id, name: matched.name, role: matched.role } });
       }
 
+      // Staff login by name + password (all roles — used by Staff Login modal on website)
+      if (action === 'staff-login' && req.method === 'POST') {
+        const { name, password } = req.body;
+        if (!name || !password) return res.status(400).json({ error: 'Name and password required' });
+        const user = await db.collection('users').findOne({
+          name: { $regex: new RegExp(`^${name.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') },
+          active: true,
+        });
+        if (!user) return res.status(401).json({ error: 'Name not found or account inactive' });
+        let valid = false;
+        if (user.passwordHash && user.passwordHash.startsWith('$2')) {
+          valid = await bcrypt.compare(password, user.passwordHash);
+        } else {
+          valid = (password === (user.passwordHash || user.password || ''));
+          if (valid) {
+            const newHash = await bcrypt.hash(password, 12);
+            await db.collection('users').updateOne({ _id: user._id }, { $set: { passwordHash: newHash } });
+          }
+        }
+        if (!valid) return res.status(401).json({ error: 'Incorrect password' });
+        const token = signToken({ userId: user._id.toString(), name: user.name, email: user.email, role: user.role });
+        await db.collection('users').updateOne({ _id: user._id }, { $set: { lastLogin: new Date() } });
+        return res.status(200).json({ token, user: { id: user._id, name: user.name, email: user.email, role: user.role } });
+      }
+
       // Verify token
       if (action === 'verify' && req.method === 'GET') {
         const decoded = requireAuth(req);
@@ -152,6 +177,10 @@ export default async function handler(req, res) {
           doc.pinHash = await bcrypt.hash(String(pin), 10);
           if (email) doc.email = email.toLowerCase();
           if (req.body.phone) doc.phone = req.body.phone;
+        }
+        // delivery_boy also gets a password for staff login
+        if (role === 'delivery_boy' && req.body.password) {
+          doc.passwordHash = await bcrypt.hash(req.body.password, 10);
         }
         const result = await col.insertOne(doc);
         return res.status(201).json({ success: true, _id: result.insertedId });
