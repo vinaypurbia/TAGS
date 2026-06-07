@@ -83,8 +83,7 @@ export default async function handler(req, res) {
 
         // cash_settled = admin confirmed receiving cash from driver — that's the real income moment
         const settledEntries = await cashFlow.find({ ...filter, category: 'cash_settled' }).toArray();
-        const revenue = all.filter((e) => e.type === 'income' && e.category === 'sales').reduce((s, e) => s + e.amount, 0)
-          + settledEntries.reduce((s, e) => s + e.amount, 0);
+        const revenue = settledEntries.reduce((s, e) => s + e.amount, 0);
         const cogs = all.filter((e) => e.type === 'expense' && e.category === 'cogs').reduce((s, e) => s + e.amount, 0);
         const grossProfit = revenue - cogs;
         const operatingExpenses = all.filter((e) => e.type === 'expense' && e.category !== 'cogs').reduce((s, e) => s + e.amount, 0);
@@ -125,7 +124,7 @@ export default async function handler(req, res) {
       // Exclude internal transfers from the visible Cash Flow list.
       // cash_handover = internal movement between collector and owner (not income/expense)
       // owner_deposit = owner settling cash to bank (not income/expense)
-      const TRANSFER_EXCLUDE = ['cash_handover', 'owner_deposit', 'cash_settled', 'delivery_collection'];
+      const TRANSFER_EXCLUDE = ['cash_handover', 'owner_deposit', 'delivery_collection'];
       // Never show internal transfer entries in the list, even if category filter is passed
       if (category && TRANSFER_EXCLUDE.includes(category)) {
         return res.status(200).json([]);
