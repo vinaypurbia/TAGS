@@ -107,6 +107,15 @@ export default function PosLoginPage() {
           </Link>
         </div>
 
+        <div className="text-center mt-4">
+          <a
+            href="/"
+            className="text-[10px] font-bold uppercase tracking-widest text-white/25 hover:text-white/50 transition-colors"
+          >
+            ← Back to Website
+          </a>
+        </div>
+
       </div>
     </div>
   );
