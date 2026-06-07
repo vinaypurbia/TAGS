@@ -246,6 +246,16 @@ export default function DriverDeliver() {
             {order?.deliveryAddress || order?.customerAddress}
           </p>
         )}
+        {(order?.deliveryAddress || order?.customerAddress) && (
+          <a
+            href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(order?.deliveryAddress || order?.customerAddress || '')}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="mt-2 inline-flex items-center gap-1.5 bg-white text-blue-600 text-xs font-black uppercase tracking-widest px-3 py-1.5 rounded-lg hover:bg-blue-50 transition"
+          >
+            <MapPin className="w-3.5 h-3.5" /> Open in Google Maps
+          </a>
+        )}
       </div>
 
       <div className="max-w-md mx-auto px-4 py-5 space-y-4">
