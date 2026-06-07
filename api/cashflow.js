@@ -76,15 +76,20 @@ export default async function handler(req, res) {
 
       if (summary === 'true') {
         // P&L excluded — balance sheet movements, not operating P&L
-        const PL_EXCLUDE = ['financing', 'inventory_asset', 'advance_payment', 'supplier_payment', 'ledger_payment', 'po_shortage_receivable', 'po_shortage_refund', 'supplier_return_refund', 'cash_handover', 'owner_deposit', 'cash_settled'];
+        // delivery_collection = cash held by driver, not yet received by admin.
+        // Real income is only recorded when admin clicks Settle (cash_settled).
+        const PL_EXCLUDE = ['financing', 'inventory_asset', 'advance_payment', 'supplier_payment', 'ledger_payment', 'po_shortage_receivable', 'po_shortage_refund', 'supplier_return_refund', 'cash_handover', 'owner_deposit', 'cash_settled', 'delivery_collection'];
         const all = await cashFlow.find({ ...filter, category: { $nin: PL_EXCLUDE } }).toArray();
 
-        const revenue = all.filter((e) => e.type === 'income' && (e.category === 'sales' || e.category === 'delivery_collection')).reduce((s, e) => s + e.amount, 0);
+        // cash_settled = admin confirmed receiving cash from driver — that's the real income moment
+        const settledEntries = await cashFlow.find({ ...filter, category: 'cash_settled' }).toArray();
+        const revenue = all.filter((e) => e.type === 'income' && e.category === 'sales').reduce((s, e) => s + e.amount, 0)
+          + settledEntries.reduce((s, e) => s + e.amount, 0);
         const cogs = all.filter((e) => e.type === 'expense' && e.category === 'cogs').reduce((s, e) => s + e.amount, 0);
         const grossProfit = revenue - cogs;
         const operatingExpenses = all.filter((e) => e.type === 'expense' && e.category !== 'cogs').reduce((s, e) => s + e.amount, 0);
         const netProfit = grossProfit - operatingExpenses;
-        const otherIncome = all.filter((e) => e.type === 'income' && e.category !== 'sales' && e.category !== 'delivery_collection').reduce((s, e) => s + e.amount, 0);
+        const otherIncome = all.filter((e) => e.type === 'income' && e.category !== 'sales').reduce((s, e) => s + e.amount, 0);
         const totalIncome = revenue + otherIncome;
         const totalExpense = cogs + operatingExpenses;
 
@@ -120,7 +125,7 @@ export default async function handler(req, res) {
       // Exclude internal transfers from the visible Cash Flow list.
       // cash_handover = internal movement between collector and owner (not income/expense)
       // owner_deposit = owner settling cash to bank (not income/expense)
-      const TRANSFER_EXCLUDE = ['cash_handover', 'owner_deposit', 'cash_settled'];
+      const TRANSFER_EXCLUDE = ['cash_handover', 'owner_deposit', 'cash_settled', 'delivery_collection'];
       // Never show internal transfer entries in the list, even if category filter is passed
       if (category && TRANSFER_EXCLUDE.includes(category)) {
         return res.status(200).json([]);
