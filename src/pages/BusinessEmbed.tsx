@@ -3040,14 +3040,11 @@ function UsersModule({ showMsg }: any) {
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [editUser, setEditUser] = useState<any>(null);
-  const [form, setForm] = useState({ name: '', email: '', role: 'associate' as UserRole, password: '', pin: '' });
+  const [form, setForm] = useState({ name: '', email: '', role: 'associate' as UserRole, password: '' });
   const [allowedModules, setAllowedModules] = useState<string[]>([]);
   const [showPermissions, setShowPermissions] = useState(false);
   const [showPass, setShowPass] = useState(false);
   const [formLoading, setFormLoading] = useState(false);
-
-  const isPinRole = ['associate', 'cashier'].includes(form.role);
-  const isDeliveryBoyRole = form.role === 'delivery_boy';
 
   // Build request headers using the JWT token from AuthContext
   function usersHeaders(withContentType = false): Record<string, string> {
@@ -3068,17 +3065,25 @@ function UsersModule({ showMsg }: any) {
 
   useEffect(() => { loadUsers(); }, []);
 
+  const ROLE_DEFAULT_MODULES: Record<string, string[]> = {
+    admin:        [],
+    manager:      [],
+    associate:    ['orders', 'sales', 'customers'],
+    cashier:      ['sales', 'customers'],
+    delivery_boy: ['orders'],
+  };
+
   const openAdd = () => {
     setEditUser(null);
-    setForm({ name: '', email: '', role: 'associate', password: '', pin: '' });
-    setAllowedModules([]);
+    setForm({ name: '', email: '', role: 'associate', password: '' });
+    setAllowedModules(ROLE_DEFAULT_MODULES['associate']);
     setShowPermissions(false);
     setShowPass(false); setShowForm(true);
   };
 
   const openEdit = (u: any) => {
     setEditUser(u);
-    setForm({ name: u.name, email: u.email || '', role: u.role, password: '', pin: '' });
+    setForm({ name: u.name, email: u.email || '', role: u.role, password: '' });
     setAllowedModules(Array.isArray(u.allowedModules) ? u.allowedModules : []);
     setShowPermissions(false);
     setShowPass(false); setShowForm(true);
@@ -3086,23 +3091,18 @@ function UsersModule({ showMsg }: any) {
 
   const handleSubmit = async () => {
     if (!form.name) { showMsg('Name is required.', 'error'); return; }
-    if (['admin', 'manager'].includes(form.role) && !editUser && (!form.email || !form.password)) {
-      showMsg('Email and password required for this role.', 'error'); return;
+    if (['admin', 'manager'].includes(form.role) && !editUser && !form.email) {
+      showMsg('Email is required for admin/manager.', 'error'); return;
     }
-    if (['associate', 'cashier'].includes(form.role) && !editUser && form.pin.length < 4) {
-      showMsg('4-digit PIN required.', 'error'); return;
-    }
-    if (form.role === 'delivery_boy' && !editUser && !form.password) {
-      showMsg('Password required for delivery boy.', 'error'); return;
+    if (!editUser && (!form.password || form.password.length < 6)) {
+      showMsg('Password is required (min 6 characters).', 'error'); return;
     }
     setFormLoading(true);
     try {
       const body: any = { name: form.name, role: form.role, allowedModules };
       if (editUser) body.id = editUser._id;
       if (form.email) body.email = form.email;
-      if (['admin', 'manager'].includes(form.role) && form.password) body.password = form.password;
-      if (['associate', 'cashier'].includes(form.role) && form.pin) body.pin = form.pin;
-      if (form.role === 'delivery_boy' && form.password) body.password = form.password;
+      if (form.password) body.password = form.password;
       const res = await fetch('/api/business?module=users', {
         method: editUser ? 'PUT' : 'POST',
         headers: usersHeaders(true),
@@ -3160,7 +3160,12 @@ function UsersModule({ showMsg }: any) {
             </div>
             <div>
               <label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">Role *</label>
-              <select value={form.role} onChange={e => setForm(f => ({ ...f, role: e.target.value as UserRole, pin: '', password: '' }))}
+              <select value={form.role} onChange={e => {
+                  const newRole = e.target.value as UserRole;
+                  const defaults = ROLE_DEFAULT_MODULES[newRole] || [];
+                  setForm(f => ({ ...f, role: newRole, password: '' }));
+                  if (!editUser) setAllowedModules(defaults);
+                }}
                 className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none bg-white">
                 <option value="admin">Admin (full access)</option>
                 <option value="manager">Manager (reports + POS)</option>
@@ -3170,32 +3175,22 @@ function UsersModule({ showMsg }: any) {
               </select>
             </div>
             <div>
-              <label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">Email {isPinRole || isDeliveryBoyRole ? '(optional)' : '*'}</label>
+              <label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">Email {['admin','manager'].includes(form.role) ? '*' : '(optional)'}</label>
               <input type="email" value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} placeholder="staff@tags.com"
                 className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none" />
             </div>
-            {(!isPinRole || isDeliveryBoyRole) && (
-              <div>
-                <label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">
-                  Password {editUser ? '(leave blank to keep)' : '*'}{isDeliveryBoyRole ? ' — used for Staff Login' : ''}
-                </label>
-                <div className="relative">
-                  <input type={showPass ? 'text' : 'password'} value={form.password} onChange={e => setForm(f => ({ ...f, password: e.target.value }))} placeholder="Min 6 characters"
-                    className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none pr-10" />
-                  <button type="button" onClick={() => setShowPass(v => !v)} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600">
-                    {showPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                  </button>
-                </div>
+            <div>
+              <label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">
+                Password {editUser ? '(leave blank to keep)' : '* (min 6 characters)'}
+              </label>
+              <div className="relative">
+                <input type={showPass ? 'text' : 'password'} value={form.password} onChange={e => setForm(f => ({ ...f, password: e.target.value }))} placeholder="Min 6 characters"
+                  className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none pr-10" />
+                <button type="button" onClick={() => setShowPass(v => !v)} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600">
+                  {showPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
               </div>
-            )}
-            {isPinRole && (
-              <div>
-                <label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">PIN {editUser ? '(leave blank to keep)' : '* (4–6 digits)'}</label>
-                <input type="password" inputMode="numeric" value={form.pin}
-                  onChange={e => setForm(f => ({ ...f, pin: e.target.value.replace(/\D/g, '').slice(0, 6) }))} placeholder="e.g. 1234"
-                  className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none" />
-              </div>
-            )}
+            </div>
           </div>
           {/* ── Module Permissions ── */}
           {form.role !== 'admin' && (
@@ -3214,6 +3209,10 @@ function UsersModule({ showMsg }: any) {
                   )}
                   {allowedModules.length === 0 && (
                     <span className="text-[10px] font-bold text-gray-400">(all modules — click to restrict)</span>
+                  )}
+                  {allowedModules.length > 0 && ROLE_DEFAULT_MODULES[form.role]?.length > 0 &&
+                    JSON.stringify([...allowedModules].sort()) === JSON.stringify([...ROLE_DEFAULT_MODULES[form.role]].sort()) && (
+                    <span className="text-[10px] font-bold text-blue-400">(role defaults)</span>
                   )}
                 </div>
                 <span className="text-gray-400 text-sm">{showPermissions ? '▲' : '▼'}</span>
