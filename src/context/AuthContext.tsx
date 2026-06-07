@@ -7,6 +7,7 @@ export interface AuthUser {
   name: string;
   email?: string;
   role: UserRole;
+  allowedModules?: string[];  // null/undefined = all modules (admin/manager)
 }
 
 interface AuthContextType {
@@ -22,6 +23,8 @@ interface AuthContextType {
   isDeliveryBoy: boolean;
   canAccessAdmin: boolean;
   canAccessPOS: boolean;
+  allowedModules: string[] | null;  // null = all access
+  canAccess: (module: string) => boolean;
 }
 
 const AuthContext = createContext<AuthContextType>({
@@ -29,6 +32,8 @@ const AuthContext = createContext<AuthContextType>({
   login: () => {}, logout: () => {},
   isAdmin: false, isManager: false, isAssociate: false, isCashier: false, isDeliveryBoy: false,
   canAccessAdmin: false, canAccessPOS: false,
+  allowedModules: null,
+  canAccess: () => true,
 });
 
 const TOKEN_KEY = 'tags_token';
@@ -91,8 +96,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const canAccessAdmin = isAdmin || isManager;
   const canAccessPOS = !!user;
 
+  // null means all access (admin/manager) — array means restricted
+  const allowedModules: string[] | null = isAdmin
+    ? null
+    : (user?.allowedModules && user.allowedModules.length > 0)
+    ? user.allowedModules
+    : null;
+
+  const canAccess = (module: string): boolean => {
+    if (!user) return false;
+    if (isAdmin) return true;           // admin sees everything
+    if (!allowedModules) return true;   // no restrictions set
+    return allowedModules.includes(module);
+  };
+
   return (
-    <AuthContext.Provider value={{ user, token, isLoading, login, logout, isAdmin, isManager, isAssociate, isCashier, isDeliveryBoy, canAccessAdmin, canAccessPOS }}>
+    <AuthContext.Provider value={{ user, token, isLoading, login, logout, isAdmin, isManager, isAssociate, isCashier, isDeliveryBoy, canAccessAdmin, canAccessPOS, allowedModules, canAccess }}>
       {children}
     </AuthContext.Provider>
   );
