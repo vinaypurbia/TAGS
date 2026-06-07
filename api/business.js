@@ -33,6 +33,36 @@ function requireAuth(req, roles = []) {
   return decoded;
 }
 
+// ─── ORDER STATUS EMAIL (reused from customers.js) ───────────────────────────
+async function sendOrderEmail(toEmail, customerName, eventType, orderData) {
+  if (!toEmail || !process.env.RESEND_API_KEY) return false;
+  const { orderId, items = [], totalAmount = 0, deliveryAddress = '', trackUrl = '' } = orderData;
+  const fmt = (n) => `₹${Number(n || 0).toLocaleString('en-IN')}`;
+  const itemRows = items.map(i =>
+    `<tr><td style="padding:6px 0;border-bottom:1px solid #f0f0f0;color:#444;">${i.productName || i.name || 'Item'}</td><td style="padding:6px 0;border-bottom:1px solid #f0f0f0;text-align:center;color:#444;">×${i.quantity}</td><td style="padding:6px 0;border-bottom:1px solid #f0f0f0;text-align:right;color:#444;">${fmt((i.price || 0) * (i.quantity || 1))}</td></tr>`
+  ).join('');
+  const cfg = {
+    out_for_delivery: {
+      subject: `Out for Delivery 🚚 – ${orderId} | TAGS`,
+      badge: '#7c3aed', badgeText: '🚚 Out for Delivery',
+      headline: `Your order is on its way!`,
+      body: `Hello ${customerName}! Your order is out for delivery. Our driver is heading to your location now.`,
+      cta: trackUrl ? `<a href="${trackUrl}" style="display:inline-block;margin-top:16px;background:#7c3aed;color:#fff;text-decoration:none;padding:12px 28px;border-radius:8px;font-weight:700;">Live Track Driver</a>` : '',
+    },
+  }[eventType];
+  if (!cfg) return false;
+  const html = `<!DOCTYPE html><html><body style="margin:0;padding:0;background:#f5f5f5;font-family:'Helvetica Neue',Arial,sans-serif;"><table width="100%" cellpadding="0" cellspacing="0" style="background:#f5f5f5;padding:32px 0;"><tr><td align="center"><table width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.08);"><tr><td style="background:#1A1A1A;padding:28px 32px;text-align:center;"><span style="font-size:28px;font-weight:900;color:#fff;text-transform:uppercase;"><span style="color:#FA5600">T</span>AGS</span></td></tr><tr><td style="padding:24px 32px 0;text-align:center;"><span style="display:inline-block;background:${cfg.badge};color:#fff;font-weight:700;font-size:14px;padding:6px 18px;border-radius:999px;">${cfg.badgeText}</span></td></tr><tr><td style="padding:16px 32px 8px;text-align:center;"><h1 style="margin:0;font-size:22px;font-weight:800;color:#1A1A1A;">${cfg.headline}</h1><p style="margin:10px 0 0;font-size:15px;color:#555;">${cfg.body}</p></td></tr><tr><td style="padding:20px 32px 0;"><table width="100%" cellpadding="0" cellspacing="0" style="background:#f9f9f9;border-radius:10px;padding:14px 18px;"><tr><td style="font-size:13px;color:#888;font-weight:600;">ORDER ID</td><td style="font-size:13px;color:#1A1A1A;font-weight:800;text-align:right;">${orderId}</td></tr>${deliveryAddress ? `<tr><td style="font-size:13px;color:#888;font-weight:600;padding-top:6px;">DELIVER TO</td><td style="font-size:13px;color:#444;text-align:right;padding-top:6px;">${deliveryAddress}</td></tr>` : ''}<tr><td style="font-size:13px;color:#888;font-weight:600;padding-top:6px;">TOTAL</td><td style="font-size:15px;color:#FA5600;font-weight:900;text-align:right;padding-top:6px;">${fmt(totalAmount)}</td></tr></table></td></tr>${itemRows ? `<tr><td style="padding:20px 32px 0;"><p style="margin:0 0 8px;font-size:12px;font-weight:700;color:#888;text-transform:uppercase;">Items</p><table width="100%" cellpadding="0" cellspacing="0">${itemRows}</table></td></tr>` : ''}${cfg.cta ? `<tr><td style="padding:24px 32px;text-align:center;">${cfg.cta}</td></tr>` : ''}<tr><td style="background:#f5f5f5;padding:20px 32px;text-align:center;border-top:1px solid #ebebeb;"><p style="margin:0;font-size:12px;color:#aaa;">TAGS Store &bull; ta-gs.online</p></td></tr></table></td></tr></table></body></html>`;
+  try {
+    const r = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from: 'TAGS Store <orders@ta-gs.online>', to: toEmail, subject: cfg.subject, html }),
+    });
+    if (!r.ok) { const d = await r.json(); console.error('Resend error:', d); return false; }
+    return true;
+  } catch (e) { console.error('sendOrderEmail failed:', e); return false; }
+}
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
@@ -1189,6 +1219,7 @@ export default async function handler(req, res) {
           );
           // Push notification to driver
           const driverSub = await pushSubs.findOne({ adminId: `driver-${driverId}` });
+          const order = await ordersCol.findOne({ _id: new ObjectId(orderId) });
           if (driverSub && process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
             try {
               const webpush = await import('web-push');
@@ -1196,7 +1227,6 @@ export default async function handler(req, res) {
                 `mailto:${process.env.ADMIN_EMAIL || 'admin@yourdomain.com'}`,
                 process.env.VAPID_PUBLIC_KEY, process.env.VAPID_PRIVATE_KEY
               );
-              const order = await ordersCol.findOne({ _id: new ObjectId(orderId) });
               const payload = JSON.stringify({
                 title: '🚚 New Delivery Assigned!',
                 body: `Order ${order?.orderId || orderId} → ${order?.customerName || 'Customer'}`,
@@ -1204,6 +1234,17 @@ export default async function handler(req, res) {
               });
               await webpush.default.sendNotification(driverSub.subscription, payload);
             } catch (e) { console.error('Driver push failed:', e.message); }
+          }
+          // ── EMAIL: out for delivery ──────────────────────────────────────
+          if (order?.customerEmail) {
+            const trackUrl = `${process.env.VITE_APP_URL || 'https://ta-gs.online'}/track/${orderId}`;
+            sendOrderEmail(order.customerEmail, order.customerName, 'out_for_delivery', {
+              orderId: order.orderId || orderId,
+              items: order.items || [],
+              totalAmount: order.totalAmount,
+              deliveryAddress: order.deliveryAddress || '',
+              trackUrl,
+            }).catch(() => {});
           }
           return res.status(200).json({ success: true });
         }
