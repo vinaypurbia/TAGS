@@ -3023,7 +3023,8 @@ function UsersModule({ showMsg }: any) {
   const [showPass, setShowPass] = useState(false);
   const [formLoading, setFormLoading] = useState(false);
 
-  const isPinRole = ['associate', 'cashier', 'delivery_boy'].includes(form.role);
+  const isPinRole = ['associate', 'cashier'].includes(form.role);
+  const isDeliveryBoyRole = form.role === 'delivery_boy';
 
   // Build request headers using the JWT token from AuthContext
   function usersHeaders(withContentType = false): Record<string, string> {
@@ -3061,8 +3062,11 @@ function UsersModule({ showMsg }: any) {
     if (['admin', 'manager'].includes(form.role) && !editUser && (!form.email || !form.password)) {
       showMsg('Email and password required for this role.', 'error'); return;
     }
-    if (['associate', 'cashier', 'delivery_boy'].includes(form.role) && !editUser && form.pin.length < 4) {
+    if (['associate', 'cashier'].includes(form.role) && !editUser && form.pin.length < 4) {
       showMsg('4-digit PIN required.', 'error'); return;
+    }
+    if (form.role === 'delivery_boy' && !editUser && !form.password) {
+      showMsg('Password required for delivery boy.', 'error'); return;
     }
     setFormLoading(true);
     try {
@@ -3070,7 +3074,8 @@ function UsersModule({ showMsg }: any) {
       if (editUser) body.id = editUser._id;
       if (form.email) body.email = form.email;
       if (['admin', 'manager'].includes(form.role) && form.password) body.password = form.password;
-      if (['associate', 'cashier', 'delivery_boy'].includes(form.role) && form.pin) body.pin = form.pin;
+      if (['associate', 'cashier'].includes(form.role) && form.pin) body.pin = form.pin;
+      if (form.role === 'delivery_boy' && form.password) body.password = form.password;
       const res = await fetch('/api/business?module=users', {
         method: editUser ? 'PUT' : 'POST',
         headers: usersHeaders(true),
@@ -3134,17 +3139,19 @@ function UsersModule({ showMsg }: any) {
                 <option value="manager">Manager (reports + POS)</option>
                 <option value="associate">Associate (POS only)</option>
                 <option value="cashier">Cashier (checkout only)</option>
-                <option value="delivery_boy">Delivery Boy (delivery app + PIN)</option>
+                <option value="delivery_boy">Delivery Boy (delivery app + password)</option>
               </select>
             </div>
             <div>
-              <label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">Email {isPinRole ? '(optional)' : '*'}</label>
+              <label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">Email {isPinRole || isDeliveryBoyRole ? '(optional)' : '*'}</label>
               <input type="email" value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} placeholder="staff@tags.com"
                 className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none" />
             </div>
-            {!isPinRole && (
+            {(!isPinRole || isDeliveryBoyRole) && (
               <div>
-                <label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">Password {editUser ? '(leave blank to keep)' : '*'}</label>
+                <label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">
+                  Password {editUser ? '(leave blank to keep)' : '*'}{isDeliveryBoyRole ? ' — used for Staff Login' : ''}
+                </label>
                 <div className="relative">
                   <input type={showPass ? 'text' : 'password'} value={form.password} onChange={e => setForm(f => ({ ...f, password: e.target.value }))} placeholder="Min 6 characters"
                     className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none pr-10" />
