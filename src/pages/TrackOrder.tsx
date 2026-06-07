@@ -145,6 +145,12 @@ export default function TrackOrder() {
               {order.deliveredAt ? `Delivered on ${new Date(order.deliveredAt).toLocaleString('en-IN')}` : 'Your order has been delivered.'}
             </p>
             <p className="text-green-600 text-sm mt-1">Check your WhatsApp for confirmation.</p>
+            <button
+              onClick={() => navigate('/my-account')}
+              className="mt-4 inline-flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white text-sm font-bold px-5 py-2.5 rounded-xl transition"
+            >
+              ← Back to My Account
+            </button>
           </div>
         ) : (
           <div className="bg-blue-50 border border-blue-200 rounded-2xl p-5 text-center">
