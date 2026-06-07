@@ -49,13 +49,12 @@ export default async function handler(req, res) {
     if (module === 'auth') {
       const { action } = req.query;
 
-      // Email + password login (admin, manager)
+      // Email + password login (all roles)
       if (action === 'login' && req.method === 'POST') {
         const { email, password } = req.body;
         if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
         const user = await db.collection('users').findOne({ email: email.toLowerCase(), active: true });
         if (!user) return res.status(401).json({ error: 'Invalid credentials' });
-        if (!['admin', 'manager'].includes(user.role)) return res.status(403).json({ error: 'Use PIN login for your role' });
 
         // Support bcrypt hashed AND plain-text passwords (auto-migrate plain text to bcrypt)
         let valid = false;
@@ -95,15 +94,18 @@ export default async function handler(req, res) {
         return res.status(200).json({ token, user: { id: matched._id, name: matched.name, role: matched.role, allowedModules: matched.allowedModules || [] } });
       }
 
-      // Staff login by name + password (all roles — used by Staff Login modal on website)
+      // Staff login by username + password — used by POS login page for all non-admin roles
       if (action === 'staff-login' && req.method === 'POST') {
-        const { name, password } = req.body;
-        if (!name || !password) return res.status(400).json({ error: 'Name and password required' });
-        const user = await db.collection('users').findOne({
-          name: { $regex: new RegExp(`^${name.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') },
-          active: true,
-        });
-        if (!user) return res.status(401).json({ error: 'Name not found or account inactive' });
+        const { username, password } = req.body;
+        if (!username || !password) return res.status(400).json({ error: 'Username and password required' });
+        // username can be email or name
+        const isEmail = username.includes('@');
+        const user = await db.collection('users').findOne(
+          isEmail
+            ? { email: username.toLowerCase(), active: true }
+            : { name: { $regex: new RegExp(`^${username.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') }, active: true }
+        );
+        if (!user) return res.status(401).json({ error: 'Username not found or account inactive' });
         let valid = false;
         if (user.passwordHash && user.passwordHash.startsWith('$2')) {
           valid = await bcrypt.compare(password, user.passwordHash);
@@ -160,29 +162,46 @@ export default async function handler(req, res) {
       if (req.method === 'POST') {
         const auth = requireAuth(req, ['admin']);
         if (!auth) return res.status(403).json({ error: 'Admin access required' });
-        const { name, email, role, password, pin } = req.body;
+        const { name, email, role, password } = req.body;
         if (!name || !role) return res.status(400).json({ error: 'Name and role required' });
         const validRoles = ['admin', 'manager', 'associate', 'cashier', 'delivery_boy'];
         if (!validRoles.includes(role)) return res.status(400).json({ error: 'Invalid role' });
+
+        // Role-based default module permissions
+        const ROLE_DEFAULT_MODULES = {
+          admin:        [],
+          manager:      [],
+          associate:    ['orders', 'sales', 'customers'],
+          cashier:      ['sales', 'customers'],
+          delivery_boy: ['orders'],
+        };
+
         const { allowedModules } = req.body;
-        const doc = { name, role, active: true, createdAt: new Date(), updatedAt: new Date(), createdBy: auth.userId, allowedModules: Array.isArray(allowedModules) ? allowedModules : [] };
+        const resolvedModules = Array.isArray(allowedModules) && allowedModules.length > 0
+          ? allowedModules
+          : (ROLE_DEFAULT_MODULES[role] || []);
+
+        const doc = {
+          name, role, active: true,
+          createdAt: new Date(), updatedAt: new Date(), createdBy: auth.userId,
+          allowedModules: resolvedModules,
+        };
+
+        // All roles require a password
+        if (!password) return res.status(400).json({ error: 'Password is required for all users' });
+        if (password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' });
+        doc.passwordHash = await bcrypt.hash(password, 10);
+
         if (['admin', 'manager'].includes(role)) {
-          if (!email || !password) return res.status(400).json({ error: 'Email and password required for this role' });
+          if (!email) return res.status(400).json({ error: 'Email required for admin/manager' });
           const exists = await col.findOne({ email: email.toLowerCase() });
           if (exists) return res.status(400).json({ error: 'Email already in use' });
           doc.email = email.toLowerCase();
-          doc.passwordHash = await bcrypt.hash(password, 10);
-        }
-        if (['associate', 'cashier', 'delivery_boy'].includes(role)) {
-          if (!pin || String(pin).length < 4) return res.status(400).json({ error: '4-digit PIN required' });
-          doc.pinHash = await bcrypt.hash(String(pin), 10);
+        } else {
           if (email) doc.email = email.toLowerCase();
           if (req.body.phone) doc.phone = req.body.phone;
         }
-        // delivery_boy also gets a password for staff login
-        if (role === 'delivery_boy' && req.body.password) {
-          doc.passwordHash = await bcrypt.hash(req.body.password, 10);
-        }
+
         const result = await col.insertOne(doc);
         return res.status(201).json({ success: true, _id: result.insertedId });
       }
@@ -190,15 +209,14 @@ export default async function handler(req, res) {
       if (req.method === 'PUT') {
         const auth = requireAuth(req, ['admin']);
         if (!auth) return res.status(403).json({ error: 'Admin access required' });
-        const { id, name, email, role, active, password, pin, allowedModules: updModules } = req.body;
+        const { id, name, email, role, active, password, allowedModules: updModules } = req.body;
         if (!id) return res.status(400).json({ error: 'ID required' });
         const update = { updatedAt: new Date() };
         if (name) update.name = name;
         if (email) update.email = email.toLowerCase();
         if (role) update.role = role;
         if (typeof active === 'boolean') update.active = active;
-        if (password) update.passwordHash = await bcrypt.hash(password, 10);
-        if (pin) update.pinHash = await bcrypt.hash(String(pin), 10);
+        if (password && password.length >= 6) update.passwordHash = await bcrypt.hash(password, 10);
         if (Array.isArray(updModules)) update.allowedModules = updModules;
         await col.updateOne({ _id: new ObjectId(id) }, { $set: update });
         return res.status(200).json({ success: true });
