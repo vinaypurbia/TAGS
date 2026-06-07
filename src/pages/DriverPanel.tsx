@@ -198,14 +198,22 @@ export default function DriverPanel() {
                   </div>
 
                   {/* Amount */}
-                  <div className={`rounded-xl px-3 py-2 flex justify-between items-center ${isCOD(order) ? 'bg-amber-50' : 'bg-green-50'}`}>
-                    <span className="text-xs font-bold text-gray-600">
-                      {isCOD(order) ? '💵 Collect Cash' : '✅ Pre-paid'}
-                    </span>
-                    <span className={`font-black text-sm ${isCOD(order) ? 'text-amber-700' : 'text-green-700'}`}>
-                      {fmt(order.totalAmount)}
-                    </span>
-                  </div>
+                  {(() => {
+                    const cod = isCOD(order);
+                    const partial = Number((order as any).paidAmount || 0);
+                    const cashDue = cod ? order.totalAmount : Math.max(0, order.totalAmount - partial);
+                    const needsCash = cod || cashDue > 0;
+                    return (
+                      <div className={`rounded-xl px-3 py-2 flex justify-between items-center ${needsCash ? 'bg-amber-50' : 'bg-green-50'}`}>
+                        <span className="text-xs font-bold text-gray-600">
+                          {cod ? '💵 COD' : cashDue > 0 ? '💵 Partial — Collect Cash' : '✅ Pre-paid'}
+                        </span>
+                        <span className={`font-black text-sm ${needsCash ? 'text-amber-700' : 'text-green-700'}`}>
+                          {fmt(needsCash ? cashDue : order.totalAmount)}
+                        </span>
+                      </div>
+                    );
+                  })()}
 
                   {/* Action button */}
                   <Link to={`/deliver/${order._id}`}
