@@ -16,6 +16,10 @@ export function Layout({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
   const [searchQuery, setSearchQuery] = useState('');
   const [showStaffModal, setShowStaffModal] = useState(false);
+  const [staffForm, setStaffForm] = useState({ name: '', password: '' });
+  const [staffError, setStaffError] = useState('');
+  const [staffLoading, setStaffLoading] = useState(false);
+  const { login } = useAuth();
   const tickerRef = useRef<HTMLDivElement>(null);
 
   // Build promo lines from shared banner data
@@ -43,6 +47,32 @@ export function Layout({ children }: { children: ReactNode }) {
   };
 
   const mapsLink = `https://www.google.com/maps?q=24.58626748321101,73.68766945881869`;
+
+  async function handleStaffLogin() {
+    if (!staffForm.name.trim() || !staffForm.password) return;
+    setStaffLoading(true);
+    setStaffError('');
+    try {
+      const res = await fetch('/api/business?module=auth&action=staff-login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: staffForm.name.trim(), password: staffForm.password }),
+      });
+      const data = await res.json();
+      if (!res.ok) { setStaffError(data.error || 'Login failed'); return; }
+      login(data.token, data.user);
+      setShowStaffModal(false);
+      setStaffForm({ name: '', password: '' });
+      // Redirect based on role
+      if (data.user.role === 'delivery_boy') navigate('/driver');
+      else if (data.user.role === 'admin' || data.user.role === 'manager') navigate('/admin');
+      else navigate('/pos');
+    } catch {
+      setStaffError('Network error. Please try again.');
+    } finally {
+      setStaffLoading(false);
+    }
+  }
 
   return (
     <div className="min-h-screen flex flex-col max-w-[1200px] mx-auto bg-[#F5F5F5] shadow-2xl relative">
@@ -231,7 +261,7 @@ export function Layout({ children }: { children: ReactNode }) {
       {/* ── Staff Login Modal ─────────────────────────────────────────────── */}
       {showStaffModal && (
         <div className="fixed inset-0 z-[9999] flex items-end justify-center bg-black/60 px-4 pb-6"
-          onClick={() => setShowStaffModal(false)}>
+          onClick={() => { setShowStaffModal(false); setStaffError(''); setStaffForm({ name: '', password: '' }); }}>
           <div className="bg-[#1A1A1A] rounded-2xl w-full max-w-sm p-6 space-y-4"
             onClick={e => e.stopPropagation()}>
 
@@ -241,42 +271,47 @@ export function Layout({ children }: { children: ReactNode }) {
                 <Lock className="w-4 h-4 text-[#FA5600]" />
                 <p className="font-black text-white text-sm uppercase tracking-widest">Staff Login</p>
               </div>
-              <button onClick={() => setShowStaffModal(false)}
+              <button onClick={() => { setShowStaffModal(false); setStaffError(''); setStaffForm({ name: '', password: '' }); }}
                 className="text-white/30 hover:text-white/60 text-lg leading-none">✕</button>
             </div>
 
-            <p className="text-white/40 text-xs">Choose your login type below.</p>
+            {/* Name field */}
+            <div>
+              <label className="block text-[10px] font-black uppercase tracking-widest text-white/40 mb-1.5">Your Name</label>
+              <input
+                type="text"
+                value={staffForm.name}
+                onChange={e => { setStaffForm(f => ({ ...f, name: e.target.value })); setStaffError(''); }}
+                placeholder="e.g. Pradeep"
+                className="w-full bg-white/10 border-2 border-white/10 focus:border-[#FA5600] rounded-xl px-4 py-3 text-white text-sm font-bold outline-none placeholder-white/20 transition"
+              />
+            </div>
 
-            {/* PIN Login — for Delivery Boy, Associate, Cashier */}
-            <button
-              onClick={() => { setShowStaffModal(false); navigate('/pos-login'); }}
-              className="w-full bg-white/10 hover:bg-[#FA5600] text-white rounded-xl px-4 py-4 text-left transition-all group"
-            >
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 bg-white/10 group-hover:bg-white/20 rounded-xl flex items-center justify-center text-xl shrink-0">
-                  🔢
-                </div>
-                <div>
-                  <p className="font-black text-sm">PIN Login</p>
-                  <p className="text-white/50 text-xs mt-0.5">Delivery Boy · Associate · Cashier</p>
-                </div>
-              </div>
-            </button>
+            {/* Password field */}
+            <div>
+              <label className="block text-[10px] font-black uppercase tracking-widest text-white/40 mb-1.5">Password</label>
+              <input
+                type="password"
+                value={staffForm.password}
+                onChange={e => { setStaffForm(f => ({ ...f, password: e.target.value })); setStaffError(''); }}
+                placeholder="••••••••"
+                onKeyDown={async e => { if (e.key === 'Enter') await handleStaffLogin(); }}
+                className="w-full bg-white/10 border-2 border-white/10 focus:border-[#FA5600] rounded-xl px-4 py-3 text-white text-sm font-bold outline-none placeholder-white/20 transition"
+              />
+            </div>
 
-            {/* Email Login — for Admin, Manager */}
+            {/* Error */}
+            {staffError && (
+              <p className="text-red-400 text-xs font-bold">{staffError}</p>
+            )}
+
+            {/* Login button */}
             <button
-              onClick={() => { setShowStaffModal(false); navigate('/login'); }}
-              className="w-full bg-white/10 hover:bg-[#FA5600] text-white rounded-xl px-4 py-4 text-left transition-all group"
+              onClick={handleStaffLogin}
+              disabled={staffLoading || !staffForm.name || !staffForm.password}
+              className="w-full bg-[#FA5600] hover:bg-[#E04A00] disabled:bg-white/10 disabled:text-white/30 text-white font-black text-sm uppercase tracking-widest py-3.5 rounded-xl transition"
             >
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 bg-white/10 group-hover:bg-white/20 rounded-xl flex items-center justify-center text-xl shrink-0">
-                  📧
-                </div>
-                <div>
-                  <p className="font-black text-sm">Email Login</p>
-                  <p className="text-white/50 text-xs mt-0.5">Admin · Manager</p>
-                </div>
-              </div>
+              {staffLoading ? 'Signing in...' : 'Sign In'}
             </button>
 
           </div>
