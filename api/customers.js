@@ -496,6 +496,23 @@ export default async function handler(req, res) {
             await sales.updateOne({ orderId: order.orderId }, { $set: { status: 'delivered', deliveredAt: new Date(), updatedAt: new Date() } });
           }
           await driverLoc.deleteOne({ orderId: locationKey });
+          // ── Write delivery_collection so Settle button appears on dashboard ─
+          if (collectedAmt > 0) {
+            await cashFlow.insertOne({
+              type: 'income',
+              category: 'delivery_collection',
+              amount: collectedAmt,
+              description: `Cash collected – Order ${order.orderId || id} (${order.customerName})`,
+              paymentMode: collectMode,
+              collectedBy: 'delivery_boy',
+              collectorName: driverName || '',
+              orderId: order.orderId || id,
+              referenceId: id,
+              referenceType: 'order_delivery',
+              date: new Date(),
+              createdAt: new Date(),
+            });
+          }
           // ── EMAIL: delivered ──────────────────────────────────────────────
           if (order.customerEmail) {
             sendOrderEmail(order.customerEmail, order.customerName, 'delivered', {
