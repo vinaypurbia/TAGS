@@ -77,7 +77,7 @@ export default async function handler(req, res) {
         if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
         const token = signToken({ userId: user._id.toString(), name: user.name, email: user.email, role: user.role });
         await db.collection('users').updateOne({ _id: user._id }, { $set: { lastLogin: new Date() } });
-        return res.status(200).json({ token, user: { id: user._id, name: user.name, email: user.email, role: user.role } });
+        return res.status(200).json({ token, user: { id: user._id, name: user.name, email: user.email, role: user.role, allowedModules: user.allowedModules || [] } });
       }
 
       // PIN login (associate, cashier)
@@ -92,7 +92,7 @@ export default async function handler(req, res) {
         if (!matched) return res.status(401).json({ error: 'Invalid PIN' });
         const token = signToken({ userId: matched._id.toString(), name: matched.name, role: matched.role });
         await db.collection('users').updateOne({ _id: matched._id }, { $set: { lastLogin: new Date() } });
-        return res.status(200).json({ token, user: { id: matched._id, name: matched.name, role: matched.role } });
+        return res.status(200).json({ token, user: { id: matched._id, name: matched.name, role: matched.role, allowedModules: matched.allowedModules || [] } });
       }
 
       // Staff login by name + password (all roles — used by Staff Login modal on website)
@@ -117,7 +117,7 @@ export default async function handler(req, res) {
         if (!valid) return res.status(401).json({ error: 'Incorrect password' });
         const token = signToken({ userId: user._id.toString(), name: user.name, email: user.email, role: user.role });
         await db.collection('users').updateOne({ _id: user._id }, { $set: { lastLogin: new Date() } });
-        return res.status(200).json({ token, user: { id: user._id, name: user.name, email: user.email, role: user.role } });
+        return res.status(200).json({ token, user: { id: user._id, name: user.name, email: user.email, role: user.role, allowedModules: user.allowedModules || [] } });
       }
 
       // Verify token
@@ -164,7 +164,8 @@ export default async function handler(req, res) {
         if (!name || !role) return res.status(400).json({ error: 'Name and role required' });
         const validRoles = ['admin', 'manager', 'associate', 'cashier', 'delivery_boy'];
         if (!validRoles.includes(role)) return res.status(400).json({ error: 'Invalid role' });
-        const doc = { name, role, active: true, createdAt: new Date(), updatedAt: new Date(), createdBy: auth.userId };
+        const { allowedModules } = req.body;
+        const doc = { name, role, active: true, createdAt: new Date(), updatedAt: new Date(), createdBy: auth.userId, allowedModules: Array.isArray(allowedModules) ? allowedModules : [] };
         if (['admin', 'manager'].includes(role)) {
           if (!email || !password) return res.status(400).json({ error: 'Email and password required for this role' });
           const exists = await col.findOne({ email: email.toLowerCase() });
@@ -189,7 +190,7 @@ export default async function handler(req, res) {
       if (req.method === 'PUT') {
         const auth = requireAuth(req, ['admin']);
         if (!auth) return res.status(403).json({ error: 'Admin access required' });
-        const { id, name, email, role, active, password, pin } = req.body;
+        const { id, name, email, role, active, password, pin, allowedModules: updModules } = req.body;
         if (!id) return res.status(400).json({ error: 'ID required' });
         const update = { updatedAt: new Date() };
         if (name) update.name = name;
@@ -198,6 +199,7 @@ export default async function handler(req, res) {
         if (typeof active === 'boolean') update.active = active;
         if (password) update.passwordHash = await bcrypt.hash(password, 10);
         if (pin) update.pinHash = await bcrypt.hash(String(pin), 10);
+        if (Array.isArray(updModules)) update.allowedModules = updModules;
         await col.updateOne({ _id: new ObjectId(id) }, { $set: update });
         return res.status(200).json({ success: true });
       }
