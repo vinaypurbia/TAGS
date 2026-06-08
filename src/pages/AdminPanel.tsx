@@ -11,7 +11,7 @@ import {
   Lock, LogOut, Megaphone, Image, Tag, Package, FolderTree,
   Save, Check, Trash2, Eye, Upload, BarChart2,
   LayoutDashboard, ShoppingBag, Menu, X,
-  TrendingUp, TrendingDown, Users, AlertTriangle, DollarSign,
+  TrendingUp, TrendingDown, Users, AlertTriangle, DollarSign, IndianRupee,
   KeyRound, EyeOff, MessageSquare, Pencil, Database, Send, Radio, Copy,
 } from 'lucide-react';
 
@@ -374,7 +374,7 @@ export function AdminPanel() {
     ]).then(([sales, cash, stockShortage, customers, inventory, pendingSales, ordersData]) => {
       const invArr = Array.isArray(inventory) ? inventory : (inventory?.inventory || inventory?.items || []);
       setDashStats({
-        revenue:       sales?.summary?.totalRevenue  || 0,
+        revenue:       cash?.summary?.revenue       || 0,
         orders:        sales?.summary?.totalOrders   || 0,
         profit:        cash?.summary?.profit         || 0,
         expense:       cash?.summary?.expense        || 0,
@@ -838,7 +838,7 @@ export function AdminPanel() {
                     { label: 'Revenue',    value: `₹${Number(dashStats?.revenue  || 0).toLocaleString('en-IN')}`, icon: TrendingUp,   color: 'bg-green-50 text-green-600',   border: 'border-green-100' },
                     { label: 'Orders',     value: String(dashStats?.orders  || 0),                                 icon: ShoppingBag,  color: 'bg-blue-50 text-blue-600',     border: 'border-blue-100' },
                     { label: 'Customers',  value: String(dashStats?.customers || 0),                               icon: Users,        color: 'bg-purple-50 text-purple-600', border: 'border-purple-100' },
-                    { label: 'Net Profit', value: `₹${Number(dashStats?.profit   || 0).toLocaleString('en-IN')}`, icon: DollarSign,   color: 'bg-orange-50 text-[#FA5600]',  border: 'border-orange-100' },
+                    { label: 'Net Profit', value: `₹${Number(dashStats?.profit   || 0).toLocaleString('en-IN')}`, icon: IndianRupee,   color: 'bg-orange-50 text-[#FA5600]',  border: 'border-orange-100' },
                   ].map(card => (
                     <div key={card.label} className={`bg-white rounded-2xl p-5 border ${card.border} shadow-sm`}>
                       <div className={`w-10 h-10 rounded-xl flex items-center justify-center mb-3 ${card.color}`}>
