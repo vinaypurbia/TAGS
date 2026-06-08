@@ -597,8 +597,6 @@ export function AdminPanel() {
           date: new Date().toISOString(),
         }),
       });
-      // Mark delivery_collection entries for this collector as settled
-      await fetch('/api/cashflow', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ markSettled: true, collectedBy: collector.collectedBy, collectorName: collector.collectorName || null }) });
       setSettleModal({ open: false, collector: null, amount: '', paymentMode: 'cash', submitting: false });
       fetchCollectorBalances();
     } catch {
