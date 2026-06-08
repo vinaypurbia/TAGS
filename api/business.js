@@ -351,12 +351,15 @@ export default async function handler(req, res) {
         // ── ALL-TIME entries for cash position (no date filter) ──────────────
         const allEntries = await col.find({}).toArray();
 
-        // Collectors who have a cash_settled entry = their delivery_collection entries are settled
-        const settledCollectors = new Set(
-          allEntries.filter(e => e.category === 'cash_settled' && e.collectedBy).map(e => e.collectedBy)
-        );
-        const isSettledDelivery = (e) => e.category !== 'delivery_collection' || settledCollectors.has(e.collectedBy);
 
+        // A delivery_collection is settled if admin has a cash_settled entry for that
+        // collector AFTER the delivery date (settle always happens after collection).
+        const cashSettledEntries = allEntries.filter(e => e.category === 'cash_settled' && e.collectedBy);
+        const isSettledDelivery = (e) => {
+          if (e.category !== 'delivery_collection') return true;
+          const deliveryDate = new Date(e.date).getTime();
+          return cashSettledEntries.some(s => s.collectedBy === e.collectedBy && new Date(s.date).getTime() >= deliveryDate);
+        };
         // ── PROPER 3-TIER P&L ────────────────────────────────────────────────
         // Excluded from P&L: financing (capital/loans), inventory_asset (PO balance payments),
         // advance_payment + supplier_payment (PO advance payments) — inventory cost is already
