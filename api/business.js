@@ -360,6 +360,11 @@ export default async function handler(req, res) {
           const deliveryDate = new Date(e.date).getTime();
           return cashSettledEntries.some(s => s.collectedBy === e.collectedBy && new Date(s.date).getTime() >= deliveryDate);
         };
+        // Build set of unsettled order referenceIds so COGS for those orders is also excluded
+        const unsettledOrderRefs = new Set(
+          allEntries.filter(e => e.category === 'delivery_collection' && !isSettledDelivery(e) && e.referenceId)
+            .map(e => String(e.referenceId))
+        );
         // ── PROPER 3-TIER P&L ────────────────────────────────────────────────
         // Excluded from P&L: financing (capital/loans), inventory_asset (PO balance payments),
         // advance_payment + supplier_payment (PO advance payments) — inventory cost is already
@@ -373,7 +378,7 @@ export default async function handler(req, res) {
 
         // COGS = cost of goods sold per sale
         const cogs = entries
-          .filter(e => e.type === 'expense' && e.category === 'cogs')
+          .filter(e => e.type === 'expense' && e.category === 'cogs' && !unsettledOrderRefs.has(String(e.referenceId)))
           .reduce((s, e) => s + e.amount, 0);
 
         // Gross Profit = Revenue - COGS
