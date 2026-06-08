@@ -359,7 +359,7 @@ export default async function handler(req, res) {
 
         // Revenue = sales income only (filtered period)
         const revenue = entries
-          .filter(e => e.type === 'income' && (e.category === 'sales' || (e.category === 'delivery_collection' && e.isSettled === true)))
+          .filter(e => e.type === 'income' && (e.category === 'sales' || e.category === 'delivery_collection'))
           .reduce((s, e) => s + e.amount, 0);
 
         // COGS = cost of goods sold per sale
@@ -390,7 +390,7 @@ export default async function handler(req, res) {
         const CASH_MODES = ['cash', 'upi', null, undefined, ''];
         const CASH_EXCLUDE_CATS = ['financing', 'cash_settled', 'cash_handover', 'owner_deposit'];
         const cashIn  = allEntries
-          .filter(e => e.type === 'income'  && CASH_MODES.includes(e.paymentMode) && !CASH_EXCLUDE_CATS.includes(e.category) && (e.category !== 'delivery_collection' || e.isSettled === true))
+          .filter(e => e.type === 'income'  && CASH_MODES.includes(e.paymentMode) && !CASH_EXCLUDE_CATS.includes(e.category))
           .reduce((s, e) => s + e.amount, 0);
         const cashOut = allEntries
           .filter(e => e.type === 'expense' && CASH_MODES.includes(e.paymentMode) && e.category !== 'financing' && e.category !== 'cogs')
@@ -421,10 +421,9 @@ export default async function handler(req, res) {
         const cashAtBank = Math.max(0, bankIn + finBankIn - bankOut - finBankOut);
 
         // Exclude internal transfer categories from visible entries
-        const CF_HIDDEN = ['cogs', 'cash_settled', 'cash_handover', 'owner_deposit'];
-        // For the list: show delivery_collection only if settled
+        const CF_HIDDEN = ['cogs', 'cash_settled', 'cash_handover', 'owner_deposit', 'delivery_collection'];
         return res.status(200).json({
-          entries: entries.filter(e => !CF_HIDDEN.includes(e.category) && (e.category !== 'delivery_collection' || e.isSettled === true)),
+          entries: entries.filter(e => !CF_HIDDEN.includes(e.category)),
           summary: {
             income:           operatingIncome,
             revenue,
