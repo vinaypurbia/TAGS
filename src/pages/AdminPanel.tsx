@@ -382,7 +382,7 @@ export function AdminPanel() {
         customers:     Array.isArray(customers) ? customers.length : (customers?.summary?.totalCustomers || customers?.length || 0),
         totalProducts: invArr.length,
         inStock:       invArr.filter((p: any) => (p.availableStock ?? p.stock?.availableStock ?? 0) > 0).length,
-        outOfStock:    invArr.filter((p: any) => (p.availableStock ?? p.stock?.availableStock ?? 0) === 0).length,
+        outOfStock:    invArr.filter((p: any) => (p.availableStock ?? p.stock?.availableStock ?? 0) <= 0).length,
       });
       setShortage(Array.isArray(stockShortage) ? stockShortage : []);
       // Pending sales (not yet confirmed) + confirmed orders (confirmed but not delivered)
