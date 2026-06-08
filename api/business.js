@@ -351,6 +351,12 @@ export default async function handler(req, res) {
         // ── ALL-TIME entries for cash position (no date filter) ──────────────
         const allEntries = await col.find({}).toArray();
 
+        // Collectors who have a cash_settled entry = their delivery_collection entries are settled
+        const settledCollectors = new Set(
+          allEntries.filter(e => e.category === 'cash_settled' && e.collectedBy).map(e => e.collectedBy)
+        );
+        const isSettledDelivery = (e) => e.category !== 'delivery_collection' || settledCollectors.has(e.collectedBy);
+
         // ── PROPER 3-TIER P&L ────────────────────────────────────────────────
         // Excluded from P&L: financing (capital/loans), inventory_asset (PO balance payments),
         // advance_payment + supplier_payment (PO advance payments) — inventory cost is already
@@ -359,7 +365,7 @@ export default async function handler(req, res) {
 
         // Revenue = sales income only (filtered period)
         const revenue = entries
-          .filter(e => e.type === 'income' && (e.category === 'sales' || e.category === 'delivery_collection'))
+          .filter(e => e.type === 'income' && (e.category === 'sales' || e.category === 'delivery_collection') && isSettledDelivery(e))
           .reduce((s, e) => s + e.amount, 0);
 
         // COGS = cost of goods sold per sale
@@ -390,7 +396,7 @@ export default async function handler(req, res) {
         const CASH_MODES = ['cash', 'upi', null, undefined, ''];
         const CASH_EXCLUDE_CATS = ['financing', 'cash_settled', 'cash_handover', 'owner_deposit'];
         const cashIn  = allEntries
-          .filter(e => e.type === 'income'  && CASH_MODES.includes(e.paymentMode) && !CASH_EXCLUDE_CATS.includes(e.category))
+          .filter(e => e.type === 'income'  && CASH_MODES.includes(e.paymentMode) && !CASH_EXCLUDE_CATS.includes(e.category) && isSettledDelivery(e))
           .reduce((s, e) => s + e.amount, 0);
         const cashOut = allEntries
           .filter(e => e.type === 'expense' && CASH_MODES.includes(e.paymentMode) && e.category !== 'financing' && e.category !== 'cogs')
@@ -421,9 +427,9 @@ export default async function handler(req, res) {
         const cashAtBank = Math.max(0, bankIn + finBankIn - bankOut - finBankOut);
 
         // Exclude internal transfer categories from visible entries
-        const CF_HIDDEN = ['cogs', 'cash_settled', 'cash_handover', 'owner_deposit', 'delivery_collection'];
+        const CF_HIDDEN = ['cogs', 'cash_settled', 'cash_handover', 'owner_deposit'];
         return res.status(200).json({
-          entries: entries.filter(e => !CF_HIDDEN.includes(e.category)),
+          entries: entries.filter(e => !CF_HIDDEN.includes(e.category) && isSettledDelivery(e)),
           summary: {
             income:           operatingIncome,
             revenue,
