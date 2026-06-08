@@ -159,14 +159,6 @@ export default async function handler(req, res) {
     }
 
     if (req.method === 'PUT') {
-      if (req.body.markSettled) {
-        const { collectedBy, collectorName } = req.body;
-        await cashFlow.updateMany(
-          { category: 'delivery_collection', collectedBy, isSettled: { $ne: true } },
-          { $set: { isSettled: true } }
-        );
-        return res.status(200).json({ success: true });
-      }
       const { id, ...updateData } = req.body;
       if (!id) return res.status(400).json({ error: 'id is required' });
       delete updateData._id;
