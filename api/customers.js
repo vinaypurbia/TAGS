@@ -700,7 +700,12 @@ export default async function handler(req, res) {
       if (req.method === 'DELETE') {
         const { id } = req.body;
         if (!id) return res.status(400).json({ error: 'ID required' });
+        const orderToDelete = await ordersCol.findOne({ _id: new ObjectId(id) });
         await ordersCol.deleteOne({ _id: new ObjectId(id) });
+        if (orderToDelete) {
+          const oid = orderToDelete.orderId || id;
+          await sales.deleteOne({ $or: [{ orderId: oid }, { orderId: id }, { saleNumber: oid }] });
+        }
         return res.status(200).json({ success: true });
       }
 
