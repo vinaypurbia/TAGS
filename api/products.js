@@ -19,7 +19,10 @@ async function ensureCloudinaryImage(url) {
   try {
     const result = await cloudinary.uploader.upload(url, {
       folder: 'tags-products',
-      transformation: [{ width: 800, height: 800, crop: 'limit', quality: 'auto' }],
+      format: 'webp',
+      transformation: [{ width: 1000, height: 1000, crop: 'limit', quality: 'auto:low', strip_metadata: true }],
+      unique_filename: true,
+      invalidate: true,
     });
     return result.secure_url;
   } catch (err) {
@@ -558,6 +561,26 @@ export default async function handler(req, res) {
 
       // Always clean up inventory record when product is deleted
       await inventory.deleteOne({ productId: id });
+
+      // ── Delete image from Cloudinary to free up storage ──────────────────
+      // Extract the public_id from the Cloudinary URL and delete it.
+      // We do this silently — if it fails, product is still deleted from DB.
+      try {
+        const imageUrl = existing?.image || existing?.imageUrl || '';
+        if (imageUrl && imageUrl.includes('res.cloudinary.com')) {
+          // Extract public_id from URL:
+          // e.g. https://res.cloudinary.com/dz29qwajh/image/upload/v123/tags-products/img_abc.webp
+          // → public_id = tags-products/img_abc
+          const match = imageUrl.match(/\/upload\/(?:v\d+\/)?(.+?)(?:\.[^.]+)?$/);
+          if (match && match[1]) {
+            await cloudinary.uploader.destroy(match[1], { invalidate: true });
+            console.log('Cloudinary image deleted:', match[1]);
+          }
+        }
+      } catch (cloudErr) {
+        // Don't fail the delete if Cloudinary cleanup fails
+        console.error('Cloudinary delete failed (product still deleted):', cloudErr.message);
+      }
 
       try {
         if (existing?.metaId) await deleteProductFromMeta(existing.metaId);
