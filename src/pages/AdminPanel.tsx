@@ -2228,9 +2228,25 @@ function BroadcastSection() {
   const categories = ['All', ...Array.from(new Set(products.map((p:any) => p.category || '').filter(Boolean))).sort()];
 
   useEffect(() => {
-    fetch('/api/products?limit=200&adminView=true')
-      .then(r => r.json())
-      .then(d => setProducts(d.products || []))
+    // NOTE: the API caps `limit` at 100 per request, so a single fetch
+    // silently drops anything past product #100 (sorted newest-first).
+    // Page through every page until the API says there's no more.
+    async function fetchAllProducts() {
+      let all: any[] = [];
+      let page = 1;
+      let hasMore = true;
+      while (hasMore) {
+        const r = await fetch(`/api/products?page=${page}&limit=100&adminView=true`);
+        const d = await r.json();
+        all = all.concat(d.products || []);
+        hasMore = !!d.hasMore;
+        page++;
+      }
+      return all;
+    }
+
+    fetchAllProducts()
+      .then(all => setProducts(all))
       .catch(() => {})
       .finally(() => setLoading(false));
   }, []);
