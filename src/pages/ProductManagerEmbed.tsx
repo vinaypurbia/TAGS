@@ -544,16 +544,28 @@ export function ProductManagerEmbed() {
   const [showAdd, setShowAdd] = useState(false);
 
   useEffect(() => {
+    // NOTE: the API caps `limit` at 100 per request no matter what we ask for,
+    // so a single fetch (even with limit=1000) silently drops any product
+    // past #100 in the newest-first sort. Page through until hasMore is false.
+    async function fetchAllProducts() {
+      let all: any[] = [];
+      let page = 1;
+      let hasMore = true;
+      while (hasMore) {
+        const r = await fetch(`/api/products?page=${page}&limit=100&adminView=true`);
+        const d = await r.json().catch(() => ({}));
+        const batch = Array.isArray(d) ? d : Array.isArray(d?.products) ? d.products : [];
+        all = all.concat(batch);
+        hasMore = Array.isArray(d) ? false : !!d?.hasMore;
+        page++;
+      }
+      return all;
+    }
+
     Promise.all([
-      fetch('/api/products?limit=1000').then(r => r.json()).catch(() => ({})),
+      fetchAllProducts().catch(() => []),
       fetch('/api/categories').then(r => r.json()).catch(() => []),
-    ]).then(([productsData, cats]) => {
-      // API returns paginated envelope { products, hasMore, total } — unwrap it
-      const productList = Array.isArray(productsData)
-        ? productsData
-        : Array.isArray(productsData?.products)
-        ? productsData.products
-        : [];
+    ]).then(([productList, cats]) => {
       setAllProducts(productList);
       setCategories(Array.isArray(cats) ? cats : []);
       setLoading(false);
