@@ -369,10 +369,6 @@ export default async function handler(req, res) {
       }
 
       // ── PAGINATED product list ─────────────────────────────────
-      const pageNum  = Math.max(1, parseInt(page  || '1',  10));
-      const pageSize = Math.min(100, Math.max(1, parseInt(limit || '20', 10)));
-      const skip     = (pageNum - 1) * pageSize;
-
       const mongoFilter = {};
       if (category && category !== '') mongoFilter.category = category;
       if (subcategory && subcategory.trim() !== '') {
@@ -390,12 +386,33 @@ export default async function handler(req, res) {
 
       const total = await collection.countDocuments(mongoFilter);
 
-      const products = await collection
-        .find(mongoFilter)
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(pageSize)
-        .toArray();
+      // FIX: a search query (e.g. the PO item picker) should never be capped
+      // at 100 — it needs to be able to find ANY product in the catalog, no
+      // matter how deep in the list it sits. Only apply page/limit pagination
+      // when the caller is browsing a plain list (no search term). When a
+      // search term is present, return every match, uncapped.
+      let products, pageNum, pageSize;
+      if (search && search.trim() !== '') {
+        pageNum = 1;
+        products = await collection
+          .find(mongoFilter)
+          .sort({ createdAt: -1 })
+          .toArray();
+        pageSize = products.length;
+      } else {
+        pageNum  = Math.max(1, parseInt(page || '1', 10));
+        // Raised the hard cap from 100 → 1000. Still bounded so a rogue
+        // request can't pull the whole DB into memory, but well above any
+        // realistic catalog size for the plain (non-search) list view.
+        pageSize = Math.min(1000, Math.max(1, parseInt(limit || '20', 10)));
+        const skip = (pageNum - 1) * pageSize;
+        products = await collection
+          .find(mongoFilter)
+          .sort({ createdAt: -1 })
+          .skip(skip)
+          .limit(pageSize)
+          .toArray();
+      }
 
       // Always enrich with live inventory data
       const enriched = await Promise.all(
@@ -412,7 +429,7 @@ export default async function handler(req, res) {
         page: pageNum,
         limit: pageSize,
         total,
-        hasMore: skip + products.length < total,
+        hasMore: (search && search.trim() !== '') ? false : (pageNum * pageSize) < total,
       });
     }
 
