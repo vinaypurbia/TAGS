@@ -520,21 +520,76 @@ function EditModal({
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 // ─── Dedupe Modal ────────────────────────────────────────────────────────────
-// Preview → confirm → delete flow for /api/products?dedupe=preview|true
+// Preview → pick which copy to keep per group → confirm → delete.
+// Preview: GET /api/products?dedupe=preview
+// Delete:  POST /api/products?dedupeConfirm=true  body: { ids: string[] }
+
+interface DedupeProduct {
+  _id: string;
+  name: string;
+  category?: string;
+  subcategory?: string;
+  image?: string;
+  imageUrl?: string;
+  imageUrls?: string[];
+  originalPrice?: number | string;
+  discountedPrice?: number | string;
+  description?: string;
+  createdAt?: string;
+  score: number;
+}
 
 interface DedupeGroup {
   name: string;
   category: string;
   count: number;
-  keepId: string;
-  deleteIds: string[];
+  recommendedKeepId: string;
+  products: DedupeProduct[];
+}
+
+function DedupeProductCard({ product, isKeep, onClick }: { product: DedupeProduct; isKeep: boolean; onClick: () => void }) {
+  const img = product.imageUrl || product.image || product.imageUrls?.[0] || null;
+  const price = Number(product.discountedPrice || product.originalPrice) || 0;
+  const missingImage = !img;
+  const missingDesc = !product.description || !product.description.trim();
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`text-left rounded-xl border-2 p-2 w-32 shrink-0 transition
+        ${isKeep ? 'border-green-400 bg-green-50' : 'border-gray-200 bg-white hover:border-red-300'}`}>
+      <div className="relative aspect-square rounded-lg overflow-hidden bg-gray-100 mb-1.5">
+        {img ? (
+          <img src={img} alt={product.name} className="w-full h-full object-cover" />
+        ) : (
+          <div className="w-full h-full flex items-center justify-center text-gray-300">
+            <ImageIcon className="w-5 h-5" />
+          </div>
+        )}
+        <span className={`absolute top-1 left-1 text-[8px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded-full
+          ${isKeep ? 'bg-green-500 text-white' : 'bg-gray-900/70 text-white'}`}>
+          {isKeep ? 'Keep' : 'Delete'}
+        </span>
+      </div>
+      <p className="text-[11px] font-black text-gray-900 truncate">{product.name}</p>
+      <p className="text-[10px] font-bold text-gray-500">{price > 0 ? `₹${price.toLocaleString('en-IN')}` : 'No price'}</p>
+      {(missingImage || missingDesc) && (
+        <div className="flex flex-wrap gap-1 mt-1">
+          {missingImage && <span className="text-[8px] font-bold text-red-500 bg-red-50 px-1 rounded">No image</span>}
+          {missingDesc && <span className="text-[8px] font-bold text-orange-500 bg-orange-50 px-1 rounded">No desc</span>}
+        </div>
+      )}
+    </button>
+  );
 }
 
 function DedupeModal({ onClose, onDeleted }: { onClose: () => void; onDeleted: (ids: string[]) => void }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [groups, setGroups] = useState<DedupeGroup[]>([]);
-  const [totalToDelete, setTotalToDelete] = useState(0);
+  // groupIndex -> product _id currently selected to KEEP for that group
+  const [selections, setSelections] = useState<Record<number, string>>({});
   const [running, setRunning] = useState(false);
   const [done, setDone] = useState<{ deletedCount: number } | null>(null);
 
@@ -546,8 +601,12 @@ function DedupeModal({ onClose, onDeleted }: { onClose: () => void; onDeleted: (
         const d = await r.json();
         if (cancelled) return;
         if (!r.ok || !d.success) throw new Error(d.error || 'Preview failed');
-        setGroups(d.groups || []);
-        setTotalToDelete(d.totalToDelete || 0);
+        const loadedGroups: DedupeGroup[] = d.groups || [];
+        setGroups(loadedGroups);
+        // default: keep whichever copy the backend recommends (most complete data)
+        const initial: Record<number, string> = {};
+        loadedGroups.forEach((g, i) => { initial[i] = g.recommendedKeepId; });
+        setSelections(initial);
       } catch (e: any) {
         if (!cancelled) setError(e.message || 'Could not load duplicates.');
       } finally {
@@ -557,17 +616,27 @@ function DedupeModal({ onClose, onDeleted }: { onClose: () => void; onDeleted: (
     return () => { cancelled = true; };
   }, []);
 
+  const totalToDelete = groups.reduce((sum, g) => sum + (g.count - 1), 0);
+
   const handleConfirm = async () => {
-    if (!confirm(`Delete ${totalToDelete} duplicate product${totalToDelete === 1 ? '' : 's'}? This cannot be undone.`)) return;
+    const idsToDelete = groups.flatMap((g, i) =>
+      g.products.map(p => p._id).filter(id => id !== selections[i])
+    );
+    if (idsToDelete.length === 0) return;
+    if (!confirm(`Delete ${idsToDelete.length} duplicate product${idsToDelete.length === 1 ? '' : 's'}? This cannot be undone.`)) return;
+
     setRunning(true);
     setError('');
     try {
-      const r = await fetch('/api/products?dedupe=true');
+      const r = await fetch('/api/products?dedupeConfirm=true', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: idsToDelete }),
+      });
       const d = await r.json();
       if (!r.ok || !d.success) throw new Error(d.error || 'Delete failed');
-      const allDeletedIds = groups.flatMap(g => g.deleteIds);
-      onDeleted(allDeletedIds);
-      setDone({ deletedCount: d.deletedCount ?? allDeletedIds.length });
+      onDeleted(idsToDelete);
+      setDone({ deletedCount: d.deletedCount ?? idsToDelete.length });
     } catch (e: any) {
       setError(e.message || 'Could not delete duplicates.');
     } finally {
@@ -578,7 +647,7 @@ function DedupeModal({ onClose, onDeleted }: { onClose: () => void; onDeleted: (
   return createPortal(
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative w-full max-w-lg bg-white rounded-2xl shadow-2xl flex flex-col max-h-[85vh] overflow-hidden">
+      <div className="relative w-full max-w-2xl bg-white rounded-2xl shadow-2xl flex flex-col max-h-[85vh] overflow-hidden">
 
         {/* Header */}
         <div className="flex items-center gap-3 px-5 py-4 border-b border-gray-100 shrink-0">
@@ -587,7 +656,7 @@ function DedupeModal({ onClose, onDeleted }: { onClose: () => void; onDeleted: (
           </div>
           <div className="flex-1 min-w-0">
             <p className="text-sm font-black text-gray-900">Remove Duplicate Products</p>
-            <p className="text-xs text-gray-400 font-bold">Matches on name + category</p>
+            <p className="text-xs text-gray-400 font-bold">Tap a card to choose which copy to keep</p>
           </div>
           <button onClick={onClose} className="w-8 h-8 flex items-center justify-center rounded-xl hover:bg-gray-100 text-gray-500 transition">
             <X className="w-4 h-4" />
@@ -616,7 +685,7 @@ function DedupeModal({ onClose, onDeleted }: { onClose: () => void; onDeleted: (
                 <Check className="w-6 h-6" />
               </div>
               <p className="text-sm font-black text-gray-900">Removed {done.deletedCount} duplicate{done.deletedCount === 1 ? '' : 's'}</p>
-              <p className="text-xs text-gray-400 font-bold">The oldest copy of each product was kept.</p>
+              <p className="text-xs text-gray-400 font-bold">The copy you picked for each product was kept.</p>
             </div>
           )}
 
@@ -628,22 +697,29 @@ function DedupeModal({ onClose, onDeleted }: { onClose: () => void; onDeleted: (
           )}
 
           {!loading && !error && !done && groups.length > 0 && (
-            <div className="space-y-3">
+            <div className="space-y-5">
               <p className="text-xs font-bold text-gray-500">
                 Found <span className="text-red-500 font-black">{groups.length}</span> duplicate group{groups.length === 1 ? '' : 's'} —
-                {' '}<span className="text-red-500 font-black">{totalToDelete}</span> extra cop{totalToDelete === 1 ? 'y' : 'ies'} will be deleted.
-                The oldest copy of each is always kept.
+                {' '}<span className="text-red-500 font-black">{totalToDelete}</span> cop{totalToDelete === 1 ? 'y' : 'ies'} will be deleted.
+                The green card in each row is the one being kept — tap any card to switch.
               </p>
-              <div className="space-y-2">
+              <div className="space-y-4">
                 {groups.map((g, i) => (
-                  <div key={i} className="flex items-center justify-between gap-3 px-3 py-2.5 rounded-xl border border-gray-100 bg-gray-50">
-                    <div className="min-w-0">
-                      <p className="text-sm font-black text-gray-900 truncate">{g.name}</p>
-                      <p className="text-[11px] text-gray-400 font-bold uppercase tracking-widest truncate">{g.category}</p>
+                  <div key={i}>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <p className="text-xs font-black text-gray-700 truncate">{g.name}</p>
+                      <span className="shrink-0 text-[10px] font-black text-gray-400 uppercase tracking-widest">{g.category}</span>
                     </div>
-                    <span className="shrink-0 text-[11px] font-black px-2 py-1 rounded-full bg-red-50 text-red-500">
-                      {g.count} copies · -{g.deleteIds.length}
-                    </span>
+                    <div className="flex gap-2 overflow-x-auto pb-1">
+                      {g.products.map(p => (
+                        <DedupeProductCard
+                          key={p._id}
+                          product={p}
+                          isKeep={selections[i] === p._id}
+                          onClick={() => setSelections(prev => ({ ...prev, [i]: p._id }))}
+                        />
+                      ))}
+                    </div>
                   </div>
                 ))}
               </div>
