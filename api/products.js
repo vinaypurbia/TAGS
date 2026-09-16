@@ -368,18 +368,24 @@ export default async function handler(req, res) {
         return res.status(200).json({ success: true, deleted: deleted.deletedCount });
       }
 
-      // ── Find / delete duplicate products (same name + category) ──────────
-      // GET /api/products?dedupe=preview  → list duplicate groups, deletes nothing
-      // GET /api/products?dedupe=true     → actually deletes the extra copies,
-      //                                      keeping the OLDEST product in each
-      //                                      duplicate group, and cleans up its
-      //                                      inventory / Cloudinary / Meta records
-      //                                      exactly like a normal single delete.
-      if (req.query.dedupe === 'preview' || req.query.dedupe === 'true') {
+      // ── Find duplicate products (same name + category) ───────────────────
+      // GET /api/products?dedupe=preview  → returns each duplicate group with
+      //                                      the FULL product data (image, price,
+      //                                      description...) for every copy, plus
+      //                                      a recommended "keep" pick (the copy
+      //                                      with the most complete data — has an
+      //                                      image, description, and price; ties
+      //                                      broken by oldest). Deletes nothing —
+      //                                      the actual delete is a separate,
+      //                                      explicit call (see dedupeConfirm
+      //                                      below) so you can review images/
+      //                                      details and override the pick
+      //                                      before anything is removed.
+      if (req.query.dedupe === 'preview') {
         const groups = await collection.aggregate([
           // group by trimmed, case-insensitive name + category so
           // "Uno Flip" and "uno flip " are treated as the same product
-          { $sort: { createdAt: 1 } }, // oldest first, so ids[0] below is always the oldest
+          { $sort: { createdAt: 1 } }, // oldest first, for stable tie-breaks
           {
             $addFields: {
               _dedupeName: { $toLower: { $trim: { input: { $ifNull: ['$name', ''] } } } },
@@ -390,77 +396,57 @@ export default async function handler(req, res) {
             $group: {
               _id: { name: '$_dedupeName', category: '$_dedupeCategory' },
               count: { $sum: 1 },
-              ids: { $push: '$_id' },
-              names: { $push: '$name' },
-              createdAts: { $push: '$createdAt' },
+              docs: {
+                $push: {
+                  _id: '$_id',
+                  name: '$name',
+                  category: '$category',
+                  subcategory: '$subcategory',
+                  image: '$image',
+                  imageUrl: '$imageUrl',
+                  imageUrls: '$imageUrls',
+                  originalPrice: '$originalPrice',
+                  discountedPrice: '$discountedPrice',
+                  description: '$description',
+                  createdAt: '$createdAt',
+                }
+              },
             }
           },
           { $match: { count: { $gt: 1 }, '_id.name': { $ne: '' } } },
           { $sort: { count: -1 } },
         ]).toArray();
 
-        const groupSummaries = groups.map(g => ({
-          name: g.names[0],
-          category: g._id.category || '(none)',
-          count: g.count,
-          keepId: g.ids[0].toString(),          // oldest — kept
-          deleteIds: g.ids.slice(1).map(id => id.toString()), // rest — removed
-        }));
+        // Score how "complete" a product entry is, so the recommended keep
+        // is the one with actual data — not just whichever was imported first.
+        const scoreProduct = (d) => {
+          const hasImage = !!(d.image || d.imageUrl || (Array.isArray(d.imageUrls) && d.imageUrls[0]));
+          const hasDescription = !!(d.description && d.description.trim());
+          const price = Number(d.discountedPrice || d.originalPrice) || 0;
+          return (hasImage ? 4 : 0) + (hasDescription ? 2 : 0) + (price > 0 ? 1 : 0);
+        };
 
-        if (req.query.dedupe === 'preview') {
-          const totalToDelete = groupSummaries.reduce((sum, g) => sum + g.deleteIds.length, 0);
-          return res.status(200).json({
-            success: true,
-            dryRun: true,
-            duplicateGroups: groupSummaries.length,
-            totalToDelete,
-            groups: groupSummaries,
-          });
-        }
+        const groupSummaries = groups.map(g => {
+          const products = g.docs.map(d => ({ ...d, _id: d._id.toString(), score: scoreProduct(d) }));
+          // pick highest score; docs are createdAt-ascending, so on a tie the
+          // earlier `reduce` keeps the first (oldest) one it already holds
+          const recommended = products.reduce((best, p) => (p.score > best.score ? p : best), products[0]);
+          return {
+            name: g.docs[0].name,
+            category: g._id.category || '(none)',
+            count: g.count,
+            recommendedKeepId: recommended._id,
+            products,
+          };
+        });
 
-        // ── Actually delete ──────────────────────────────────────────────
-        let deletedCount = 0;
-        const deletedNames = [];
-        for (const g of groupSummaries) {
-          for (const idStr of g.deleteIds) {
-            const objId = new ObjectId(idStr);
-            const existing = await collection.findOne({ _id: objId });
-            const result = await collection.deleteOne({ _id: objId });
-            if (result.deletedCount === 0) continue;
-            deletedCount++;
-            deletedNames.push(existing?.name || idStr);
-
-            // Clean up inventory record
-            await inventory.deleteOne({ productId: idStr });
-
-            // Clean up Cloudinary image
-            try {
-              const imageUrl = existing?.image || existing?.imageUrl || '';
-              if (imageUrl && imageUrl.includes('res.cloudinary.com')) {
-                const match = imageUrl.match(/\/upload\/(?:v\d+\/)?(.+?)(?:\.[^.]+)?$/);
-                if (match && match[1]) {
-                  await cloudinary.uploader.destroy(match[1], { invalidate: true });
-                }
-              }
-            } catch (cloudErr) {
-              console.error('Cloudinary delete failed during dedupe (product still deleted):', cloudErr.message);
-            }
-
-            // Clean up Meta catalog entry
-            try {
-              if (existing?.metaId) await deleteProductFromMeta(existing.metaId);
-            } catch (metaErr) {
-              console.error('Meta delete failed during dedupe (DB deleted):', metaErr.message);
-            }
-          }
-        }
-
+        const totalToDelete = groupSummaries.reduce((sum, g) => sum + (g.count - 1), 0);
         return res.status(200).json({
           success: true,
-          dryRun: false,
+          dryRun: true,
           duplicateGroups: groupSummaries.length,
-          deletedCount,
-          deletedNames,
+          totalToDelete,
+          groups: groupSummaries,
         });
       }
 
@@ -586,6 +572,58 @@ export default async function handler(req, res) {
         console.error('[Broadcast] error:', err.message);
         return res.status(500).json({ error: err.message });
       }
+    }
+
+    // ── Dedupe: delete an explicit list of product IDs ───────────────────────
+    // POST /api/products?dedupeConfirm=true   body: { ids: string[] }
+    // Used by the "Remove Duplicates" review modal once you've looked at each
+    // group's images/details and picked which copy to keep — deletes exactly
+    // the IDs you send, nothing auto-guessed. Same cleanup as a normal single
+    // delete: removes the product, its inventory record, its Cloudinary image,
+    // and its Meta catalog listing.
+    if (req.method === 'POST' && req.query.dedupeConfirm === 'true') {
+      const { ids } = req.body || {};
+      if (!Array.isArray(ids) || ids.length === 0) {
+        return res.status(400).json({ error: 'ids array is required' });
+      }
+
+      let deletedCount = 0;
+      const deletedNames = [];
+      for (const idStr of ids) {
+        let objId;
+        try { objId = new ObjectId(idStr); } catch { continue; }
+
+        const existing = await collection.findOne({ _id: objId });
+        const result = await collection.deleteOne({ _id: objId });
+        if (result.deletedCount === 0) continue;
+        deletedCount++;
+        deletedNames.push(existing?.name || idStr);
+
+        // Clean up inventory record
+        await inventory.deleteOne({ productId: idStr });
+
+        // Clean up Cloudinary image
+        try {
+          const imageUrl = existing?.image || existing?.imageUrl || '';
+          if (imageUrl && imageUrl.includes('res.cloudinary.com')) {
+            const match = imageUrl.match(/\/upload\/(?:v\d+\/)?(.+?)(?:\.[^.]+)?$/);
+            if (match && match[1]) {
+              await cloudinary.uploader.destroy(match[1], { invalidate: true });
+            }
+          }
+        } catch (cloudErr) {
+          console.error('Cloudinary delete failed during dedupe (product still deleted):', cloudErr.message);
+        }
+
+        // Clean up Meta catalog entry
+        try {
+          if (existing?.metaId) await deleteProductFromMeta(existing.metaId);
+        } catch (metaErr) {
+          console.error('Meta delete failed during dedupe (DB deleted):', metaErr.message);
+        }
+      }
+
+      return res.status(200).json({ success: true, deletedCount, deletedNames });
     }
 
     if (req.method === 'POST') {
