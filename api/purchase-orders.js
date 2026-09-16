@@ -203,15 +203,16 @@ export default async function handler(req, res) {
         let totalOrdered = 0, totalReceived = 0, totalReceivedValue = 0, totalShortageValue = 0;
         const shortageItems = [];
 
-        // ── Transport cost: split equally across every line item that is
-        // actually receiving stock (shortage-only items with 0 qty are excluded
-        // since they contribute nothing to land). The per-item share is then
-        // divided again by that item's received quantity, so it gets folded
-        // into the per-unit cost price (landed cost) used for inventory
-        // valuation and future profit-margin calculations.
+        // ── Transport cost: split PROPORTIONALLY by each item's received value
+        // (costPrice × qty received), not equally per line. This way a ₹10
+        // item doesn't carry the same rupee burden as a ₹1000 item — each
+        // item absorbs transport cost in proportion to how much of the total
+        // shipment value it represents. Falls back to an equal split only if
+        // every receiving item has a ₹0 cost price (so proportions can't be
+        // computed).
         const transportCost = Number(rawTransportCost) || 0;
         const itemsReceivingStock = receivedItems.filter(item => Number(item.quantityReceived ?? item.quantity) > 0);
-        const transportCostPerItem = itemsReceivingStock.length > 0 ? transportCost / itemsReceivingStock.length : 0;
+        const totalReceivingValue = itemsReceivingStock.reduce((sum, item) => sum + (Number(item.quantityReceived ?? item.quantity) * (Number(item.costPrice) || 0)), 0);
 
         for (const item of receivedItems) {
           const orderedQty = Number(item.quantity);
@@ -226,8 +227,12 @@ export default async function handler(req, res) {
           }
           if (receivedQty <= 0) continue;
 
-          // This item's equal share of transport cost, spread across its units
-          const itemTransportShare = transportCostPerItem;
+          // This item's proportional share of transport cost, based on its
+          // value (costPrice × qty) as a fraction of the total shipment value
+          const itemValue = receivedQty * costP;
+          const itemTransportShare = totalReceivingValue > 0
+            ? (itemValue / totalReceivingValue) * transportCost
+            : (itemsReceivingStock.length > 0 ? transportCost / itemsReceivingStock.length : 0); // fallback: equal split when all cost prices are 0
           const perUnitTransportCost = itemTransportShare / receivedQty;
           const landedCostPrice = costP + perUnitTransportCost;
           // Record the transport allocation back onto the item for the audit trail
@@ -284,7 +289,7 @@ export default async function handler(req, res) {
         }
 
         const shortageStatus = shortageItems.length > 0 ? 'has_shortage' : 'complete';
-        await orders.updateOne({ _id: new ObjectId(id) }, { $set: { status: 'received', receivedDate: new Date(), updatedAt: new Date(), receivedItems, shortageStatus, shortageItems: shortageItems.length > 0 ? shortageItems : [], shortageValue: totalShortageValue, shortageResolved: shortageItems.length === 0, paidAmount: advanceAlreadyPaid + balanceDue, dueAmount: 0, transportCost, transportCostPerItem } });
+        await orders.updateOne({ _id: new ObjectId(id) }, { $set: { status: 'received', receivedDate: new Date(), updatedAt: new Date(), receivedItems, shortageStatus, shortageItems: shortageItems.length > 0 ? shortageItems : [], shortageValue: totalShortageValue, shortageResolved: shortageItems.length === 0, paidAmount: advanceAlreadyPaid + balanceDue, dueAmount: 0, transportCost, transportCostSplitMethod: totalReceivingValue > 0 ? 'proportional_to_value' : 'equal' } });
 
         // ✅ NO cashflow income for shortage — money hasn't come back yet
         // Shortage is tracked in supplier ledger as a credit note (debit on supplier)
@@ -332,8 +337,8 @@ export default async function handler(req, res) {
           }
         }
 
-        const transportNote = transportCost > 0 ? ` Transport cost of ₹${transportCost.toFixed(2)} split across ${itemsReceivingStock.length} item(s) and added to landed cost.` : '';
-        return res.status(200).json({ success: true, message: (shortageItems.length > 0 ? `Stock updated. ⚠️ Shortage of ₹${totalShortageValue.toFixed(2)} recorded against ${po.supplier?.name || 'supplier'}.` : 'Stock fully received and inventory updated.') + transportNote, shortageItems, totalShortageValue, transportCost, transportCostPerItem });
+        const transportNote = transportCost > 0 ? ` Transport cost of ₹${transportCost.toFixed(2)} split proportionally by item value across ${itemsReceivingStock.length} item(s) and added to landed cost.` : '';
+        return res.status(200).json({ success: true, message: (shortageItems.length > 0 ? `Stock updated. ⚠️ Shortage of ₹${totalShortageValue.toFixed(2)} recorded against ${po.supplier?.name || 'supplier'}.` : 'Stock fully received and inventory updated.') + transportNote, shortageItems, totalShortageValue, transportCost });
       }
 
       // ── Edit a received PO — corrects qty/cost and adjusts stock by diff ──
