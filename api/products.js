@@ -368,6 +368,102 @@ export default async function handler(req, res) {
         return res.status(200).json({ success: true, deleted: deleted.deletedCount });
       }
 
+      // ── Find / delete duplicate products (same name + category) ──────────
+      // GET /api/products?dedupe=preview  → list duplicate groups, deletes nothing
+      // GET /api/products?dedupe=true     → actually deletes the extra copies,
+      //                                      keeping the OLDEST product in each
+      //                                      duplicate group, and cleans up its
+      //                                      inventory / Cloudinary / Meta records
+      //                                      exactly like a normal single delete.
+      if (req.query.dedupe === 'preview' || req.query.dedupe === 'true') {
+        const groups = await collection.aggregate([
+          // group by trimmed, case-insensitive name + category so
+          // "Uno Flip" and "uno flip " are treated as the same product
+          { $sort: { createdAt: 1 } }, // oldest first, so ids[0] below is always the oldest
+          {
+            $addFields: {
+              _dedupeName: { $toLower: { $trim: { input: { $ifNull: ['$name', ''] } } } },
+              _dedupeCategory: { $toLower: { $trim: { input: { $ifNull: ['$category', ''] } } } },
+            }
+          },
+          {
+            $group: {
+              _id: { name: '$_dedupeName', category: '$_dedupeCategory' },
+              count: { $sum: 1 },
+              ids: { $push: '$_id' },
+              names: { $push: '$name' },
+              createdAts: { $push: '$createdAt' },
+            }
+          },
+          { $match: { count: { $gt: 1 }, '_id.name': { $ne: '' } } },
+          { $sort: { count: -1 } },
+        ]).toArray();
+
+        const groupSummaries = groups.map(g => ({
+          name: g.names[0],
+          category: g._id.category || '(none)',
+          count: g.count,
+          keepId: g.ids[0].toString(),          // oldest — kept
+          deleteIds: g.ids.slice(1).map(id => id.toString()), // rest — removed
+        }));
+
+        if (req.query.dedupe === 'preview') {
+          const totalToDelete = groupSummaries.reduce((sum, g) => sum + g.deleteIds.length, 0);
+          return res.status(200).json({
+            success: true,
+            dryRun: true,
+            duplicateGroups: groupSummaries.length,
+            totalToDelete,
+            groups: groupSummaries,
+          });
+        }
+
+        // ── Actually delete ──────────────────────────────────────────────
+        let deletedCount = 0;
+        const deletedNames = [];
+        for (const g of groupSummaries) {
+          for (const idStr of g.deleteIds) {
+            const objId = new ObjectId(idStr);
+            const existing = await collection.findOne({ _id: objId });
+            const result = await collection.deleteOne({ _id: objId });
+            if (result.deletedCount === 0) continue;
+            deletedCount++;
+            deletedNames.push(existing?.name || idStr);
+
+            // Clean up inventory record
+            await inventory.deleteOne({ productId: idStr });
+
+            // Clean up Cloudinary image
+            try {
+              const imageUrl = existing?.image || existing?.imageUrl || '';
+              if (imageUrl && imageUrl.includes('res.cloudinary.com')) {
+                const match = imageUrl.match(/\/upload\/(?:v\d+\/)?(.+?)(?:\.[^.]+)?$/);
+                if (match && match[1]) {
+                  await cloudinary.uploader.destroy(match[1], { invalidate: true });
+                }
+              }
+            } catch (cloudErr) {
+              console.error('Cloudinary delete failed during dedupe (product still deleted):', cloudErr.message);
+            }
+
+            // Clean up Meta catalog entry
+            try {
+              if (existing?.metaId) await deleteProductFromMeta(existing.metaId);
+            } catch (metaErr) {
+              console.error('Meta delete failed during dedupe (DB deleted):', metaErr.message);
+            }
+          }
+        }
+
+        return res.status(200).json({
+          success: true,
+          dryRun: false,
+          duplicateGroups: groupSummaries.length,
+          deletedCount,
+          deletedNames,
+        });
+      }
+
       // ── PAGINATED product list ─────────────────────────────────
       const mongoFilter = {};
       if (category && category !== '') mongoFilter.category = category;
