@@ -1481,6 +1481,7 @@ function PurchaseOrdersModule({ showMsg }: any) {
   const [recvModal, setRecvModal] = useState<{ open: boolean; po: any | null }>({ open: false, po: null });
   const [recvItems, setRecvItems] = useState<any[]>([]);
   const [recvPayMode, setRecvPayMode] = useState('cash');
+  const [recvTransportCost, setRecvTransportCost] = useState('');
   const [resolveModal, setResolveModal] = useState<{ open: boolean; po: any | null }>({ open: false, po: null });
   const [resolveForm, setResolveForm] = useState({ resolveType: 'refund', amount: '', paymentMode: 'cash', notes: '' });
 
@@ -1578,7 +1579,7 @@ function PurchaseOrdersModule({ showMsg }: any) {
 
   const openReceive = (po: any) => {
     setRecvItems(po.items.map((i: any) => ({ ...i, quantityReceived: i.quantity, damageNotes: '' })));
-    setRecvPayMode('cash'); setRecvModal({ open: true, po });
+    setRecvPayMode('cash'); setRecvTransportCost(''); setRecvModal({ open: true, po });
   };
 
   const removeRecvItem = (index: number) => {
@@ -1594,7 +1595,7 @@ function PurchaseOrdersModule({ showMsg }: any) {
   };
 
   const submitReceive = async () => {
-    const data = await handleAction(recvModal.po._id, 'receive', { receivedItems: recvItems, paymentMode: recvPayMode });
+    const data = await handleAction(recvModal.po._id, 'receive', { receivedItems: recvItems, paymentMode: recvPayMode, transportCost: Number(recvTransportCost) || 0 });
     if (data.success) {
       setRecvModal({ open: false, po: null });
       if (data.shortageItems?.length > 0) showMsg(`⚠️ Stock received with shortage of ₹${Number(data.totalShortageValue || 0).toFixed(2)} — recorded against ${recvModal.po?.supplier?.name || 'supplier'}.`, 'error');
@@ -1853,6 +1854,20 @@ function PurchaseOrdersModule({ showMsg }: any) {
             <button onClick={addRecvItem} className="text-xs text-blue-500 font-black uppercase tracking-widest flex items-center gap-1 hover:underline">
               ➕ Add Item Supplier Sent
             </button>
+            <div><label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">Transport / Freight Cost (₹)</label>
+              <input type="number" min="0" value={recvTransportCost} onChange={e => setRecvTransportCost(e.target.value)}
+                placeholder="0" className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none" />
+              {Number(recvTransportCost) > 0 && (() => {
+                const receivingCount = recvItems.filter((it: any) => Number(it.quantityReceived) > 0).length;
+                if (receivingCount === 0) return null;
+                const perItem = Number(recvTransportCost) / receivingCount;
+                return (
+                  <p className="text-[10px] text-gray-400 font-bold mt-1">
+                    Split equally across {receivingCount} item(s) · {fmt(perItem)} each · added to landed cost per unit
+                  </p>
+                );
+              })()}
+            </div>
             <div><label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">Balance Payment Mode</label>
               <select value={recvPayMode} onChange={e => setRecvPayMode(e.target.value)} className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none bg-white">
                 <option value="cash">Cash</option><option value="upi">UPI</option><option value="bank">Bank Transfer</option><option value="cheque">Cheque</option>
