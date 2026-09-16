@@ -1858,13 +1858,22 @@ function PurchaseOrdersModule({ showMsg }: any) {
               <input type="number" min="0" value={recvTransportCost} onChange={e => setRecvTransportCost(e.target.value)}
                 placeholder="0" className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none" />
               {Number(recvTransportCost) > 0 && (() => {
-                const receivingCount = recvItems.filter((it: any) => Number(it.quantityReceived) > 0).length;
-                if (receivingCount === 0) return null;
-                const perItem = Number(recvTransportCost) / receivingCount;
+                const receiving = recvItems.filter((it: any) => Number(it.quantityReceived) > 0);
+                if (receiving.length === 0) return null;
+                const totalValue = receiving.reduce((sum: number, it: any) => sum + Number(it.quantityReceived) * Number(it.costPrice || 0), 0);
                 return (
-                  <p className="text-[10px] text-gray-400 font-bold mt-1">
-                    Split equally across {receivingCount} item(s) · {fmt(perItem)} each · added to landed cost per unit
-                  </p>
+                  <div className="mt-1 space-y-0.5">
+                    <p className="text-[10px] text-gray-400 font-bold">Split by item value (higher-value items absorb more):</p>
+                    {receiving.map((it: any, idx: number) => {
+                      const itemValue = Number(it.quantityReceived) * Number(it.costPrice || 0);
+                      const share = totalValue > 0 ? (itemValue / totalValue) * Number(recvTransportCost) : Number(recvTransportCost) / receiving.length;
+                      return (
+                        <p key={idx} className="text-[10px] text-gray-400 font-bold">
+                          {it.productName}: {fmt(share)} · +{fmt(share / Number(it.quantityReceived))}/unit
+                        </p>
+                      );
+                    })}
+                  </div>
                 );
               })()}
             </div>
