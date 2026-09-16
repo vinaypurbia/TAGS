@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { Search, Filter, SlidersHorizontal, Image as ImageIcon, Tag, ChevronDown, X, Check, Pencil, Trash2, Plus, Upload, Eye, RotateCcw } from 'lucide-react';
+import { Search, Filter, SlidersHorizontal, Image as ImageIcon, Tag, ChevronDown, X, Check, Pencil, Trash2, Plus, Upload, Eye, RotateCcw, Copy, Loader2, AlertTriangle } from 'lucide-react';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -519,6 +519,171 @@ function EditModal({
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
+// ─── Dedupe Modal ────────────────────────────────────────────────────────────
+// Preview → confirm → delete flow for /api/products?dedupe=preview|true
+
+interface DedupeGroup {
+  name: string;
+  category: string;
+  count: number;
+  keepId: string;
+  deleteIds: string[];
+}
+
+function DedupeModal({ onClose, onDeleted }: { onClose: () => void; onDeleted: (ids: string[]) => void }) {
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [groups, setGroups] = useState<DedupeGroup[]>([]);
+  const [totalToDelete, setTotalToDelete] = useState(0);
+  const [running, setRunning] = useState(false);
+  const [done, setDone] = useState<{ deletedCount: number } | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await fetch('/api/products?dedupe=preview');
+        const d = await r.json();
+        if (cancelled) return;
+        if (!r.ok || !d.success) throw new Error(d.error || 'Preview failed');
+        setGroups(d.groups || []);
+        setTotalToDelete(d.totalToDelete || 0);
+      } catch (e: any) {
+        if (!cancelled) setError(e.message || 'Could not load duplicates.');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const handleConfirm = async () => {
+    if (!confirm(`Delete ${totalToDelete} duplicate product${totalToDelete === 1 ? '' : 's'}? This cannot be undone.`)) return;
+    setRunning(true);
+    setError('');
+    try {
+      const r = await fetch('/api/products?dedupe=true');
+      const d = await r.json();
+      if (!r.ok || !d.success) throw new Error(d.error || 'Delete failed');
+      const allDeletedIds = groups.flatMap(g => g.deleteIds);
+      onDeleted(allDeletedIds);
+      setDone({ deletedCount: d.deletedCount ?? allDeletedIds.length });
+    } catch (e: any) {
+      setError(e.message || 'Could not delete duplicates.');
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  return createPortal(
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative w-full max-w-lg bg-white rounded-2xl shadow-2xl flex flex-col max-h-[85vh] overflow-hidden">
+
+        {/* Header */}
+        <div className="flex items-center gap-3 px-5 py-4 border-b border-gray-100 shrink-0">
+          <div className="w-9 h-9 rounded-xl bg-red-50 text-red-500 flex items-center justify-center shrink-0">
+            <Copy className="w-4 h-4" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-black text-gray-900">Remove Duplicate Products</p>
+            <p className="text-xs text-gray-400 font-bold">Matches on name + category</p>
+          </div>
+          <button onClick={onClose} className="w-8 h-8 flex items-center justify-center rounded-xl hover:bg-gray-100 text-gray-500 transition">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto px-5 py-5">
+          {loading && (
+            <div className="flex flex-col items-center justify-center py-10 gap-2 text-gray-400">
+              <Loader2 className="w-6 h-6 animate-spin" />
+              <p className="text-xs font-black uppercase tracking-widest">Scanning for duplicates...</p>
+            </div>
+          )}
+
+          {!loading && error && (
+            <div className="flex flex-col items-center justify-center py-10 gap-2 text-red-500 text-center">
+              <AlertTriangle className="w-6 h-6" />
+              <p className="text-sm font-bold">{error}</p>
+            </div>
+          )}
+
+          {!loading && !error && done && (
+            <div className="flex flex-col items-center justify-center py-10 gap-2 text-center">
+              <div className="w-12 h-12 rounded-full bg-green-50 text-green-500 flex items-center justify-center">
+                <Check className="w-6 h-6" />
+              </div>
+              <p className="text-sm font-black text-gray-900">Removed {done.deletedCount} duplicate{done.deletedCount === 1 ? '' : 's'}</p>
+              <p className="text-xs text-gray-400 font-bold">The oldest copy of each product was kept.</p>
+            </div>
+          )}
+
+          {!loading && !error && !done && groups.length === 0 && (
+            <div className="flex flex-col items-center justify-center py-10 gap-2 text-center text-gray-400">
+              <Check className="w-6 h-6" />
+              <p className="text-sm font-bold">No duplicates found. Your catalog is clean.</p>
+            </div>
+          )}
+
+          {!loading && !error && !done && groups.length > 0 && (
+            <div className="space-y-3">
+              <p className="text-xs font-bold text-gray-500">
+                Found <span className="text-red-500 font-black">{groups.length}</span> duplicate group{groups.length === 1 ? '' : 's'} —
+                {' '}<span className="text-red-500 font-black">{totalToDelete}</span> extra cop{totalToDelete === 1 ? 'y' : 'ies'} will be deleted.
+                The oldest copy of each is always kept.
+              </p>
+              <div className="space-y-2">
+                {groups.map((g, i) => (
+                  <div key={i} className="flex items-center justify-between gap-3 px-3 py-2.5 rounded-xl border border-gray-100 bg-gray-50">
+                    <div className="min-w-0">
+                      <p className="text-sm font-black text-gray-900 truncate">{g.name}</p>
+                      <p className="text-[11px] text-gray-400 font-bold uppercase tracking-widest truncate">{g.category}</p>
+                    </div>
+                    <span className="shrink-0 text-[11px] font-black px-2 py-1 rounded-full bg-red-50 text-red-500">
+                      {g.count} copies · -{g.deleteIds.length}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        {!loading && !error && !done && groups.length > 0 && (
+          <div className="flex items-center gap-2 px-5 py-4 border-t border-gray-100 shrink-0">
+            <button
+              onClick={onClose}
+              className="flex-1 py-2.5 rounded-xl border-2 border-gray-200 text-gray-600 text-sm font-black uppercase tracking-widest hover:border-gray-300 transition">
+              Cancel
+            </button>
+            <button
+              onClick={handleConfirm}
+              disabled={running}
+              className="flex-1 py-2.5 rounded-xl bg-red-500 hover:bg-red-600 disabled:opacity-60 text-white text-sm font-black uppercase tracking-widest transition flex items-center justify-center gap-2">
+              {running ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+              {running ? 'Deleting...' : `Delete ${totalToDelete}`}
+            </button>
+          </div>
+        )}
+
+        {(done || (!loading && (error || groups.length === 0))) && (
+          <div className="px-5 py-4 border-t border-gray-100 shrink-0">
+            <button
+              onClick={onClose}
+              className="w-full py-2.5 rounded-xl bg-gray-900 hover:bg-gray-800 text-white text-sm font-black uppercase tracking-widest transition">
+              Close
+            </button>
+          </div>
+        )}
+      </div>
+    </div>,
+    document.body
+  );
+}
+
 export function ProductManagerEmbed() {
   const [allProducts, setAllProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<any[]>([]);
@@ -542,6 +707,9 @@ export function ProductManagerEmbed() {
 
   // Add new product inline state
   const [showAdd, setShowAdd] = useState(false);
+
+  // Remove-duplicates modal
+  const [showDedupe, setShowDedupe] = useState(false);
 
   useEffect(() => {
     // NOTE: the API caps `limit` at 100 per request no matter what we ask for,
@@ -618,6 +786,11 @@ export function ProductManagerEmbed() {
     setShowAdd(false);
   }, []);
 
+  const handleDedupeDeleted = useCallback((deletedIds: string[]) => {
+    const idSet = new Set(deletedIds);
+    setAllProducts(prev => prev.filter(p => !idSet.has(p._id)));
+  }, []);
+
   const activeFiltersCount = [
     filterCategory !== '',
     filterImage !== 'all',
@@ -678,6 +851,14 @@ export function ProductManagerEmbed() {
             )}
           </button>
 
+          {/* Remove Duplicates */}
+          <button
+            onClick={() => setShowDedupe(true)}
+            className="flex items-center gap-2 px-4 py-2.5 rounded-xl border-2 border-gray-200 text-gray-500 hover:border-red-400 hover:text-red-500 text-sm font-black uppercase tracking-widest transition">
+            <Copy className="w-4 h-4" />
+            Remove Duplicates
+          </button>
+
           {/* Add Product */}
           <button
             onClick={() => setShowAdd(v => !v)}
@@ -686,6 +867,13 @@ export function ProductManagerEmbed() {
             Add Product
           </button>
         </div>
+
+        {showDedupe && (
+          <DedupeModal
+            onClose={() => setShowDedupe(false)}
+            onDeleted={handleDedupeDeleted}
+          />
+        )}
 
         {/* Filter Row */}
         {showFilters && (
