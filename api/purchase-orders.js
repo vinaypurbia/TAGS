@@ -199,9 +199,19 @@ export default async function handler(req, res) {
           return res.status(400).json({ error: 'PO cannot be received in current status' });
         }
         const receivedItems = req.body.receivedItems || po.items.map(i => ({ ...i, quantityReceived: i.quantity, damageNotes: '' }));
-        const { paymentMode: poPaymentMode } = req.body;
+        const { paymentMode: poPaymentMode, transportCost: rawTransportCost, transportPaymentMode, transportNotes } = req.body;
         let totalOrdered = 0, totalReceived = 0, totalReceivedValue = 0, totalShortageValue = 0;
         const shortageItems = [];
+
+        // ── Transport cost: split equally across every line item that is
+        // actually receiving stock (shortage-only items with 0 qty are excluded
+        // since they contribute nothing to land). The per-item share is then
+        // divided again by that item's received quantity, so it gets folded
+        // into the per-unit cost price (landed cost) used for inventory
+        // valuation and future profit-margin calculations.
+        const transportCost = Number(rawTransportCost) || 0;
+        const itemsReceivingStock = receivedItems.filter(item => Number(item.quantityReceived ?? item.quantity) > 0);
+        const transportCostPerItem = itemsReceivingStock.length > 0 ? transportCost / itemsReceivingStock.length : 0;
 
         for (const item of receivedItems) {
           const orderedQty = Number(item.quantity);
@@ -215,6 +225,15 @@ export default async function handler(req, res) {
             shortageItems.push({ productId: item.productId, productName: item.productName, orderedQty, receivedQty, shortageQty, costPrice: costP, shortageValue: shortageQty * costP, damageNotes: item.damageNotes || '' });
           }
           if (receivedQty <= 0) continue;
+
+          // This item's equal share of transport cost, spread across its units
+          const itemTransportShare = transportCostPerItem;
+          const perUnitTransportCost = itemTransportShare / receivedQty;
+          const landedCostPrice = costP + perUnitTransportCost;
+          // Record the transport allocation back onto the item for the audit trail
+          item.transportCostShare = itemTransportShare;
+          item.landedCostPrice = landedCostPrice;
+
           const existing = await inventory.findOne({ productId: item.productId });
           if (existing) {
             const balanceBefore = existing.currentStock;
@@ -224,12 +243,27 @@ export default async function handler(req, res) {
             let stockStatus = 'in_stock';
             if (available === 0) stockStatus = 'out_of_stock';
             else if (available <= alert) stockStatus = 'low_stock';
-            await inventory.updateOne({ productId: item.productId }, { $set: { currentStock: newStock, availableStock: existing.availableStock + receivedQty, stockStatus, costPrice: costP || existing.costPrice, updatedAt: new Date() } });
-            await movements.insertOne({ productId: item.productId, type: 'in', quantity: receivedQty, reason: 'purchase_order', referenceId: id, balanceBefore, balanceAfter: newStock, note: `Received from PO ${po.poNumber}${item.damageNotes ? ` — ${item.damageNotes}` : ''}`, createdAt: new Date() });
+            // costPrice now includes this item's share of transport cost (landed cost)
+            await inventory.updateOne({ productId: item.productId }, { $set: { currentStock: newStock, availableStock: existing.availableStock + receivedQty, stockStatus, costPrice: landedCostPrice || existing.costPrice, updatedAt: new Date() } });
+            await movements.insertOne({ productId: item.productId, type: 'in', quantity: receivedQty, reason: 'purchase_order', referenceId: id, balanceBefore, balanceAfter: newStock, note: `Received from PO ${po.poNumber}${transportCost > 0 ? ` — incl. ₹${perUnitTransportCost.toFixed(2)}/unit transport` : ''}${item.damageNotes ? ` — ${item.damageNotes}` : ''}`, createdAt: new Date() });
           } else {
-            await inventory.insertOne({ productId: item.productId, sku: item.sku || '', currentStock: receivedQty, reservedStock: 0, availableStock: receivedQty, lowStockAlert: 10, costPrice: costP, unit: 'pcs', trackInventory: true, stockStatus: 'in_stock', createdAt: new Date(), updatedAt: new Date() });
-            await movements.insertOne({ productId: item.productId, type: 'in', quantity: receivedQty, reason: 'purchase_order', referenceId: id, balanceBefore: 0, balanceAfter: receivedQty, note: `First stock from PO ${po.poNumber}`, createdAt: new Date() });
+            await inventory.insertOne({ productId: item.productId, sku: item.sku || '', currentStock: receivedQty, reservedStock: 0, availableStock: receivedQty, lowStockAlert: 10, costPrice: landedCostPrice, unit: 'pcs', trackInventory: true, stockStatus: 'in_stock', createdAt: new Date(), updatedAt: new Date() });
+            await movements.insertOne({ productId: item.productId, type: 'in', quantity: receivedQty, reason: 'purchase_order', referenceId: id, balanceBefore: 0, balanceAfter: receivedQty, note: `First stock from PO ${po.poNumber}${transportCost > 0 ? ` — incl. ₹${perUnitTransportCost.toFixed(2)}/unit transport` : ''}`, createdAt: new Date() });
           }
+        }
+
+        // ── Log the transport cost itself as a separate cashflow expense ──
+        // (paid to a transporter/courier, not the supplier — kept out of the
+        // supplier ledger so the AP balance below stays accurate to the invoice)
+        if (transportCost > 0) {
+          await cashFlow.insertOne({
+            type: 'expense', category: 'transport_cost', amount: transportCost,
+            paymentMode: transportPaymentMode || poPaymentMode || 'cash',
+            description: `Transport/Freight — PO ${po.poNumber} — ${po.supplier?.name || 'Supplier'}${transportNotes ? ` — ${transportNotes}` : ''}`,
+            referenceId: id, referenceType: 'po_transport',
+            poNumber: po.poNumber, supplierName: po.supplier?.name || '',
+            date: new Date(), createdAt: new Date(),
+          });
         }
 
         const advanceAlreadyPaid = po.paidAmount || 0;
@@ -250,7 +284,7 @@ export default async function handler(req, res) {
         }
 
         const shortageStatus = shortageItems.length > 0 ? 'has_shortage' : 'complete';
-        await orders.updateOne({ _id: new ObjectId(id) }, { $set: { status: 'received', receivedDate: new Date(), updatedAt: new Date(), receivedItems, shortageStatus, shortageItems: shortageItems.length > 0 ? shortageItems : [], shortageValue: totalShortageValue, shortageResolved: shortageItems.length === 0, paidAmount: advanceAlreadyPaid + balanceDue, dueAmount: 0 } });
+        await orders.updateOne({ _id: new ObjectId(id) }, { $set: { status: 'received', receivedDate: new Date(), updatedAt: new Date(), receivedItems, shortageStatus, shortageItems: shortageItems.length > 0 ? shortageItems : [], shortageValue: totalShortageValue, shortageResolved: shortageItems.length === 0, paidAmount: advanceAlreadyPaid + balanceDue, dueAmount: 0, transportCost, transportCostPerItem } });
 
         // ✅ NO cashflow income for shortage — money hasn't come back yet
         // Shortage is tracked in supplier ledger as a credit note (debit on supplier)
@@ -298,7 +332,8 @@ export default async function handler(req, res) {
           }
         }
 
-        return res.status(200).json({ success: true, message: shortageItems.length > 0 ? `Stock updated. ⚠️ Shortage of ₹${totalShortageValue.toFixed(2)} recorded against ${po.supplier?.name || 'supplier'}.` : 'Stock fully received and inventory updated.', shortageItems, totalShortageValue });
+        const transportNote = transportCost > 0 ? ` Transport cost of ₹${transportCost.toFixed(2)} split across ${itemsReceivingStock.length} item(s) and added to landed cost.` : '';
+        return res.status(200).json({ success: true, message: (shortageItems.length > 0 ? `Stock updated. ⚠️ Shortage of ₹${totalShortageValue.toFixed(2)} recorded against ${po.supplier?.name || 'supplier'}.` : 'Stock fully received and inventory updated.') + transportNote, shortageItems, totalShortageValue, transportCost, transportCostPerItem });
       }
 
       // ── Edit a received PO — corrects qty/cost and adjusts stock by diff ──
