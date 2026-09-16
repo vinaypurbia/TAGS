@@ -274,6 +274,10 @@ export default async function handler(req, res) {
     const db = dbClient.db('tagsdb');
     const collection = db.collection('products');
     const inventory = db.collection('inventory');
+    // Referenced only when a product's name/sku changes, to cascade that
+    // change into any purchase orders / sales that reference this product (see PUT)
+    const purchaseOrders = db.collection('purchaseOrders');
+    const salesCol = db.collection('sales');
 
     if (req.method === 'GET') {
       const {
@@ -688,6 +692,57 @@ export default async function handler(req, res) {
         { $set: updateData }
       );
       if (result.matchedCount === 0) return res.status(404).json({ error: 'Product not found' });
+
+      // ── Cascade identity-field changes (name, sku) into every purchase order
+      // that references this product ─────────────────────────────────────────
+      // A PO stores a snapshot of productName/sku at the time it was created
+      // (items[].productName), so editing the product here previously left
+      // old POs showing the stale name forever. This pushes the update into
+      // both the `items` array (draft/ordered POs) and `receivedItems` array
+      // (already-received POs), everywhere this productId appears.
+      // Note: only name/sku are cascaded — costPrice/quantity are left alone,
+      // since those reflect what was actually paid/ordered at that time, not
+      // a product "detail" that should retroactively change.
+      if (updateData.name || updateData.sku) {
+        const itemsSet = {};
+        const receivedItemsSet = {};
+        if (updateData.name) { itemsSet['items.$[elem].productName'] = updateData.name; receivedItemsSet['receivedItems.$[elem].productName'] = updateData.name; }
+        if (updateData.sku)  { itemsSet['items.$[elem].sku'] = updateData.sku;          receivedItemsSet['receivedItems.$[elem].sku'] = updateData.sku; }
+
+        try {
+          await purchaseOrders.updateMany(
+            { 'items.productId': id },
+            { $set: itemsSet },
+            { arrayFilters: [{ 'elem.productId': id }] }
+          );
+          await purchaseOrders.updateMany(
+            { 'receivedItems.productId': id },
+            { $set: receivedItemsSet },
+            { arrayFilters: [{ 'elem.productId': id }] }
+          );
+        } catch (cascadeErr) {
+          // Don't fail the product update if the PO cascade has an issue —
+          // the product itself is already saved correctly.
+          console.error('PO name/sku cascade failed (product still updated):', cascadeErr.message);
+        }
+
+        // ── Also cascade the name into past sales records ────────────────────
+        // Explicitly NAME ONLY here — sale price/quantity/totalPrice on old
+        // sales must stay exactly as they were invoiced to the customer.
+        // Only the display name catches up, so a renamed product doesn't show
+        // its old name on historical sales/receipts.
+        if (updateData.name) {
+          try {
+            await salesCol.updateMany(
+              { 'items.productId': id },
+              { $set: { 'items.$[elem].productName': updateData.name } },
+              { arrayFilters: [{ 'elem.productId': id }] }
+            );
+          } catch (salesCascadeErr) {
+            console.error('Sales name cascade failed (product still updated):', salesCascadeErr.message);
+          }
+        }
+      }
 
       try {
         const existing = await collection.findOne({ _id: new ObjectId(id) });
