@@ -7,6 +7,7 @@ import { ProductManagerEmbed } from './ProductManagerEmbed';
 import { ManageCategoriesEmbed } from './ManageCategoriesEmbed';
 import { InventoryEmbed } from './InventoryEmbed';
 import { BusinessEmbed } from './BusinessEmbed';
+import { MarginWidget } from './MarginWidget';
 import {
   Lock, LogOut, Megaphone, Image, Tag, Package, FolderTree,
   Save, Check, Trash2, Eye, Upload, BarChart2,
@@ -868,6 +869,8 @@ export function AdminPanel() {
                   </div>
                 ))}
               </div>
+
+              <MarginWidget />
 
               {/* Storage widgets moved to dashboard header as compact badges */}
 
