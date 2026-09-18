@@ -630,6 +630,97 @@ export default async function handler(req, res) {
       return res.status(200).json({ success: true, deletedCount, deletedNames });
     }
 
+    // ── Bulk Pricing: PREVIEW ──────────────────────────────────────────────
+    // POST /api/products?bulkPricingPreview=true
+    // body: { originalPercent?: number, discountedPercent?: number, ids: string[] }
+    // Computes new prices as round(costPrice × (1 + percent/100)) — rounded to
+    // the nearest whole rupee — using each product's current landed cost price
+    // from `inventory`. Supports two INDEPENDENT markups in the same call:
+    // originalPercent for the base/MRP price, discountedPercent for the sale
+    // price. Either can be omitted entirely to leave that price type alone
+    // (e.g. only updating the discount price without touching the base price).
+    // Which `ids` get sent is entirely up to the caller — the frontend resolves
+    // "individual products / by category / by price range / all" into a plain
+    // id list before calling this, so this endpoint doesn't need to know about
+    // scope at all. Writes nothing — this is a dry run for review before apply.
+    if (req.method === 'POST' && req.query.bulkPricingPreview === 'true') {
+      const { originalPercent, discountedPercent, ids } = req.body || {};
+      const origPct = originalPercent === undefined || originalPercent === null || originalPercent === '' ? null : Number(originalPercent);
+      const discPct = discountedPercent === undefined || discountedPercent === null || discountedPercent === '' ? null : Number(discountedPercent);
+      if (origPct === null && discPct === null) return res.status(400).json({ error: 'Provide originalPercent and/or discountedPercent' });
+      if (origPct !== null && !Number.isFinite(origPct)) return res.status(400).json({ error: 'originalPercent must be a number' });
+      if (discPct !== null && !Number.isFinite(discPct)) return res.status(400).json({ error: 'discountedPercent must be a number' });
+      if (!Array.isArray(ids) || ids.length === 0) return res.status(400).json({ error: 'ids array is required' });
+
+      const items = [];
+      const skipped = [];
+      for (const idStr of ids) {
+        let objId;
+        try { objId = new ObjectId(idStr); } catch { continue; }
+        const product = await collection.findOne({ _id: objId });
+        if (!product) continue;
+        const inv = await inventory.findOne({ productId: idStr });
+        const costPrice = Number(inv?.costPrice) || 0;
+        if (costPrice <= 0) {
+          skipped.push({ _id: idStr, name: product.name, reason: 'No cost price recorded' });
+          continue;
+        }
+        const currentOriginalPrice = Number(product.originalPrice || product.price || 0);
+        const currentDiscountedPrice = Number(product.discountedPrice || 0);
+        const newOriginalPrice = origPct !== null ? Math.round(costPrice * (1 + origPct / 100)) : null;
+        const newDiscountedPrice = discPct !== null ? Math.round(costPrice * (1 + discPct / 100)) : null;
+        items.push({
+          _id: idStr, name: product.name, category: product.category || '', costPrice,
+          currentOriginalPrice, newOriginalPrice,
+          currentDiscountedPrice, newDiscountedPrice,
+        });
+      }
+
+      return res.status(200).json({ success: true, dryRun: true, originalPercent: origPct, discountedPercent: discPct, items, skipped, totalToUpdate: items.length });
+    }
+
+    // ── Bulk Pricing: APPLY ────────────────────────────────────────────────
+    // POST /api/products?bulkPricingApply=true
+    // body: { updates: [{ id, newOriginalPrice?, newDiscountedPrice? }] }
+    // Applies exactly the prices already reviewed in the preview step — takes
+    // the computed `updates` array as-is rather than recalculating, so what
+    // you saw is exactly what gets saved even if cost prices changed in the
+    // meantime. Per item, only the price types that were actually included
+    // (non-null) get written — omitting newDiscountedPrice on an item leaves
+    // its existing discountedPrice completely untouched, and vice versa.
+    if (req.method === 'POST' && req.query.bulkPricingApply === 'true') {
+      const { updates } = req.body || {};
+      if (!Array.isArray(updates) || updates.length === 0) return res.status(400).json({ error: 'updates array is required' });
+
+      let updatedCount = 0;
+      const errors = [];
+      for (const u of updates) {
+        try {
+          const objId = new ObjectId(u.id);
+          const setFields = { updatedAt: new Date() };
+          if (u.newOriginalPrice !== undefined && u.newOriginalPrice !== null) {
+            const v = Math.round(Number(u.newOriginalPrice));
+            if (!Number.isFinite(v)) { errors.push({ id: u.id, error: 'Invalid newOriginalPrice' }); continue; }
+            setFields.originalPrice = v;
+            setFields.price = v;
+          }
+          if (u.newDiscountedPrice !== undefined && u.newDiscountedPrice !== null) {
+            const v = Math.round(Number(u.newDiscountedPrice));
+            if (!Number.isFinite(v)) { errors.push({ id: u.id, error: 'Invalid newDiscountedPrice' }); continue; }
+            setFields.discountedPrice = v;
+          }
+          if (Object.keys(setFields).length <= 1) { errors.push({ id: u.id, error: 'No price fields to update' }); continue; }
+
+          const result = await collection.updateOne({ _id: objId }, { $set: setFields });
+          if (result.matchedCount > 0) updatedCount++;
+        } catch (err) {
+          errors.push({ id: u.id, error: err.message });
+        }
+      }
+
+      return res.status(200).json({ success: true, updatedCount, errors });
+    }
+
     if (req.method === 'POST') {
       const product = { ...req.body, createdAt: new Date() };
 
