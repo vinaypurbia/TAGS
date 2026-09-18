@@ -1805,87 +1805,114 @@ function PurchaseOrdersModule({ showMsg }: any) {
 
       {/* Receive Stock Modal */}
       {recvModal.open && recvModal.po && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4 overflow-y-auto">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg p-6 space-y-4 my-4">
-            <div className="flex justify-between items-start">
-              <div><h3 className="font-black text-gray-900 text-sm uppercase tracking-widest">Receive Stock</h3><p className="text-xs text-gray-400 mt-0.5">{recvModal.po.poNumber} · {recvModal.po.supplier?.name}</p></div>
-              <button onClick={() => setRecvModal({ open: false, po: null })} className="text-gray-400 hover:text-gray-600 font-black text-xl">✕</button>
-            </div>
-            <p className="text-xs text-blue-600 font-bold bg-blue-50 rounded-lg px-3 py-2">Enter actual quantity received. Remove items not sent. Add items supplier sent that weren't on the PO.</p>
-            <div className="space-y-3 max-h-72 overflow-y-auto pr-1">
-              {recvItems.map((item: any, i: number) => (
-                <div key={i} className={`rounded-xl p-3 space-y-2 ${item.isExtra ? 'bg-blue-50 border-2 border-blue-200' : 'bg-gray-50'}`}>
-                  <div className="flex justify-between items-center">
-                    <div>
-                      {item.isExtra ? (
-                        <input value={item.productName} onChange={e => updateRecvItem(i, 'productName', e.target.value)}
-                          placeholder="Product name..." className="text-sm font-black text-gray-800 bg-transparent border-b border-blue-300 outline-none w-full" />
-                      ) : (
-                        <p className="text-sm font-black text-gray-800">{item.productName}</p>
-                      )}
-                      {item.isExtra
-                        ? <span className="text-[10px] text-blue-500 font-bold">➕ Extra item from supplier</span>
-                        : <span className="text-xs text-gray-400 font-bold">Ordered: {item.quantity} · {fmt(item.costPrice)} each</span>
-                      }
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4 overflow-y-auto py-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-5xl my-4 flex flex-col md:flex-row max-h-[92vh] overflow-hidden">
+            {/* LEFT: the actual receive form */}
+            <div className="flex-1 p-6 space-y-4 overflow-y-auto md:max-h-[92vh]">
+              <div className="flex justify-between items-start">
+                <div><h3 className="font-black text-gray-900 text-sm uppercase tracking-widest">Receive Stock</h3><p className="text-xs text-gray-400 mt-0.5">{recvModal.po.poNumber} · {recvModal.po.supplier?.name}</p></div>
+                <button onClick={() => setRecvModal({ open: false, po: null })} className="text-gray-400 hover:text-gray-600 font-black text-xl md:hidden">✕</button>
+              </div>
+              <p className="text-xs text-blue-600 font-bold bg-blue-50 rounded-lg px-3 py-2">Enter actual quantity received. Remove items not sent. Add items supplier sent that weren't on the PO.</p>
+              <div className="space-y-3 max-h-64 overflow-y-auto pr-1">
+                {recvItems.map((item: any, i: number) => (
+                  <div key={i} className={`rounded-xl p-3 space-y-2 ${item.isExtra ? 'bg-blue-50 border-2 border-blue-200' : 'bg-gray-50'}`}>
+                    <div className="flex justify-between items-center">
+                      <div>
+                        {item.isExtra ? (
+                          <input value={item.productName} onChange={e => updateRecvItem(i, 'productName', e.target.value)}
+                            placeholder="Product name..." className="text-sm font-black text-gray-800 bg-transparent border-b border-blue-300 outline-none w-full" />
+                        ) : (
+                          <p className="text-sm font-black text-gray-800">{item.productName}</p>
+                        )}
+                        {item.isExtra
+                          ? <span className="text-[10px] text-blue-500 font-bold">➕ Extra item from supplier</span>
+                          : <span className="text-xs text-gray-400 font-bold">Ordered: {item.quantity} · {fmt(item.costPrice)} each</span>
+                        }
+                      </div>
+                      <button onClick={() => removeRecvItem(i)} className="text-red-400 hover:text-red-600 font-black text-lg leading-none ml-2" title="Remove item">✕</button>
                     </div>
-                    <button onClick={() => removeRecvItem(i)} className="text-red-400 hover:text-red-600 font-black text-lg leading-none ml-2" title="Remove item">✕</button>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div><label className="block text-[10px] font-black uppercase tracking-widest text-gray-400 mb-1">Qty Received *</label>
+                        <input type="number" min="0" value={item.quantityReceived}
+                          onChange={e => updateRecvItem(i, 'quantityReceived', Number(e.target.value))}
+                          className="w-full border-2 border-gray-200 rounded-lg px-2 py-1.5 text-sm font-bold focus:border-[#FA5600] outline-none" />
+                      </div>
+                      <div><label className="block text-[10px] font-black uppercase tracking-widest text-gray-400 mb-1">{item.isExtra ? 'Cost Price (₹)' : 'Damage / Shortage Note'}</label>
+                        {item.isExtra
+                          ? <input type="number" min="0" value={item.costPrice} onChange={e => updateRecvItem(i, 'costPrice', Number(e.target.value))}
+                              placeholder="0" className="w-full border-2 border-gray-200 rounded-lg px-2 py-1.5 text-sm font-bold focus:border-[#FA5600] outline-none" />
+                          : <input value={item.damageNotes} onChange={e => updateRecvItem(i, 'damageNotes', e.target.value)}
+                              placeholder="e.g. 2 pcs damaged" className="w-full border-2 border-gray-200 rounded-lg px-2 py-1.5 text-sm font-bold focus:border-[#FA5600] outline-none" />
+                        }
+                      </div>
+                    </div>
+                    {!item.isExtra && Number(item.quantityReceived) < Number(item.quantity) && (
+                      <p className="text-[10px] text-red-500 font-bold">⚠️ Shortage: {Number(item.quantity) - Number(item.quantityReceived)} units · {fmt((Number(item.quantity) - Number(item.quantityReceived)) * Number(item.costPrice))} owed by {recvModal.po.supplier?.name || 'supplier'}</p>
+                    )}
                   </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    <div><label className="block text-[10px] font-black uppercase tracking-widest text-gray-400 mb-1">Qty Received *</label>
-                      <input type="number" min="0" value={item.quantityReceived}
-                        onChange={e => updateRecvItem(i, 'quantityReceived', Number(e.target.value))}
-                        className="w-full border-2 border-gray-200 rounded-lg px-2 py-1.5 text-sm font-bold focus:border-[#FA5600] outline-none" />
-                    </div>
-                    <div><label className="block text-[10px] font-black uppercase tracking-widest text-gray-400 mb-1">{item.isExtra ? 'Cost Price (₹)' : 'Damage / Shortage Note'}</label>
-                      {item.isExtra
-                        ? <input type="number" min="0" value={item.costPrice} onChange={e => updateRecvItem(i, 'costPrice', Number(e.target.value))}
-                            placeholder="0" className="w-full border-2 border-gray-200 rounded-lg px-2 py-1.5 text-sm font-bold focus:border-[#FA5600] outline-none" />
-                        : <input value={item.damageNotes} onChange={e => updateRecvItem(i, 'damageNotes', e.target.value)}
-                            placeholder="e.g. 2 pcs damaged" className="w-full border-2 border-gray-200 rounded-lg px-2 py-1.5 text-sm font-bold focus:border-[#FA5600] outline-none" />
-                      }
-                    </div>
-                  </div>
-                  {!item.isExtra && Number(item.quantityReceived) < Number(item.quantity) && (
-                    <p className="text-[10px] text-red-500 font-bold">⚠️ Shortage: {Number(item.quantity) - Number(item.quantityReceived)} units · {fmt((Number(item.quantity) - Number(item.quantityReceived)) * Number(item.costPrice))} owed by {recvModal.po.supplier?.name || 'supplier'}</p>
-                  )}
-                </div>
-              ))}
+                ))}
+              </div>
+              <button onClick={addRecvItem} className="text-xs text-blue-500 font-black uppercase tracking-widest flex items-center gap-1 hover:underline">
+                ➕ Add Item Supplier Sent
+              </button>
+              <div><label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">Transport / Freight Cost (₹)</label>
+                <input type="number" min="0" value={recvTransportCost} onChange={e => setRecvTransportCost(e.target.value)}
+                  placeholder="0" className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none" />
+                <p className="text-[10px] text-gray-400 font-bold mt-1">See the per-item split on the right before confirming →</p>
+              </div>
+              <div><label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">Balance Payment Mode</label>
+                <select value={recvPayMode} onChange={e => setRecvPayMode(e.target.value)} className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none bg-white">
+                  <option value="cash">Cash</option><option value="upi">UPI</option><option value="bank">Bank Transfer</option><option value="cheque">Cheque</option>
+                </select>
+              </div>
+              {recvModal.po.paidAmount > 0 && <div className="bg-green-50 rounded-xl px-3 py-2 text-xs font-bold text-green-700">✅ Advance of {fmt(recvModal.po.paidAmount)} already paid — only the balance will be added to Cash Flow.</div>}
+              <div className="flex gap-3">
+                <button onClick={() => setRecvModal({ open: false, po: null })} className="flex-1 py-2.5 rounded-xl border-2 border-gray-200 text-xs font-black text-gray-500">Cancel</button>
+                <button onClick={submitReceive} className="flex-1 py-2.5 rounded-xl bg-green-500 text-white text-xs font-black uppercase tracking-widest hover:bg-green-600 transition">Confirm Receipt</button>
+              </div>
             </div>
-            <button onClick={addRecvItem} className="text-xs text-blue-500 font-black uppercase tracking-widest flex items-center gap-1 hover:underline">
-              ➕ Add Item Supplier Sent
-            </button>
-            <div><label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">Transport / Freight Cost (₹)</label>
-              <input type="number" min="0" value={recvTransportCost} onChange={e => setRecvTransportCost(e.target.value)}
-                placeholder="0" className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none" />
-              {Number(recvTransportCost) > 0 && (() => {
+
+            {/* RIGHT: live updated-item-cost panel, its own scroll area so it never pushes the form off screen */}
+            <div className="md:w-80 shrink-0 bg-gray-50 border-t md:border-t-0 md:border-l border-gray-200 p-5 flex flex-col md:max-h-[92vh]">
+              <div className="flex justify-between items-center mb-1">
+                <h4 className="text-xs font-black uppercase tracking-widest text-gray-500">Updated Item Cost</h4>
+                <button onClick={() => setRecvModal({ open: false, po: null })} className="hidden md:block text-gray-400 hover:text-gray-600 font-black text-lg leading-none">✕</button>
+              </div>
+              {(() => {
                 const receiving = recvItems.filter((it: any) => Number(it.quantityReceived) > 0);
-                if (receiving.length === 0) return null;
+                const tCost = Number(recvTransportCost) || 0;
+                if (receiving.length === 0) {
+                  return <p className="text-xs text-gray-400 font-bold mt-3">Enter quantities received to see landed cost per item here.</p>;
+                }
                 const totalValue = receiving.reduce((sum: number, it: any) => sum + Number(it.quantityReceived) * Number(it.costPrice || 0), 0);
                 return (
-                  <div className="mt-1 space-y-0.5">
-                    <p className="text-[10px] text-gray-400 font-bold">Split by item value (higher-value items absorb more):</p>
-                    {receiving.map((it: any, idx: number) => {
-                      const itemValue = Number(it.quantityReceived) * Number(it.costPrice || 0);
-                      const share = totalValue > 0 ? (itemValue / totalValue) * Number(recvTransportCost) : Number(recvTransportCost) / receiving.length;
-                      return (
-                        <p key={idx} className="text-[10px] text-gray-400 font-bold">
-                          {it.productName}: {fmt(share)} · +{fmt(share / Number(it.quantityReceived))}/unit
-                        </p>
-                      );
-                    })}
-                  </div>
+                  <>
+                    <p className="text-[11px] text-gray-400 font-bold mb-3">
+                      {tCost > 0 ? <>Transport of <span className="text-gray-700">{fmt(tCost)}</span> split by item value:</> : 'No transport cost entered yet — showing original cost price.'}
+                    </p>
+                    <div className="space-y-2 overflow-y-auto pr-1 flex-1">
+                      {receiving.map((it: any, idx: number) => {
+                        const qty = Number(it.quantityReceived);
+                        const baseCost = Number(it.costPrice || 0);
+                        const itemValue = qty * baseCost;
+                        const share = tCost > 0 ? (totalValue > 0 ? (itemValue / totalValue) * tCost : tCost / receiving.length) : 0;
+                        const perUnitAdd = qty > 0 ? share / qty : 0;
+                        const landed = baseCost + perUnitAdd;
+                        return (
+                          <div key={idx} className="bg-white rounded-lg px-3 py-2 border border-gray-100">
+                            <p className="text-xs font-black text-gray-800 truncate" title={it.productName}>{it.productName}</p>
+                            <div className="flex justify-between items-baseline mt-0.5">
+                              <span className="text-[10px] text-gray-400 font-bold">{fmt(baseCost)} {tCost > 0 && <>+ {fmt(perUnitAdd)}</>}</span>
+                              <span className="text-xs font-black text-[#FA5600]">{fmt(landed)}/unit</span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </>
                 );
               })()}
-            </div>
-            <div><label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">Balance Payment Mode</label>
-              <select value={recvPayMode} onChange={e => setRecvPayMode(e.target.value)} className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none bg-white">
-                <option value="cash">Cash</option><option value="upi">UPI</option><option value="bank">Bank Transfer</option><option value="cheque">Cheque</option>
-              </select>
-            </div>
-            {recvModal.po.paidAmount > 0 && <div className="bg-green-50 rounded-xl px-3 py-2 text-xs font-bold text-green-700">✅ Advance of {fmt(recvModal.po.paidAmount)} already paid — only the balance will be added to Cash Flow.</div>}
-            <div className="flex gap-3">
-              <button onClick={() => setRecvModal({ open: false, po: null })} className="flex-1 py-2.5 rounded-xl border-2 border-gray-200 text-xs font-black text-gray-500">Cancel</button>
-              <button onClick={submitReceive} className="flex-1 py-2.5 rounded-xl bg-green-500 text-white text-xs font-black uppercase tracking-widest hover:bg-green-600 transition">Confirm Receipt</button>
             </div>
           </div>
         </div>
