@@ -190,6 +190,78 @@ export default async function handler(req, res) {
         });
       }
 
+      // ── MARGIN SUMMARY (for a dashboard widget) ─────────────────────────────
+      // GET /api/inventory?action=marginSummary
+      // Margin % here is markup-style, matching how prices are actually set
+      // elsewhere in the app: ((sellingPrice − costPrice) / costPrice) × 100.
+      // Two versions of each figure are returned:
+      //   - simple average  → treats every product equally, regardless of stock
+      //   - stock-weighted  → weighted by availableStock, so a product with
+      //     200 units in stock counts far more than one with 2 units. This is
+      //     the more useful number for "anticipated profit" since it reflects
+      //     what would actually be earned if current stock sold out.
+      // Discounted-price figures only consider products that actually HAVE a
+      // discountedPrice set (i.e. currently on sale) — products without one
+      // are left out of that half of the calculation entirely, not treated as 0%.
+      if (action === 'marginSummary') {
+        const allProducts = await productsCol.find({}).toArray();
+        const allInventory = await inventoryCol.find({}).toArray();
+        const invMap = {};
+        allInventory.forEach(i => { invMap[i.productId] = i; });
+
+        let origSum = 0, origWeightedSum = 0, origStockSum = 0, origCount = 0;
+        let discSum = 0, discWeightedSum = 0, discStockSum = 0, discCount = 0;
+        let anticipatedProfitOriginal = 0, anticipatedProfitDiscounted = 0;
+        let skippedNoCost = 0;
+
+        for (const p of allProducts) {
+          const pid = p._id.toString();
+          const inv = invMap[pid];
+          const costPrice = Number(inv?.costPrice) || 0;
+          if (costPrice <= 0) { skippedNoCost++; continue; }
+
+          const availableStock = Math.max(0, Number(inv?.availableStock) || 0);
+          const originalPrice = Number(p.originalPrice || p.price || 0);
+          const discountedPrice = Number(p.discountedPrice || 0);
+
+          if (originalPrice > 0) {
+            const marginPct = ((originalPrice - costPrice) / costPrice) * 100;
+            origSum += marginPct;
+            origCount++;
+            origWeightedSum += marginPct * availableStock;
+            origStockSum += availableStock;
+            anticipatedProfitOriginal += (originalPrice - costPrice) * availableStock;
+          }
+
+          if (discountedPrice > 0) {
+            const marginPct = ((discountedPrice - costPrice) / costPrice) * 100;
+            discSum += marginPct;
+            discCount++;
+            discWeightedSum += marginPct * availableStock;
+            discStockSum += availableStock;
+            anticipatedProfitDiscounted += (discountedPrice - costPrice) * availableStock;
+          }
+        }
+
+        return res.status(200).json({
+          success: true,
+          original: {
+            avgMarginPercent: origCount > 0 ? origSum / origCount : null,
+            stockWeightedMarginPercent: origStockSum > 0 ? origWeightedSum / origStockSum : null,
+            productsConsidered: origCount,
+            anticipatedProfit: anticipatedProfitOriginal,
+          },
+          discounted: {
+            avgMarginPercent: discCount > 0 ? discSum / discCount : null,
+            stockWeightedMarginPercent: discStockSum > 0 ? discWeightedSum / discStockSum : null,
+            productsConsidered: discCount,
+            anticipatedProfit: anticipatedProfitDiscounted,
+          },
+          skippedNoCostPrice: skippedNoCost,
+          totalProducts: allProducts.length,
+        });
+      }
+
       // ── STOCK VISIBILITY PANEL ────────────────────────────────────────────
       if (action === 'visibilityPanel') {
         const allInventory = await inventoryCol
