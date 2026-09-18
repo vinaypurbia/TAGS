@@ -46,6 +46,19 @@ export function InventoryEmbed() {
   const [bulkToggling, setBulkToggling] = useState(false);
   const [quickToggling, setQuickToggling] = useState<string | null>(null);
   const [backfilling, setBackfilling] = useState(false);
+  const [pricingOpen, setPricingOpen] = useState(false);
+  const [pricingScope, setPricingScope] = useState<'all' | 'category' | 'range' | 'individual'>('all');
+  const [pricingCategories, setPricingCategories] = useState<Set<string>>(new Set());
+  const [pricingRangeField, setPricingRangeField] = useState<'cost' | 'selling'>('cost');
+  const [pricingRangeMin, setPricingRangeMin] = useState('');
+  const [pricingRangeMax, setPricingRangeMax] = useState('');
+  const [pricingSelectedIds, setPricingSelectedIds] = useState<Set<string>>(new Set());
+  const [pricingIndividualSearch, setPricingIndividualSearch] = useState('');
+  const [originalPercent, setOriginalPercent] = useState('30');
+  const [discountedPercent, setDiscountedPercent] = useState('');
+  const [pricingPreview, setPricingPreview] = useState<{ items: any[]; skipped: any[] } | null>(null);
+  const [pricingLoading, setPricingLoading] = useState(false);
+  const [pricingApplying, setPricingApplying] = useState(false);
 
   const fetchInventory = async () => {
     try {
@@ -230,6 +243,68 @@ export function InventoryEmbed() {
     }
   };
 
+  // Bulk pricing: preview new original/discounted prices as cost price + markup %,
+  // for whatever the current scope resolves to — nothing is saved yet.
+  const previewBulkPricing = async () => {
+    const origPct = originalPercent.trim() === '' ? null : Number(originalPercent);
+    const discPct = discountedPercent.trim() === '' ? null : Number(discountedPercent);
+    if (origPct === null && discPct === null) { showMessage('Enter at least one markup percentage.', 'error'); return; }
+    if (origPct !== null && !Number.isFinite(origPct)) { showMessage('Original price markup % is invalid.', 'error'); return; }
+    if (discPct !== null && !Number.isFinite(discPct)) { showMessage('Discounted price markup % is invalid.', 'error'); return; }
+
+    const targets = pricingScopeTargets;
+    if (targets.length === 0) { showMessage('No products match the selected scope.', 'error'); return; }
+
+    setPricingLoading(true);
+    setPricingPreview(null);
+    try {
+      const res = await fetch('/api/products?bulkPricingPreview=true', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ originalPercent: origPct, discountedPercent: discPct, ids: targets.map(p => p._id) }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed');
+      setPricingPreview({ items: data.items || [], skipped: data.skipped || [] });
+    } catch (err: any) {
+      showMessage(err.message || 'Failed to calculate prices.', 'error');
+    } finally {
+      setPricingLoading(false);
+    }
+  };
+
+  // Apply exactly what was previewed — doesn't recompute, so what you saw is what gets saved.
+  const applyBulkPricing = async () => {
+    if (!pricingPreview || pricingPreview.items.length === 0) return;
+    if (!confirm(`Update pricing for ${pricingPreview.items.length} product(s)? This cannot be undone automatically.`)) return;
+    setPricingApplying(true);
+    try {
+      const res = await fetch('/api/products?bulkPricingApply=true', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          updates: pricingPreview.items.map((it: any) => ({
+            id: it._id,
+            newOriginalPrice: it.newOriginalPrice,
+            newDiscountedPrice: it.newDiscountedPrice,
+          })),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed');
+      showMessage(`✅ Updated pricing for ${data.updatedCount} product(s).`, 'success');
+      setPricingPreview(null);
+      setPricingOpen(false);
+      setPricingSelectedIds(new Set());
+      fetchInventory();
+    } catch (err: any) {
+      showMessage(err.message || 'Failed to apply prices.', 'error');
+    } finally {
+      setPricingApplying(false);
+    }
+  };
+
+
   // Stats
   const stats = {
     total: products.length,
@@ -254,6 +329,32 @@ export function InventoryEmbed() {
 
     return matchSearch && matchFilter;
   });
+
+  // Categories available for the "By Category" pricing scope — derived from
+  // the currently searched/filtered list, so it stays relevant to what's on screen.
+  const pricingAvailableCategories = Array.from(new Set(filtered.map(p => p.category).filter(Boolean))).sort();
+
+  // Resolve the Bulk Price Update scope down to a plain product list, on top
+  // of the existing search/filter above. "All Items" = everything currently
+  // visible; the other three scopes narrow further from there.
+  const pricingScopeTargets: ProductInventory[] =
+    pricingScope === 'all' ? filtered :
+    pricingScope === 'category' ? filtered.filter(p => pricingCategories.has(p.category)) :
+    pricingScope === 'range' ? filtered.filter(p => {
+      const val = pricingRangeField === 'cost' ? (p.stock.costPrice || 0) : Number(p.discountedPrice || p.originalPrice || p.price || 0);
+      const min = pricingRangeMin === '' ? -Infinity : Number(pricingRangeMin);
+      const max = pricingRangeMax === '' ? Infinity : Number(pricingRangeMax);
+      return val >= min && val <= max;
+    }) :
+    /* individual */ filtered.filter(p => pricingSelectedIds.has(p._id));
+
+  // Search box just for picking individual products in the pricing panel —
+  // kept separate from the main search bar so narrowing your selection here
+  // doesn't also change what's shown in the product list below.
+  const pricingIndividualList = filtered.filter(p =>
+    p.name?.toLowerCase().includes(pricingIndividualSearch.toLowerCase()) ||
+    p.category?.toLowerCase().includes(pricingIndividualSearch.toLowerCase())
+  );
 
   const getStockBadge = (p: ProductInventory) => {
     if (!p.stock.trackInventory) return <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-gray-100 text-gray-500">NOT TRACKED</span>;
@@ -338,6 +439,187 @@ export function InventoryEmbed() {
         </button>
       </div>
 
+      {/* Bulk Price Update */}
+      <div className="bg-gray-50 border-2 border-gray-200 rounded-xl px-4 py-3 space-y-3">
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <div>
+            <p className="text-xs font-black uppercase tracking-widest text-gray-600">Bulk Price Update</p>
+            <p className="text-[10px] text-gray-400 mt-0.5">Sets price = cost price + margin %, rounded to the nearest ₹1</p>
+          </div>
+          <button onClick={() => { setPricingOpen(o => !o); setPricingPreview(null); }}
+            className="text-xs bg-white border-2 border-gray-200 text-gray-700 font-black px-3 py-2 rounded-xl hover:border-[#FA5600] transition whitespace-nowrap">
+            {pricingOpen ? '▲ Hide' : '💰 Set Margin %'}
+          </button>
+        </div>
+
+        {pricingOpen && (
+          <div className="bg-white rounded-xl border-2 border-gray-200 p-4 space-y-4">
+
+            {/* Scope selector */}
+            <div>
+              <label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1.5">Apply To</label>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                {([
+                  ['all', 'All Items'],
+                  ['category', 'By Category'],
+                  ['range', 'By Value Range'],
+                  ['individual', 'Select Individually'],
+                ] as const).map(([val, label]) => (
+                  <button key={val} onClick={() => { setPricingScope(val); setPricingPreview(null); }}
+                    className={`text-xs font-black px-3 py-2 rounded-lg border-2 transition ${pricingScope === val ? 'bg-[#FA5600] border-[#FA5600] text-white' : 'bg-white border-gray-200 text-gray-600 hover:border-[#FA5600]/50'}`}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <p className="text-[10px] text-gray-400 mt-1.5">
+                Scoped within your current search/filter above — {filtered.length} product{filtered.length !== 1 ? 's' : ''} {filter !== 'all' || searchQuery ? 'match that' : 'total'}.
+              </p>
+            </div>
+
+            {/* Category scope */}
+            {pricingScope === 'category' && (
+              <div>
+                <label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1.5">Categories</label>
+                {pricingAvailableCategories.length === 0 ? (
+                  <p className="text-xs text-gray-400 font-bold">No categories found in the current view.</p>
+                ) : (
+                  <div className="flex flex-wrap gap-2">
+                    {pricingAvailableCategories.map(cat => {
+                      const active = pricingCategories.has(cat);
+                      return (
+                        <button key={cat} onClick={() => {
+                          setPricingCategories(prev => { const next = new Set(prev); active ? next.delete(cat) : next.add(cat); return next; });
+                          setPricingPreview(null);
+                        }}
+                          className={`text-xs font-bold px-3 py-1.5 rounded-full border-2 transition ${active ? 'bg-[#FA5600]/10 border-[#FA5600] text-[#FA5600]' : 'bg-white border-gray-200 text-gray-500 hover:border-gray-300'}`}>
+                          {active ? '✓ ' : ''}{cat}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Value range scope */}
+            {pricingScope === 'range' && (
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">Based On</label>
+                  <select value={pricingRangeField} onChange={e => { setPricingRangeField(e.target.value as 'cost' | 'selling'); setPricingPreview(null); }}
+                    className="w-full border-2 border-gray-200 rounded-lg px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none bg-white">
+                    <option value="cost">Cost Price</option>
+                    <option value="selling">Current Selling Price</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">Min ₹</label>
+                  <input type="number" value={pricingRangeMin} onChange={e => { setPricingRangeMin(e.target.value); setPricingPreview(null); }}
+                    placeholder="0" className="w-full border-2 border-gray-200 rounded-lg px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none" />
+                </div>
+                <div>
+                  <label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">Max ₹</label>
+                  <input type="number" value={pricingRangeMax} onChange={e => { setPricingRangeMax(e.target.value); setPricingPreview(null); }}
+                    placeholder="No limit" className="w-full border-2 border-gray-200 rounded-lg px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none" />
+                </div>
+              </div>
+            )}
+
+            {/* Individual selection scope */}
+            {pricingScope === 'individual' && (
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="block text-xs font-black uppercase tracking-widest text-gray-500">Select Products ({pricingSelectedIds.size} selected)</label>
+                  <div className="flex gap-2">
+                    <button onClick={() => { setPricingSelectedIds(new Set(pricingIndividualList.map(p => p._id))); setPricingPreview(null); }}
+                      className="text-[10px] font-black text-[#FA5600] hover:underline">Select All Visible</button>
+                    <button onClick={() => { setPricingSelectedIds(new Set()); setPricingPreview(null); }}
+                      className="text-[10px] font-black text-gray-400 hover:underline">Clear</button>
+                  </div>
+                </div>
+                <input type="text" value={pricingIndividualSearch} onChange={e => setPricingIndividualSearch(e.target.value)}
+                  placeholder="Search to find products..." className="w-full border-2 border-gray-200 rounded-lg px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none mb-2" />
+                <div className="max-h-48 overflow-y-auto space-y-1 border-2 border-gray-100 rounded-lg p-2">
+                  {pricingIndividualList.length === 0 ? (
+                    <p className="text-xs text-gray-400 font-bold text-center py-3">No matches.</p>
+                  ) : pricingIndividualList.map(p => {
+                    const checked = pricingSelectedIds.has(p._id);
+                    return (
+                      <label key={p._id} className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-gray-50 cursor-pointer">
+                        <input type="checkbox" checked={checked} onChange={() => {
+                          setPricingSelectedIds(prev => { const next = new Set(prev); checked ? next.delete(p._id) : next.add(p._id); return next; });
+                          setPricingPreview(null);
+                        }} className="accent-[#FA5600]" />
+                        <span className="text-xs font-bold text-gray-700 flex-1 truncate">{p.name}</span>
+                        <span className="text-[10px] text-gray-400 font-bold">₹{(p.stock.costPrice || 0).toFixed(2)} cost</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            <p className="text-xs font-black text-gray-700 bg-gray-50 rounded-lg px-3 py-2">
+              {pricingScopeTargets.length} product{pricingScopeTargets.length !== 1 ? 's' : ''} in scope
+            </p>
+
+            {/* Percentages */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">Original Price Markup (%)</label>
+                <input type="number" value={originalPercent} onChange={e => { setOriginalPercent(e.target.value); setPricingPreview(null); }}
+                  placeholder="e.g. 30 — leave blank to skip" className="w-full border-2 border-gray-200 rounded-lg px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none" />
+              </div>
+              <div>
+                <label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">Discounted Price Markup (%)</label>
+                <input type="number" value={discountedPercent} onChange={e => { setDiscountedPercent(e.target.value); setPricingPreview(null); }}
+                  placeholder="e.g. 15 — leave blank to skip" className="w-full border-2 border-gray-200 rounded-lg px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none" />
+              </div>
+            </div>
+            <p className="text-[10px] text-gray-400 -mt-2">Both are optional but at least one is required — leave either blank to only update that one price type.</p>
+
+            <button onClick={previewBulkPricing} disabled={pricingLoading}
+              className="w-full bg-gray-800 text-white text-xs font-black px-4 py-2.5 rounded-xl hover:bg-gray-900 transition disabled:opacity-50">
+              {pricingLoading ? 'Calculating...' : 'Preview Changes'}
+            </button>
+
+            {pricingPreview && (
+              <div className="space-y-3">
+                {pricingPreview.items.length > 0 ? (
+                  <>
+                    <div className="max-h-64 overflow-y-auto space-y-1.5 pr-1">
+                      {pricingPreview.items.map((it: any) => (
+                        <div key={it._id} className="bg-gray-50 rounded-lg px-3 py-2">
+                          <p className="text-xs font-bold text-gray-700 truncate">{it.name}</p>
+                          <div className="flex flex-wrap gap-x-4 gap-y-0.5 mt-0.5 text-[11px] font-black">
+                            <span className="text-gray-400">Cost ₹{it.costPrice.toFixed(2)}</span>
+                            {it.newOriginalPrice !== null && (
+                              <span>Original: <span className="text-gray-400 line-through">₹{it.currentOriginalPrice.toFixed(2)}</span> → <span className="text-green-600">₹{it.newOriginalPrice.toFixed(2)}</span></span>
+                            )}
+                            {it.newDiscountedPrice !== null && (
+                              <span>Discounted: <span className="text-gray-400 line-through">₹{it.currentDiscountedPrice.toFixed(2)}</span> → <span className="text-green-600">₹{it.newDiscountedPrice.toFixed(2)}</span></span>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    {pricingPreview.skipped.length > 0 && (
+                      <p className="text-[11px] text-yellow-600 font-bold">⚠️ Skipping {pricingPreview.skipped.length} product(s) with no cost price set: {pricingPreview.skipped.map((s: any) => s.name).join(', ')}</p>
+                    )}
+                    <button onClick={applyBulkPricing} disabled={pricingApplying}
+                      className="w-full bg-green-500 text-white text-xs font-black py-2.5 rounded-xl hover:bg-green-600 transition disabled:opacity-50">
+                      {pricingApplying ? 'Applying...' : `✓ Apply to ${pricingPreview.items.length} Product(s)`}
+                    </button>
+                  </>
+                ) : (
+                  <p className="text-xs text-gray-400 font-bold text-center py-2">No products in scope have a cost price set — nothing to update.</p>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
       {/* Product List */}
       {loading ? (
         <div className="space-y-3">
@@ -398,6 +680,10 @@ export function InventoryEmbed() {
                     <div>
                       <p className="text-lg font-black text-gray-500">{product.stock.trackInventory ? product.stock.currentStock : '—'}</p>
                       <p className="text-[9px] text-gray-400 font-bold uppercase">Total</p>
+                    </div>
+                    <div>
+                      <p className="text-lg font-black text-green-600">{product.stock.costPrice > 0 ? `₹${product.stock.costPrice.toFixed(2)}` : '—'}</p>
+                      <p className="text-[9px] text-gray-400 font-bold uppercase">Cost</p>
                     </div>
                   </div>
 
