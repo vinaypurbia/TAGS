@@ -1598,7 +1598,14 @@ function PurchaseOrdersModule({ showMsg }: any) {
     const data = await handleAction(recvModal.po._id, 'receive', { receivedItems: recvItems, paymentMode: recvPayMode, transportCost: Number(recvTransportCost) || 0 });
     if (data.success) {
       setRecvModal({ open: false, po: null });
-      if (data.shortageItems?.length > 0) showMsg(`⚠️ Stock received with shortage of ₹${Number(data.totalShortageValue || 0).toFixed(2)} — recorded against ${recvModal.po?.supplier?.name || 'supplier'}.`, 'error');
+      if (data.shortageItems?.length > 0) {
+        showMsg(`⚠️ Stock received with shortage of ₹${Number(data.totalShortageValue || 0).toFixed(2)} — recorded against ${recvModal.po?.supplier?.name || 'supplier'}.`, 'error');
+      } else {
+        // Always confirm — especially important when transport cost was entered,
+        // so it's visible that the landed cost was actually applied to inventory
+        // (the backend message already says exactly how it was split).
+        showMsg(data.message || 'Stock received and inventory updated.', 'success');
+      }
     }
   };
 
