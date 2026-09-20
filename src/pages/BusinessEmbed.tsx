@@ -1279,7 +1279,7 @@ function SalesModule({ showMsg }: any) {
   const [showForm, setShowForm] = useState(false);
   const [products, setProducts] = useState<any[]>([]);
   const [customers, setCustomers] = useState<any[]>([]); // FIX #7
-  const [form, setForm] = useState({ customerName: '', customerPhone: '', customerAddress: '', notes: '', paymentMode: 'cash', items: [{ productId: '', productName: '', price: '', quantity: '1' }] });
+  const [form, setForm] = useState({ customerName: '', customerPhone: '', customerAddress: '', notes: '', paymentMode: 'cash', items: [{ productId: '', productName: '', price: '', quantity: '1', imageUrl: '' }] });
 
   const fetchSales = () => {
     setLoading(true);
@@ -1295,7 +1295,7 @@ function SalesModule({ showMsg }: any) {
     fetch('/api/customers').then(r => r.json()).then(data => setCustomers(data.customers || [])).catch(() => {}); // FIX #7
   }, []);
 
-  const addItem = () => setForm(f => ({ ...f, items: [...f.items, { productId: '', productName: '', price: '', quantity: '1' }] }));
+  const addItem = () => setForm(f => ({ ...f, items: [...f.items, { productId: '', productName: '', price: '', quantity: '1', imageUrl: '' }] }));
   const removeItem = (i: number) => setForm(f => ({ ...f, items: f.items.filter((_, idx) => idx !== i) }));
 
   // FIX #9: handle __product__ key from ProductSearchRow
@@ -1304,7 +1304,7 @@ function SalesModule({ showMsg }: any) {
       const items = [...f.items];
       if (field === '__product__') {
         const p = JSON.parse(value);
-        items[i] = { ...items[i], productId: p._id, productName: p.name, price: String(p.discountedPrice || p.price || ''), category: p.category || '' };
+        items[i] = { ...items[i], productId: p._id, productName: p.name, price: String(p.discountedPrice || p.price || ''), category: p.category || '', imageUrl: p.image || p.imageUrl || '' };
       } else {
         items[i] = { ...items[i], [field]: value };
       }
@@ -1316,13 +1316,13 @@ function SalesModule({ showMsg }: any) {
     if (!form.customerName || !form.customerPhone) { showMsg('Customer name and phone required.', 'error'); return; }
     const validItems = form.items.filter(i => i.productName && i.price && i.quantity);
     if (validItems.length === 0) { showMsg('Add at least one item.', 'error'); return; }
-    const payload = { ...form, items: validItems.map(i => ({ productId: i.productId, productName: i.productName, category: i.category || '', price: parseFloat(i.price), quantity: parseInt(i.quantity) })) };
+    const payload = { ...form, status: 'confirmed', items: validItems.map(i => ({ productId: i.productId, productName: i.productName, category: i.category || '', price: parseFloat(i.price), quantity: parseInt(i.quantity), imageUrl: i.imageUrl || '' })) };
     const res = await fetch('/api/sales', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
     const data = await res.json();
     if (data.success) {
       showMsg(`✅ Sale ${data.saleNumber} recorded! Customer auto-saved.`, 'success');
       setShowForm(false);
-      setForm({ customerName: '', customerPhone: '', customerAddress: '', notes: '', paymentMode: 'cash', items: [{ productId: '', productName: '', price: '', quantity: '1' }] });
+      setForm({ customerName: '', customerPhone: '', customerAddress: '', notes: '', paymentMode: 'cash', items: [{ productId: '', productName: '', price: '', quantity: '1', imageUrl: '' }] });
       fetchSales();
     } else if (data.stockErrors) {
       // Professional stock error display
@@ -1330,11 +1330,6 @@ function SalesModule({ showMsg }: any) {
     } else {
       showMsg(data.error || 'Failed.', 'error');
     }
-  };
-
-  const updateStatus = async (id: string, status: string) => {
-    await fetch('/api/sales', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id, status }) });
-    fetchSales();
   };
 
   const deleteSale = async (id: string) => {
@@ -1450,12 +1445,6 @@ function SalesModule({ showMsg }: any) {
                 </div>
               </div>
               <div className="mt-3 flex gap-2 flex-wrap">
-                {sale.status === 'pending' && (
-                  <button onClick={() => updateStatus(sale._id, 'confirmed')} className="text-xs bg-green-500 text-white font-bold px-3 py-1 rounded-full hover:bg-green-600 transition">✓ Confirm</button>
-                )}
-                {sale.status !== 'cancelled' && (
-                  <button onClick={() => updateStatus(sale._id, 'cancelled')} className="text-xs bg-gray-100 text-gray-600 font-bold px-3 py-1 rounded-full hover:bg-gray-200 transition">Cancel</button>
-                )}
                 <button onClick={() => printSaleInvoicePDF(sale)} className="text-xs bg-blue-50 text-blue-600 font-bold px-3 py-1 rounded-full hover:bg-blue-100 transition">🖨️ Print Invoice</button>
                 <button onClick={() => deleteSale(sale._id)} className="text-xs bg-red-50 text-red-500 font-bold px-3 py-1 rounded-full hover:bg-red-100 transition ml-auto">Delete</button>
               </div>
