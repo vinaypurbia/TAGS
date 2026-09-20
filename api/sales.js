@@ -106,13 +106,27 @@ export default async function handler(req, res) {
       const { customerName, customerPhone, customerAddress, items, notes, paymentMode, status, orderId, discountAmount, taxAmount, mixedCashAmount, mixedOtherMode, mixedOtherAmount } = req.body;
       if (!items || items.length === 0) return res.status(400).json({ error: 'Items required' });
 
-      const enrichedItems = items.map(item => ({
-        productId: item.productId || '',
-        productName: item.productName || item.name || '',
-        category: item.category || '',
-        quantity: Number(item.quantity) || 1,
-        price: Number(item.price) || 0,
-        totalPrice: (Number(item.quantity) || 1) * (Number(item.price) || 0),
+      const enrichedItems = await Promise.all(items.map(async (item) => {
+        // Prefer whatever image field the frontend cart/product already sends.
+        let imageUrl = item.imageUrl || item.image || (Array.isArray(item.imageUrls) ? item.imageUrls[0] : '') || '';
+
+        // Fallback: look it up from inventory by productId if the request didn't include one.
+        if (!imageUrl && item.productId) {
+          try {
+            const inv = await inventory.findOne({ productId: item.productId });
+            imageUrl = inv?.imageUrl || inv?.image || (Array.isArray(inv?.imageUrls) ? inv.imageUrls[0] : '') || '';
+          } catch { /* leave imageUrl empty — invoice will show a placeholder */ }
+        }
+
+        return {
+          productId: item.productId || '',
+          productName: item.productName || item.name || '',
+          category: item.category || '',
+          quantity: Number(item.quantity) || 1,
+          price: Number(item.price) || 0,
+          totalPrice: (Number(item.quantity) || 1) * (Number(item.price) || 0),
+          imageUrl,
+        };
       }));
 
       const subtotal = enrichedItems.reduce((s, i) => s + i.totalPrice, 0);
