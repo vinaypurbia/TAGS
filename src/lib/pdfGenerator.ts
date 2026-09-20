@@ -401,3 +401,302 @@ export const getWhatsAppLink = (
 
   return `https://wa.me/${phoneNumber.replace(/[^0-9]/g, '')}?text=${encodeURIComponent(message)}`;
 };
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SALE INVOICE — for sales recorded directly in the admin Business/Sales tab
+// (as opposed to generateOrderPDF above, which is for customer cart checkouts).
+// No cart/image dependency — a sale record from /api/sales already has
+// everything needed (productName, category, price, qty, totals) without
+// having to load product images, so this stays fast and synchronous.
+// ═══════════════════════════════════════════════════════════════════════════
+
+export interface SaleItem {
+  productName: string;
+  category?: string;
+  quantity: number;
+  price: number;
+  totalPrice: number;
+}
+
+export interface SaleRecord {
+  saleNumber: string;
+  customerName?: string;
+  customerPhone?: string;
+  customerAddress?: string;
+  items: SaleItem[];
+  subtotal: number;
+  discountAmount?: number;
+  taxAmount?: number;
+  totalAmount: number;
+  paymentMode?: string;
+  status?: string;
+  notes?: string;
+  date?: string | Date;
+}
+
+const STATUS_COLORS: Record<string, [number, number, number]> = {
+  confirmed: [34, 160, 90],
+  pending:   [250, 86, 0],
+  cancelled: [200, 60, 60],
+};
+
+export const generateSaleInvoicePDF = (sale: SaleRecord): jsPDF => {
+  const doc   = new jsPDF({ unit: 'mm', format: 'a4' });
+  const pageW = 210;
+  const pageH = 297;
+  const dateStr = new Date(sale.date || Date.now()).toLocaleDateString('en-IN', {
+    day: '2-digit', month: 'short', year: 'numeric',
+  });
+  const statusUpper = (sale.status || 'confirmed').toUpperCase();
+  const statusColor = STATUS_COLORS[(sale.status || 'confirmed').toLowerCase()] || STATUS_COLORS.confirmed;
+
+  // ── Orange left accent bar ────────────────────────────────────────────────
+  doc.setFillColor(250, 86, 0);
+  doc.rect(0, 0, 4, pageH, 'F');
+
+  // ── HEADER ───────────────────────────────────────────────────────────────
+  doc.setFillColor(250, 86, 0);
+  doc.rect(4, 0, pageW - 4, 44, 'F');
+
+  doc.setFillColor(255, 255, 255);
+  doc.circle(22, 22, 11, 'F');
+  doc.setFontSize(17);
+  doc.setFont('helvetica', 'bold');
+  doc.setTextColor(250, 86, 0);
+  doc.text('T', 22, 26.5, { align: 'center' });
+
+  doc.setFontSize(26);
+  doc.setTextColor(255, 255, 255);
+  doc.setFont('helvetica', 'bold');
+  doc.text('TAGS', 38, 20);
+  doc.setFontSize(8);
+  doc.setFont('helvetica', 'normal');
+  doc.setTextColor(255, 215, 180);
+  doc.text('Toys · Adventure · Gadgets · Sports', 38, 27);
+  doc.text('www.ta-gs.online', 38, 33);
+
+  doc.setFontSize(16);
+  doc.setFont('helvetica', 'bold');
+  doc.setTextColor(255, 255, 255);
+  doc.text('SALES INVOICE', pageW - 12, 14, { align: 'right' });
+
+  doc.setFontSize(7.5);
+  doc.setFont('helvetica', 'normal');
+  doc.setTextColor(255, 215, 180);
+  [
+    'Hathipole, Udaipur - 313001, Rajasthan, India',
+    'Ph: +91 63500 21226  |  tags.udr@gmail.com',
+    'GSTIN: XXXXXXXXXXXXXXX',
+  ].forEach((line, i) => doc.text(line, pageW - 12, 22 + i * 7, { align: 'right' }));
+
+  // ── ORDER META BAR ────────────────────────────────────────────────────────
+  doc.setFillColor(245, 245, 245);
+  doc.rect(4, 44, pageW - 4, 14, 'F');
+  doc.setFontSize(7);
+  doc.setFont('helvetica', 'normal');
+  doc.setTextColor(130, 130, 130);
+  doc.text('INVOICE NO',  14,  50);
+  doc.text('DATE',        85,  50);
+  doc.text('STATUS',     150,  50);
+  doc.setFontSize(8.5);
+  doc.setFont('helvetica', 'bold');
+  doc.setTextColor(30, 30, 30);
+  doc.text(sale.saleNumber, 14, 55.5);
+  doc.text(dateStr, 85, 55.5);
+  doc.setTextColor(...statusColor);
+  doc.text(statusUpper, 150, 55.5);
+
+  // ── SOLD BY / BILLED TO ──────────────────────────────────────────────────
+  let y = 65;
+
+  doc.setFillColor(255, 248, 240);
+  doc.roundedRect(14, y, 86, 32, 2, 2, 'F');
+  doc.setFontSize(7);
+  doc.setFont('helvetica', 'bold');
+  doc.setTextColor(250, 86, 0);
+  doc.text('SOLD BY', 18, y + 6);
+  doc.setFontSize(9);
+  doc.setTextColor(20, 20, 20);
+  doc.text('TAGS', 18, y + 12);
+  doc.setFontSize(7.5);
+  doc.setFont('helvetica', 'normal');
+  doc.setTextColor(90, 90, 90);
+  doc.text('Hathipole, Udaipur - 313001', 18, y + 18);
+  doc.text('Rajasthan, India', 18, y + 23);
+  doc.text('Ph: +91 63500 21226', 18, y + 28);
+
+  doc.setFillColor(255, 248, 240);
+  doc.roundedRect(110, y, 86, 32, 2, 2, 'F');
+  doc.setFontSize(7);
+  doc.setFont('helvetica', 'bold');
+  doc.setTextColor(250, 86, 0);
+  doc.text('BILLED TO', 114, y + 6);
+  doc.setFontSize(9);
+  doc.setFont('helvetica', 'bold');
+  doc.setTextColor(20, 20, 20);
+  doc.text(sale.customerName || 'Walk-in Customer', 114, y + 12);
+  doc.setFontSize(7.5);
+  doc.setFont('helvetica', 'normal');
+  doc.setTextColor(90, 90, 90);
+  doc.text(`Ph: ${sale.customerPhone || '—'}`, 114, y + 18);
+  if (sale.customerAddress) {
+    const addrLines = doc.splitTextToSize(sale.customerAddress, 78);
+    addrLines.slice(0, 3).forEach((line: string, i: number) =>
+      doc.text(line, 114, y + 23 + i * 5)
+    );
+  }
+
+  y += 38;
+  hRule(doc, y, 14, 196, [250, 86, 0]);
+  y += 5;
+
+  // ── ITEMS TABLE (no image column — cleaner invoice layout) ──────────────
+  const C = {
+    name: 16,   // ends ~100
+    cat:  102,  // ends ~130
+    unit: 131,  // right-align to 159
+    qty:  160,  // centre at 166
+    tot:  173,  // right-align to 196
+  };
+  const ROW_H = 12;
+
+  doc.setFillColor(30, 30, 30);
+  doc.rect(14, y, 182, 8, 'F');
+  doc.setFontSize(7.5);
+  doc.setFont('helvetica', 'bold');
+  doc.setTextColor(255, 255, 255);
+  doc.text('PRODUCT',  C.name,      y + 5.5);
+  doc.text('CATEGORY', C.cat,       y + 5.5);
+  doc.text('UNIT',     C.unit + 28, y + 5.5, { align: 'right' });
+  doc.text('QTY',      C.qty + 6,   y + 5.5, { align: 'center' });
+  doc.text('AMOUNT',   C.tot + 23,  y + 5.5, { align: 'right' });
+  y += 8;
+
+  sale.items.forEach((item, idx) => {
+    const rowY = y;
+    const even = idx % 2 === 0;
+
+    doc.setFillColor(...(even ? [255, 255, 255] as [number, number, number] : [255, 248, 240] as [number, number, number]));
+    doc.rect(14, rowY, 182, ROW_H, 'F');
+    doc.setDrawColor(220, 220, 220);
+    doc.setLineWidth(0.2);
+    doc.rect(14, rowY, 182, ROW_H);
+
+    const nameLines = doc.splitTextToSize(item.productName, 82);
+    doc.setFontSize(8);
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(20, 20, 20);
+    doc.text(nameLines[0] || '', C.name, rowY + 7.5);
+
+    doc.setFontSize(7);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(120, 120, 120);
+    doc.text(item.category || '—', C.cat, rowY + 7.5);
+
+    doc.setFontSize(8);
+    doc.setTextColor(40, 40, 40);
+    doc.text(rs(item.price), C.unit + 28, rowY + 7.5, { align: 'right' });
+
+    doc.setFont('helvetica', 'bold');
+    doc.text(String(item.quantity), C.qty + 6, rowY + 7.5, { align: 'center' });
+
+    doc.setFontSize(8.5);
+    doc.setTextColor(20, 20, 20);
+    doc.text(rs(item.totalPrice), C.tot + 23, rowY + 7.5, { align: 'right' });
+
+    y += ROW_H;
+  });
+
+  y += 4;
+  hRule(doc, y, 14, 196, [200, 200, 200]);
+  y += 5;
+
+  // ── TOTALS ────────────────────────────────────────────────────────────────
+  const TX = 148;
+  const VX = 195;
+
+  doc.setFontSize(8);
+  doc.setFont('helvetica', 'normal');
+  doc.setTextColor(90, 90, 90);
+  doc.text('Subtotal:', TX, y);
+  doc.setTextColor(20, 20, 20);
+  doc.text(rs(sale.subtotal), VX, y, { align: 'right' });
+  y += 6;
+
+  if (sale.discountAmount && sale.discountAmount > 0) {
+    doc.setTextColor(90, 90, 90);
+    doc.text('Discount:', TX, y);
+    doc.setTextColor(34, 160, 90);
+    doc.text(`- ${rs(sale.discountAmount)}`, VX, y, { align: 'right' });
+    y += 6;
+  }
+  if (sale.taxAmount && sale.taxAmount > 0) {
+    doc.setTextColor(90, 90, 90);
+    doc.text('Tax:', TX, y);
+    doc.setTextColor(20, 20, 20);
+    doc.text(rs(sale.taxAmount), VX, y, { align: 'right' });
+    y += 6;
+  }
+
+  hRule(doc, y, TX - 2, VX + 2, [250, 86, 0]);
+  y += 2;
+
+  doc.setFillColor(250, 86, 0);
+  doc.roundedRect(TX - 2, y, VX - TX + 4, 11, 1.5, 1.5, 'F');
+  doc.setFontSize(9);
+  doc.setFont('helvetica', 'bold');
+  doc.setTextColor(255, 255, 255);
+  doc.text('TOTAL', TX + 1, y + 7.5);
+  doc.setFontSize(10);
+  doc.text(rs(sale.totalAmount), VX - 1, y + 7.5, { align: 'right' });
+  y += 14;
+
+  // ── PAYMENT MODE ─────────────────────────────────────────────────────────
+  if (sale.paymentMode) {
+    doc.setFontSize(8);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(90, 90, 90);
+    doc.text(`Payment Mode: ${sale.paymentMode.toUpperCase()}`, 14, y);
+    y += 8;
+  }
+  if (sale.notes) {
+    doc.setFontSize(7.5);
+    doc.setTextColor(120, 120, 120);
+    const noteLines = doc.splitTextToSize(`Note: ${sale.notes}`, 182);
+    noteLines.forEach((line: string, i: number) => doc.text(line, 14, y + i * 5));
+    y += noteLines.length * 5 + 4;
+  }
+
+  // ── FOOTER ────────────────────────────────────────────────────────────────
+  const footerY = Math.max(y + 6, pageH - 18);
+  doc.setFillColor(26, 26, 26);
+  doc.rect(4, footerY, pageW - 4, pageH - footerY, 'F');
+  doc.setFontSize(7.5);
+  doc.setFont('helvetica', 'bold');
+  doc.setTextColor(255, 255, 255);
+  doc.text('Thank you for shopping with TAGS!', 14, footerY + 7);
+  doc.setFont('helvetica', 'normal');
+  doc.setTextColor(160, 160, 160);
+  doc.text(
+    'TAGS · Hathipole, Udaipur - 313001 · +91 63500 21226 · tags.udr@gmail.com · www.ta-gs.online',
+    14, footerY + 13
+  );
+  doc.setTextColor(250, 86, 0);
+  doc.setFont('helvetica', 'bold');
+  doc.text('ta-gs.online', pageW - 12, footerY + 7, { align: 'right' });
+
+  return doc;
+};
+
+// Opens the invoice in a new browser tab — user can print (Ctrl+P) or save from there.
+export const printSaleInvoicePDF = (sale: SaleRecord) => {
+  const doc = generateSaleInvoicePDF(sale);
+  const blobUrl = doc.output('bloburl');
+  window.open(blobUrl as unknown as string, '_blank');
+};
+
+// Directly downloads the invoice as a file.
+export const downloadSaleInvoicePDF = (sale: SaleRecord) => {
+  const doc = generateSaleInvoicePDF(sale);
+  doc.save(`Invoice-${sale.saleNumber}.pdf`);
+};
