@@ -199,13 +199,38 @@ export default async function handler(req, res) {
 
       const saleId = result.insertedId.toString();
 
+      // Deduct stock for each tracked item and compute COGS in the same pass.
       let totalCOGS = 0;
       for (const item of enrichedItems) {
         if (!item.productId) continue;
         const inv = await inventory.findOne({ productId: item.productId });
-        if (inv && inv.costPrice && inv.costPrice > 0) {
+        if (!inv) continue; // no inventory record — untracked product, nothing to deduct
+
+        if (inv.costPrice && inv.costPrice > 0) {
           totalCOGS += inv.costPrice * item.quantity;
         }
+
+        if (inv.trackInventory === false) continue; // explicitly untracked — skip stock deduction
+
+        const newCurrent = Math.max(0, (inv.currentStock || 0) - item.quantity);
+        const newAvailable = Math.max(0, (inv.availableStock || 0) - item.quantity);
+        await inventory.updateOne(
+          { productId: item.productId },
+          {
+            $set: { currentStock: newCurrent, availableStock: newAvailable, updatedAt: new Date() },
+            $push: { adjustmentLog: { adjustment: -item.quantity, reason: `Sale ${saleNumber}`, date: new Date(), stockAfter: newCurrent } },
+          }
+        );
+        await movements.insertOne({
+          productId: item.productId,
+          type: 'sale',
+          quantity: -item.quantity,
+          referenceId: saleId,
+          referenceType: 'sale',
+          reason: `Sale ${saleNumber}`,
+          date: new Date(),
+          createdAt: new Date(),
+        });
       }
 
       if (paymentMode === 'mixed' && mixedCashAmount > 0) {
@@ -432,6 +457,24 @@ export default async function handler(req, res) {
         await movements.deleteMany({ referenceId: orderId });
         await ordersCol.deleteOne({ _id: linkedOrder._id });
       }
+
+      // Restore stock for every tracked item on this sale.
+      for (const item of (sale.items || [])) {
+        if (!item.productId) continue;
+        const inv = await inventory.findOne({ productId: item.productId });
+        if (!inv || inv.trackInventory === false) continue;
+
+        const newCurrent = (inv.currentStock || 0) + item.quantity;
+        const newAvailable = (inv.availableStock || 0) + item.quantity;
+        await inventory.updateOne(
+          { productId: item.productId },
+          {
+            $set: { currentStock: newCurrent, availableStock: newAvailable, updatedAt: new Date() },
+            $push: { adjustmentLog: { adjustment: item.quantity, reason: `Sale ${sale.saleNumber} deleted — stock restored`, date: new Date(), stockAfter: newCurrent } },
+          }
+        );
+      }
+      await movements.deleteMany({ referenceId: saleId, referenceType: 'sale' });
 
       await salesCol.deleteOne({ _id: new ObjectId(id) });
       return res.status(200).json({ success: true });
