@@ -405,9 +405,10 @@ export const getWhatsAppLink = (
 // ═══════════════════════════════════════════════════════════════════════════
 // SALE INVOICE — for sales recorded directly in the admin Business/Sales tab
 // (as opposed to generateOrderPDF above, which is for customer cart checkouts).
-// No cart/image dependency — a sale record from /api/sales already has
-// everything needed (productName, category, price, qty, totals) without
-// having to load product images, so this stays fast and synchronous.
+// A sale record from /api/sales has everything needed (productName, category,
+// price, qty, totals) plus an optional per-item imageUrl. When present, the
+// thumbnail is fetched and drawn the same way generateOrderPDF does; when
+// absent, the row falls back to a placeholder box so layout stays consistent.
 // ═══════════════════════════════════════════════════════════════════════════
 
 export interface SaleItem {
@@ -416,6 +417,7 @@ export interface SaleItem {
   quantity: number;
   price: number;
   totalPrice: number;
+  imageUrl?: string; // used to draw a thumbnail on the invoice, when available
 }
 
 export interface SaleRecord {
@@ -440,7 +442,17 @@ const STATUS_COLORS: Record<string, [number, number, number]> = {
   cancelled: [200, 60, 60],
 };
 
-export const generateSaleInvoicePDF = (sale: SaleRecord): jsPDF => {
+export const generateSaleInvoicePDF = async (sale: SaleRecord): Promise<jsPDF> => {
+  // Pre-fetch thumbnails for any items that have an image URL (best-effort;
+  // items with no imageUrl just fall back to a placeholder box in the row).
+  const imgCache: Record<number, string> = {};
+  await Promise.all(sale.items.map(async (item, idx) => {
+    if (item.imageUrl) {
+      const b64 = await loadImage(item.imageUrl);
+      if (b64) imgCache[idx] = b64;
+    }
+  }));
+
   const doc   = new jsPDF({ unit: 'mm', format: 'a4' });
   const pageW = 210;
   const pageH = 297;
@@ -550,21 +562,23 @@ export const generateSaleInvoicePDF = (sale: SaleRecord): jsPDF => {
   hRule(doc, y, 14, 196, [250, 86, 0]);
   y += 5;
 
-  // ── ITEMS TABLE (no image column — cleaner invoice layout) ──────────────
+  // ── ITEMS TABLE (with image column when a thumbnail is available) ───────
   const C = {
-    name: 16,   // ends ~100
+    img:  14,   // width 16 → ends 30
+    name: 31,   // ends ~100
     cat:  102,  // ends ~130
     unit: 131,  // right-align to 159
     qty:  160,  // centre at 166
     tot:  173,  // right-align to 196
   };
-  const ROW_H = 12;
+  const ROW_H = 20;
 
   doc.setFillColor(30, 30, 30);
   doc.rect(14, y, 182, 8, 'F');
   doc.setFontSize(7.5);
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(255, 255, 255);
+  doc.text('IMG',      C.img + 8,  y + 5.5, { align: 'center' });
   doc.text('PRODUCT',  C.name,      y + 5.5);
   doc.text('CATEGORY', C.cat,       y + 5.5);
   doc.text('UNIT',     C.unit + 28, y + 5.5, { align: 'right' });
@@ -582,27 +596,42 @@ export const generateSaleInvoicePDF = (sale: SaleRecord): jsPDF => {
     doc.setLineWidth(0.2);
     doc.rect(14, rowY, 182, ROW_H);
 
-    const nameLines = doc.splitTextToSize(item.productName, 82);
+    // Thumbnail (falls back to a placeholder box when no image is available)
+    const imgData = imgCache[idx];
+    if (imgData) {
+      try { doc.addImage(imgData, 'JPEG', C.img + 0.5, rowY + 3, 14, 14); }
+      catch { /* skip */ }
+    } else {
+      doc.setFillColor(235, 235, 235);
+      doc.rect(C.img + 0.5, rowY + 3, 14, 14, 'F');
+      doc.setFontSize(5);
+      doc.setTextColor(160, 160, 160);
+      doc.text('IMG', C.img + 7.5, rowY + 11.5, { align: 'center' });
+    }
+
+    const nameLines = doc.splitTextToSize(item.productName, 66);
     doc.setFontSize(8);
     doc.setFont('helvetica', 'bold');
     doc.setTextColor(20, 20, 20);
-    doc.text(nameLines[0] || '', C.name, rowY + 7.5);
+    nameLines.slice(0, 2).forEach((line: string, li: number) =>
+      doc.text(line, C.name, rowY + 8 + li * 5)
+    );
 
     doc.setFontSize(7);
     doc.setFont('helvetica', 'normal');
     doc.setTextColor(120, 120, 120);
-    doc.text(item.category || '—', C.cat, rowY + 7.5);
+    doc.text(item.category || '—', C.cat, rowY + 11.5);
 
     doc.setFontSize(8);
     doc.setTextColor(40, 40, 40);
-    doc.text(rs(item.price), C.unit + 28, rowY + 7.5, { align: 'right' });
+    doc.text(rs(item.price), C.unit + 28, rowY + 11.5, { align: 'right' });
 
     doc.setFont('helvetica', 'bold');
-    doc.text(String(item.quantity), C.qty + 6, rowY + 7.5, { align: 'center' });
+    doc.text(String(item.quantity), C.qty + 6, rowY + 11.5, { align: 'center' });
 
     doc.setFontSize(8.5);
     doc.setTextColor(20, 20, 20);
-    doc.text(rs(item.totalPrice), C.tot + 23, rowY + 7.5, { align: 'right' });
+    doc.text(rs(item.totalPrice), C.tot + 23, rowY + 11.5, { align: 'right' });
 
     y += ROW_H;
   });
@@ -689,14 +718,14 @@ export const generateSaleInvoicePDF = (sale: SaleRecord): jsPDF => {
 };
 
 // Opens the invoice in a new browser tab — user can print (Ctrl+P) or save from there.
-export const printSaleInvoicePDF = (sale: SaleRecord) => {
-  const doc = generateSaleInvoicePDF(sale);
+export const printSaleInvoicePDF = async (sale: SaleRecord) => {
+  const doc = await generateSaleInvoicePDF(sale);
   const blobUrl = doc.output('bloburl');
   window.open(blobUrl as unknown as string, '_blank');
 };
 
 // Directly downloads the invoice as a file.
-export const downloadSaleInvoicePDF = (sale: SaleRecord) => {
-  const doc = generateSaleInvoicePDF(sale);
+export const downloadSaleInvoicePDF = async (sale: SaleRecord) => {
+  const doc = await generateSaleInvoicePDF(sale);
   doc.save(`Invoice-${sale.saleNumber}.pdf`);
 };
