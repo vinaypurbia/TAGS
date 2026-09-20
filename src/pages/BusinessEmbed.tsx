@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { useAuth, authHeaders } from '../context/AuthContext';
 import type { UserRole } from '../context/AuthContext';
+import { printSaleInvoicePDF } from '../lib/pdfGenerator';
 
 type Module = 'dashboard' | 'orders' | 'sales' | 'purchase-orders' | 'cashflow' | 'expenses' | 'suppliers' | 'customers' | 'reports' | 'users' | 'financing' | 'ledger' | 'regenerate';
 type ReportType = 'stock-shortage' | 'low-performing' | 'best-selling' | 'profit-margin' | 'pnl' | 'stock-valuation';
@@ -1455,6 +1456,7 @@ function SalesModule({ showMsg }: any) {
                 {sale.status !== 'cancelled' && (
                   <button onClick={() => updateStatus(sale._id, 'cancelled')} className="text-xs bg-gray-100 text-gray-600 font-bold px-3 py-1 rounded-full hover:bg-gray-200 transition">Cancel</button>
                 )}
+                <button onClick={() => printSaleInvoicePDF(sale)} className="text-xs bg-blue-50 text-blue-600 font-bold px-3 py-1 rounded-full hover:bg-blue-100 transition">🖨️ Print Invoice</button>
                 <button onClick={() => deleteSale(sale._id)} className="text-xs bg-red-50 text-red-500 font-bold px-3 py-1 rounded-full hover:bg-red-100 transition ml-auto">Delete</button>
               </div>
             </div>
