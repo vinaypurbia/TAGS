@@ -839,6 +839,71 @@ export default async function handler(req, res) {
       if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
       const { scope = 'ledger' } = req.body || {};
+
+      // ── SCOPE: 'stock' — reconcile inventory against sales that predate the
+      // stock-deduction fix (sales created before that fix never subtracted
+      // stock, since /api/sales' POST handler now does that on creation and
+      // logs a stockMovements record for each item it deducts).
+      // This walks every non-cancelled sale, and for any item that does NOT
+      // already have a matching stockMovements entry, deducts it from
+      // inventory now and writes the missing movement record — so re-running
+      // this is always safe: an item already reconciled (or created after
+      // the fix) is simply skipped.
+      if (scope === 'stock') {
+        const salesColForStock = db.collection('sales');
+        const inventoryColForStock = db.collection('inventory');
+        const movementsCol = db.collection('stockMovements');
+        const stockLog = [];
+        let itemsFixed = 0;
+        let itemsSkipped = 0;
+
+        const allSales = await salesColForStock.find({ status: { $ne: 'cancelled' } }).toArray();
+
+        for (const sale of allSales) {
+          const saleId = sale._id.toString();
+          for (const item of (sale.items || [])) {
+            if (!item.productId) continue;
+
+            const alreadyDeducted = await movementsCol.findOne({
+              referenceId: saleId,
+              referenceType: 'sale',
+              productId: item.productId,
+            });
+            if (alreadyDeducted) { itemsSkipped++; continue; }
+
+            const inv = await inventoryColForStock.findOne({ productId: item.productId });
+            if (!inv || inv.trackInventory === false) { itemsSkipped++; continue; }
+
+            const qty = Number(item.quantity) || 1;
+            const newCurrent = Math.max(0, (inv.currentStock || 0) - qty);
+            const newAvailable = Math.max(0, (inv.availableStock || 0) - qty);
+
+            await inventoryColForStock.updateOne(
+              { productId: item.productId },
+              {
+                $set: { currentStock: newCurrent, availableStock: newAvailable, updatedAt: new Date() },
+                $push: { adjustmentLog: { adjustment: -qty, reason: `Backfill — Sale ${sale.saleNumber} (pre-fix)`, date: new Date(), stockAfter: newCurrent } },
+              }
+            );
+            await movementsCol.insertOne({
+              productId: item.productId,
+              type: 'sale',
+              quantity: -qty,
+              referenceId: saleId,
+              referenceType: 'sale',
+              reason: `Backfill — Sale ${sale.saleNumber} (pre-fix)`,
+              date: new Date(),
+              createdAt: new Date(),
+            });
+            itemsFixed++;
+            stockLog.push(`Sale ${sale.saleNumber}: deducted ${qty}x "${item.productName}"`);
+          }
+        }
+
+        stockLog.push(`Total: ${itemsFixed} item(s) backfilled, ${itemsSkipped} already reconciled`);
+        return res.status(200).json({ success: true, itemsFixed, itemsSkipped, log: stockLog });
+      }
+
       const purchaseOrders = db.collection('purchaseOrders');
       const ordersCol      = db.collection('orders');
       const salesCol       = db.collection('sales');
