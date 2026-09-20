@@ -43,6 +43,7 @@ export default async function handler(req, res) {
     const db = dbClient.db('tagsdb');
     const salesCol = db.collection('sales');
     const inventory = db.collection('inventory');
+    const productsCol = db.collection('products');
     const movements = db.collection('stockMovements');
     const cashFlow = db.collection('cashFlow');
     const customers = db.collection('customers');
@@ -110,11 +111,16 @@ export default async function handler(req, res) {
         // Prefer whatever image field the frontend cart/product already sends.
         let imageUrl = item.imageUrl || item.image || (Array.isArray(item.imageUrls) ? item.imageUrls[0] : '') || '';
 
-        // Fallback: look it up from inventory by productId if the request didn't include one.
+        // Fallback: look it up from the products collection by productId if the
+        // request didn't include one. Confirmed against /api/products — real
+        // products live in Mongo's `products` collection with image/imageUrl
+        // fields already re-hosted on Cloudinary (see ensureCloudinaryImage).
         if (!imageUrl && item.productId) {
           try {
-            const inv = await inventory.findOne({ productId: item.productId });
-            imageUrl = inv?.imageUrl || inv?.image || (Array.isArray(inv?.imageUrls) ? inv.imageUrls[0] : '') || '';
+            let prod = null;
+            try { prod = await productsCol.findOne({ _id: new ObjectId(item.productId) }); } catch { /* not a valid ObjectId */ }
+            if (!prod) prod = await productsCol.findOne({ productId: item.productId });
+            imageUrl = prod?.image || prod?.imageUrl || '';
           } catch { /* leave imageUrl empty — invoice will show a placeholder */ }
         }
 
