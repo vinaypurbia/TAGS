@@ -100,6 +100,14 @@ function ProductSearchRow({ item, index, products, onUpdate, onRemove, showCost 
   );
   return (
     <div className="flex gap-2 items-start">
+      {/* Thumbnail for the currently selected product — quick visual confirmation */}
+      <div className="w-10 h-10 rounded-lg border-2 border-gray-200 overflow-hidden shrink-0 bg-gray-50 flex items-center justify-center mt-0.5">
+        {item.imageUrl ? (
+          <img src={item.imageUrl} alt={item.productName || 'Product'} className="w-full h-full object-cover" />
+        ) : (
+          <span className="text-[8px] text-gray-300 font-bold">IMG</span>
+        )}
+      </div>
       <div className="relative flex-1">
         <input
           value={search !== '' ? search : item.productName}
@@ -116,9 +124,18 @@ function ProductSearchRow({ item, index, products, onUpdate, onRemove, showCost 
               : filtered.map(p => (
                 <button key={p._id} type="button"
                   onMouseDown={() => { onUpdate(index, '__product__', JSON.stringify(p)); setSearch(''); setOpen(false); }}
-                  className="w-full text-left px-3 py-2 hover:bg-orange-50 border-b border-gray-100 last:border-0">
-                  <p className="text-sm font-bold text-gray-800">{p.name}</p>
-                  <p className="text-[10px] text-gray-400">{p.sku ? `SKU: ${p.sku} · ` : ''}{showCost ? `Cost: ₹${p.costPrice || '—'}` : `Price: ₹${p.discountedPrice || p.price || '—'}`}</p>
+                  className="w-full flex items-center gap-2 text-left px-3 py-2 hover:bg-orange-50 border-b border-gray-100 last:border-0">
+                  <div className="w-8 h-8 rounded-md border border-gray-200 overflow-hidden shrink-0 bg-gray-50 flex items-center justify-center">
+                    {(p.image || p.imageUrl) ? (
+                      <img src={p.image || p.imageUrl} alt={p.name} className="w-full h-full object-cover" />
+                    ) : (
+                      <span className="text-[7px] text-gray-300 font-bold">IMG</span>
+                    )}
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-sm font-bold text-gray-800 truncate">{p.name}</p>
+                    <p className="text-[10px] text-gray-400">{p.sku ? `SKU: ${p.sku} · ` : ''}{showCost ? `Cost: ₹${p.costPrice || '—'}` : `Price: ₹${p.discountedPrice || p.price || '—'}`}</p>
+                  </div>
                 </button>
               ))
             }
@@ -1465,7 +1482,7 @@ function PurchaseOrdersModule({ showMsg }: any) {
   const [products, setProducts] = useState<any[]>([]);
   const [suppliers, setSuppliers] = useState<any[]>([]);
   const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [form, setForm] = useState({ supplierName: '', supplierContact: '', notes: '', expectedDate: '', items: [{ productId: '', productName: '', sku: '', quantity: '1', costPrice: '' }] });
+  const [form, setForm] = useState({ supplierName: '', supplierContact: '', notes: '', expectedDate: '', items: [{ productId: '', productName: '', sku: '', quantity: '1', costPrice: '', imageUrl: '' }] });
   const [advModal, setAdvModal] = useState<{ open: boolean; po: any | null }>({ open: false, po: null });
   const [advForm, setAdvForm] = useState({ amount: '', paymentMode: 'cash', notes: '' });
   const [supplierCredit, setSupplierCredit] = useState<{ netBalance: number; loading: boolean }>({ netBalance: 0, loading: false });
@@ -1483,12 +1500,12 @@ function PurchaseOrdersModule({ showMsg }: any) {
     fetch('/api/business?module=suppliers').then(r => r.json()).then(data => setSuppliers(Array.isArray(data) ? data : [])).catch(() => {});
   }, []);
 
-  const addItem = () => setForm(f => ({ ...f, items: [...f.items, { productId: '', productName: '', sku: '', quantity: '1', costPrice: '' }] }));
+  const addItem = () => setForm(f => ({ ...f, items: [...f.items, { productId: '', productName: '', sku: '', quantity: '1', costPrice: '', imageUrl: '' }] }));
   const removeItem = (i: number) => setForm(f => ({ ...f, items: f.items.filter((_, idx) => idx !== i) }));
   const updateItem = (i: number, field: string, value: string) => {
     setForm(f => {
       const items = [...f.items];
-      if (field === '__product__') { const p = JSON.parse(value); items[i] = { ...items[i], productId: p._id, productName: p.name, sku: p.sku || '' }; }
+      if (field === '__product__') { const p = JSON.parse(value); items[i] = { ...items[i], productId: p._id, productName: p.name, sku: p.sku || '', imageUrl: p.image || p.imageUrl || '' }; }
       else { items[i] = { ...items[i], [field]: value }; }
       return { ...f, items };
     });
@@ -1496,23 +1513,31 @@ function PurchaseOrdersModule({ showMsg }: any) {
 
   const openEdit = (po: any) => {
     setEditingPO(po);
-    setForm({ supplierName: po.supplier?.name || '', supplierContact: po.supplier?.contact || '', notes: po.notes || '', expectedDate: po.expectedDate ? new Date(po.expectedDate).toISOString().split('T')[0] : '', items: po.items.map((i: any) => ({ productId: i.productId || '', productName: i.productName || '', sku: i.sku || '', quantity: String(i.quantity), costPrice: String(i.costPrice) })) });
+    const sourceItems = po.status === 'received' ? (po.receivedItems || po.items) : po.items;
+    setForm({ supplierName: po.supplier?.name || '', supplierContact: po.supplier?.contact || '', notes: po.notes || '', expectedDate: po.expectedDate ? new Date(po.expectedDate).toISOString().split('T')[0] : '', items: sourceItems.map((i: any) => ({ productId: i.productId || '', productName: i.productName || '', sku: i.sku || '', quantity: String(i.quantityReceived ?? i.quantity), costPrice: String(i.costPrice), imageUrl: i.imageUrl || '' })) });
     setShowForm(true); setExpandedId(null);
   };
 
   const handleCreate = async () => {
     const validItems = form.items.filter(i => i.productName && i.quantity && i.costPrice);
     if (validItems.length === 0) { showMsg('Add at least one item with cost price.', 'error'); return; }
-    const payload = { supplier: { name: form.supplierName, contact: form.supplierContact }, items: validItems.map(i => ({ productId: i.productId, productName: i.productName, sku: i.sku, quantity: parseInt(i.quantity), costPrice: parseFloat(i.costPrice) })), notes: form.notes, expectedDate: form.expectedDate };
-    if (editingPO) {
+    const payload = { supplier: { name: form.supplierName, contact: form.supplierContact }, items: validItems.map(i => ({ productId: i.productId, productName: i.productName, sku: i.sku, quantity: parseInt(i.quantity), quantityReceived: parseInt(i.quantity), costPrice: parseFloat(i.costPrice) })), notes: form.notes, expectedDate: form.expectedDate };
+    if (editingPO && editingPO.status === 'received') {
+      // Received POs go through edit_received — it diffs old vs new quantities,
+      // corrects inventory by the difference, and logs a stock movement.
+      const res = await fetch('/api/purchase-orders', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: editingPO._id, action: 'edit_received', items: payload.items }) });
+      const data = await res.json();
+      if (data.success) { showMsg('✅ Received PO corrected — inventory adjusted.', 'success'); setShowForm(false); setEditingPO(null); setForm({ supplierName: '', supplierContact: '', notes: '', expectedDate: '', items: [{ productId: '', productName: '', sku: '', quantity: '1', costPrice: '', imageUrl: '' }] }); fetchPOs(); }
+      else showMsg(data.error || 'Failed.', 'error');
+    } else if (editingPO) {
       const res = await fetch('/api/purchase-orders', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: editingPO._id, action: 'update', ...payload }) });
       const data = await res.json();
-      if (data.success) { showMsg('✅ PO updated!', 'success'); setShowForm(false); setEditingPO(null); setForm({ supplierName: '', supplierContact: '', notes: '', expectedDate: '', items: [{ productId: '', productName: '', sku: '', quantity: '1', costPrice: '' }] }); fetchPOs(); }
+      if (data.success) { showMsg('✅ PO updated!', 'success'); setShowForm(false); setEditingPO(null); setForm({ supplierName: '', supplierContact: '', notes: '', expectedDate: '', items: [{ productId: '', productName: '', sku: '', quantity: '1', costPrice: '', imageUrl: '' }] }); fetchPOs(); }
       else showMsg(data.error || 'Failed.', 'error');
     } else {
       const res = await fetch('/api/purchase-orders', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       const data = await res.json();
-      if (data.success) { showMsg(`✅ ${data.poNumber} created!`, 'success'); setShowForm(false); setForm({ supplierName: '', supplierContact: '', notes: '', expectedDate: '', items: [{ productId: '', productName: '', sku: '', quantity: '1', costPrice: '' }] }); fetchPOs(); }
+      if (data.success) { showMsg(`✅ ${data.poNumber} created!`, 'success'); setShowForm(false); setForm({ supplierName: '', supplierContact: '', notes: '', expectedDate: '', items: [{ productId: '', productName: '', sku: '', quantity: '1', costPrice: '', imageUrl: '' }] }); fetchPOs(); }
       else showMsg(data.error || 'Failed.', 'error');
     }
   };
@@ -1611,7 +1636,7 @@ function PurchaseOrdersModule({ showMsg }: any) {
     <div className="space-y-4">
       <div className="flex justify-between items-center">
         <p className="text-sm text-gray-500 font-bold">{pos.length} purchase orders</p>
-        <button onClick={() => { setShowForm(!showForm); setEditingPO(null); setForm({ supplierName: '', supplierContact: '', notes: '', expectedDate: '', items: [{ productId: '', productName: '', sku: '', quantity: '1', costPrice: '' }] }); }}
+        <button onClick={() => { setShowForm(!showForm); setEditingPO(null); setForm({ supplierName: '', supplierContact: '', notes: '', expectedDate: '', items: [{ productId: '', productName: '', sku: '', quantity: '1', costPrice: '', imageUrl: '' }] }); }}
           className="flex items-center gap-2 bg-[#FA5600] text-white font-black text-xs uppercase tracking-widest px-4 py-2 rounded-xl hover:bg-[#E04A00] transition">
           <Plus className="w-4 h-4" /> New PO
         </button>
@@ -1620,7 +1645,13 @@ function PurchaseOrdersModule({ showMsg }: any) {
       {showForm && (
         <div className="bg-white rounded-2xl border-2 border-[#FA5600] p-5 space-y-4">
           <h3 className="font-black text-sm uppercase tracking-widest text-gray-800">{editingPO ? `Edit ${editingPO.poNumber}` : 'New Purchase Order'}</h3>
-          {editingPO && <p className="text-xs text-blue-600 font-bold bg-blue-50 rounded-lg px-3 py-2">✏️ Editing an {editingPO.status} PO — changes will update items and totals.</p>}
+          {editingPO && (
+            <p className="text-xs text-blue-600 font-bold bg-blue-50 rounded-lg px-3 py-2">
+              {editingPO.status === 'received'
+                ? '✏️ Fixing a received PO — inventory will be corrected by the quantity difference, not just the PO totals.'
+                : `✏️ Editing a ${editingPO.status} PO — changes will update items and totals.`}
+            </p>
+          )}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div><label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">Supplier Name</label>
               <SupplierSearchInput value={form.supplierName} suppliers={suppliers} onChange={(name, contact) => setForm(f => ({ ...f, supplierName: name, supplierContact: contact || f.supplierContact }))} />
@@ -1711,10 +1742,15 @@ function PurchaseOrdersModule({ showMsg }: any) {
                   )}
 
                   <div className="flex gap-2 flex-wrap pt-1">
-                    {/* Edit PO — only for draft (ordered POs are edited at receive time) */}
+                    {/* Edit PO — draft edits freely; received edits go through edit_received, which corrects inventory by the quantity difference */}
                     {po.status === 'draft' && (
                       <button onClick={() => openEdit(po)} className="flex items-center gap-1 text-xs text-blue-500 font-bold border border-blue-200 px-3 py-1.5 rounded-full hover:bg-blue-50 transition">
                         <Edit2 className="w-3 h-3" /> Edit PO
+                      </button>
+                    )}
+                    {po.status === 'received' && (
+                      <button onClick={() => openEdit(po)} className="flex items-center gap-1 text-xs text-blue-500 font-bold border border-blue-200 px-3 py-1.5 rounded-full hover:bg-blue-50 transition">
+                        <Edit2 className="w-3 h-3" /> Fix Items
                       </button>
                     )}
                     {po.status === 'draft' && (
