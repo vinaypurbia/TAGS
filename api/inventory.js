@@ -289,7 +289,7 @@ export default async function handler(req, res) {
             inventoryId: inv._id.toString(),
             productName: product?.name || 'Unknown',
             category: product?.category || '-',
-            image: product?.image || '',
+            image: product?.imageUrls?.[0] || product?.imageUrl || product?.image || '',
             price: product?.price || 0,
             currentStock: inv.currentStock || 0,
             availableStock: available,
@@ -330,7 +330,7 @@ export default async function handler(req, res) {
             price: p.price,
             originalPrice: p.originalPrice,
             discountedPrice: p.discountedPrice,
-            image: p.image,
+            image: p.imageUrls?.[0] || p.imageUrl || p.image || '',
             stock: {
               inventoryId: stock._id.toString(),
               sku: stock.sku || '',
@@ -359,7 +359,7 @@ export default async function handler(req, res) {
             price: p.price,
             originalPrice: p.originalPrice,
             discountedPrice: p.discountedPrice,
-            image: p.image,
+            image: p.imageUrls?.[0] || p.imageUrl || p.image || '',
             stock: {
               inventoryId: null,
               sku: '',
