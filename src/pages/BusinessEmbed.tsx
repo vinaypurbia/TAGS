@@ -1666,7 +1666,16 @@ function PurchaseOrdersModule({ showMsg }: any) {
           <div>
             <label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-2">Items *</label>
             <div className="space-y-2">
-              {form.items.map((item, i) => (<ProductSearchRow key={i} item={item} index={i} products={products} onUpdate={updateItem} onRemove={removeItem} showCost={true} />))}
+              {form.items.map((item, i) => (
+                <div key={i} className="flex gap-2 items-start">
+                  <div className="w-6 h-10 flex items-center justify-center shrink-0">
+                    <span className="text-xs font-black text-gray-400">{i + 1}.</span>
+                  </div>
+                  <div className="flex-1">
+                    <ProductSearchRow item={item} index={i} products={products} onUpdate={updateItem} onRemove={removeItem} showCost={true} />
+                  </div>
+                </div>
+              ))}
             </div>
             <button onClick={addItem} className="mt-2 text-xs text-[#FA5600] font-black uppercase tracking-widest flex items-center gap-1 hover:underline"><Plus className="w-3 h-3" /> Add Item</button>
           </div>
@@ -1709,7 +1718,7 @@ function PurchaseOrdersModule({ showMsg }: any) {
                     <div className="space-y-1.5">
                       {po.items?.map((item: any, i: number) => (
                         <div key={i} className="flex justify-between items-center bg-gray-50 rounded-lg px-3 py-2">
-                          <div><p className="text-xs font-bold text-gray-800">{item.productName}</p><p className="text-[10px] text-gray-400">Cost: {fmt(item.costPrice)} · Qty: {item.quantity}</p></div>
+                          <div className="flex items-center gap-2"><span className="text-[10px] font-black text-gray-400 w-4 shrink-0">{i + 1}.</span><div><p className="text-xs font-bold text-gray-800">{item.productName}</p><p className="text-[10px] text-gray-400">Cost: {fmt(item.costPrice)} · Qty: {item.quantity}</p></div></div>
                           <p className="font-black text-xs text-[#FA5600]">{fmt(item.totalCost)}</p>
                         </div>
                       ))}
