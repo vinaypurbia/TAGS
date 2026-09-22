@@ -1297,6 +1297,9 @@ function SalesModule({ showMsg }: any) {
   const [products, setProducts] = useState<any[]>([]);
   const [customers, setCustomers] = useState<any[]>([]); // FIX #7
   const [form, setForm] = useState({ customerName: '', customerPhone: '', customerAddress: '', notes: '', paymentMode: 'cash', items: [{ productId: '', productName: '', price: '', quantity: '1', imageUrl: '' }] });
+  const [saving, setSaving] = useState(false);
+  const [stockErrorModal, setStockErrorModal] = useState<string[] | null>(null);
+  const [editingSale, setEditingSale] = useState<any>(null);
 
   const fetchSales = () => {
     setLoading(true);
@@ -1333,20 +1336,48 @@ function SalesModule({ showMsg }: any) {
     if (!form.customerName || !form.customerPhone) { showMsg('Customer name and phone required.', 'error'); return; }
     const validItems = form.items.filter(i => i.productName && i.price && i.quantity);
     if (validItems.length === 0) { showMsg('Add at least one item.', 'error'); return; }
-    const payload = { ...form, status: 'confirmed', items: validItems.map(i => ({ productId: i.productId, productName: i.productName, category: i.category || '', price: parseFloat(i.price), quantity: parseInt(i.quantity), imageUrl: i.imageUrl || '' })) };
-    const res = await fetch('/api/sales', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-    const data = await res.json();
-    if (data.success) {
-      showMsg(`✅ Sale ${data.saleNumber} recorded! Customer auto-saved.`, 'success');
-      setShowForm(false);
-      setForm({ customerName: '', customerPhone: '', customerAddress: '', notes: '', paymentMode: 'cash', items: [{ productId: '', productName: '', price: '', quantity: '1', imageUrl: '' }] });
-      fetchSales();
-    } else if (data.stockErrors) {
-      // Professional stock error display
-      showMsg(`⚠️ Stock unavailable: ${data.stockErrors.join(' • ')}`, 'error');
-    } else {
-      showMsg(data.error || 'Failed.', 'error');
+    const items = validItems.map(i => ({ productId: i.productId, productName: i.productName, category: i.category || '', price: parseFloat(i.price), quantity: parseInt(i.quantity), imageUrl: i.imageUrl || '' }));
+
+    setSaving(true);
+    try {
+      let res, data;
+      if (editingSale) {
+        res = await fetch('/api/sales', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: editingSale._id, action: 'edit', items, customerName: form.customerName, customerPhone: form.customerPhone, customerAddress: form.customerAddress, paymentMode: form.paymentMode, notes: form.notes }) });
+      } else {
+        const payload = { ...form, status: 'confirmed', items };
+        res = await fetch('/api/sales', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      }
+      data = await res.json();
+
+      if (data.success) {
+        showMsg(editingSale ? `✅ Sale updated — inventory reconciled.` : `✅ Sale ${data.saleNumber} recorded! Customer auto-saved.`, 'success');
+        setShowForm(false);
+        setEditingSale(null);
+        setForm({ customerName: '', customerPhone: '', customerAddress: '', notes: '', paymentMode: 'cash', items: [{ productId: '', productName: '', price: '', quantity: '1', imageUrl: '' }] });
+        fetchSales();
+      } else if (data.stockErrors) {
+        setStockErrorModal(data.stockErrors);
+      } else {
+        showMsg(data.error || 'Failed.', 'error');
+      }
+    } catch (err: any) {
+      showMsg('Network error — could not reach the server. ' + (err?.message || ''), 'error');
+    } finally {
+      setSaving(false);
     }
+  };
+
+  const openEditSale = (sale: any) => {
+    setEditingSale(sale);
+    setForm({
+      customerName: sale.customerName || '',
+      customerPhone: sale.customerPhone || '',
+      customerAddress: sale.customerAddress || '',
+      notes: sale.notes || '',
+      paymentMode: sale.paymentMode || 'cash',
+      items: (sale.items || []).map((i: any) => ({ productId: i.productId || '', productName: i.productName || '', category: i.category || '', price: String(i.price), quantity: String(i.quantity), imageUrl: i.imageUrl || '' })),
+    });
+    setShowForm(true);
   };
 
   const deleteSale = async (id: string) => {
@@ -1379,14 +1410,17 @@ function SalesModule({ showMsg }: any) {
           <option value="month">This Month</option>
           <option value="year">This Year</option>
         </select>
-        <button onClick={() => setShowForm(!showForm)} className="flex items-center gap-2 bg-[#FA5600] text-white font-black text-xs uppercase tracking-widest px-4 py-2 rounded-xl hover:bg-[#E04A00] transition ml-auto">
+        <button onClick={() => { if (!showForm) { setEditingSale(null); setForm({ customerName: '', customerPhone: '', customerAddress: '', notes: '', paymentMode: 'cash', items: [{ productId: '', productName: '', price: '', quantity: '1', imageUrl: '' }] }); } setShowForm(!showForm); }} className="flex items-center gap-2 bg-[#FA5600] text-white font-black text-xs uppercase tracking-widest px-4 py-2 rounded-xl hover:bg-[#E04A00] transition ml-auto">
           <Plus className="w-4 h-4" /> Record Sale
         </button>
       </div>
 
       {showForm && (
         <div className="bg-white rounded-2xl border-2 border-[#FA5600] p-5 space-y-4">
-          <h3 className="font-black text-sm uppercase tracking-widest text-gray-800">New Sale</h3>
+          <h3 className="font-black text-sm uppercase tracking-widest text-gray-800">{editingSale ? `Edit Sale — ${editingSale.saleNumber}` : 'New Sale'}</h3>
+          {editingSale && (
+            <p className="text-xs text-blue-600 font-bold bg-blue-50 rounded-lg px-3 py-2">✏️ Editing a recorded sale — inventory will be adjusted by the quantity difference, not just the sale record.</p>
+          )}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">Customer Name *</label>
@@ -1438,8 +1472,35 @@ function SalesModule({ showMsg }: any) {
           </div>
 
           <div className="flex gap-2">
-            <button onClick={() => withDupCheck(`sale-${form.customerPhone}-${form.items.map(i=>i.productName).join('|')}`, 'Record Sale', handleSubmit)} className="flex-1 bg-[#FA5600] text-white font-black text-sm uppercase tracking-widest py-3 rounded-xl hover:bg-[#E04A00] transition">Save Sale</button>
-            <button onClick={() => setShowForm(false)} className="px-4 bg-gray-100 text-gray-600 font-bold text-sm rounded-xl">Cancel</button>
+            <button
+              onClick={() => editingSale ? handleSubmit() : withDupCheck(`sale-${form.customerPhone}-${form.items.map(i=>i.productName).join('|')}`, 'Record Sale', handleSubmit)}
+              disabled={saving}
+              className="flex-1 bg-[#FA5600] text-white font-black text-sm uppercase tracking-widest py-3 rounded-xl hover:bg-[#E04A00] transition disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center gap-2">
+              {saving && <span className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" />}
+              {saving ? (editingSale ? 'Saving Changes...' : 'Saving Sale...') : (editingSale ? 'Save Changes' : 'Save Sale')}
+            </button>
+            <button onClick={() => { setShowForm(false); setEditingSale(null); setForm({ customerName: '', customerPhone: '', customerAddress: '', notes: '', paymentMode: 'cash', items: [{ productId: '', productName: '', price: '', quantity: '1', imageUrl: '' }] }); }} disabled={saving} className="px-4 bg-gray-100 text-gray-600 font-bold text-sm rounded-xl disabled:opacity-60">Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {/* Stock error dialog — replaces the easy-to-miss toast for this specific failure */}
+      {stockErrorModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => setStockErrorModal(null)}>
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 space-y-4" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-full bg-red-100 flex items-center justify-center text-xl shrink-0">⚠️</div>
+              <div>
+                <h3 className="font-black text-sm text-gray-800">Not enough stock</h3>
+                <p className="text-xs text-gray-400">This sale can't be {editingSale ? 'updated' : 'saved'} as-is.</p>
+              </div>
+            </div>
+            <div className="space-y-2">
+              {stockErrorModal.map((msg, i) => (
+                <div key={i} className="bg-red-50 border border-red-100 rounded-xl px-3 py-2 text-xs font-bold text-red-700">{msg}</div>
+              ))}
+            </div>
+            <button onClick={() => setStockErrorModal(null)} className="w-full bg-gray-800 text-white font-black text-sm uppercase tracking-widest py-2.5 rounded-xl hover:bg-gray-900 transition">Got it</button>
           </div>
         </div>
       )}
@@ -1462,6 +1523,7 @@ function SalesModule({ showMsg }: any) {
                 </div>
               </div>
               <div className="mt-3 flex gap-2 flex-wrap">
+                <button onClick={() => openEditSale(sale)} className="text-xs bg-orange-50 text-[#FA5600] font-bold px-3 py-1 rounded-full hover:bg-orange-100 transition">✏️ Edit</button>
                 <button onClick={() => printSaleInvoicePDF(sale)} className="text-xs bg-blue-50 text-blue-600 font-bold px-3 py-1 rounded-full hover:bg-blue-100 transition">🖨️ Print Invoice</button>
                 <button onClick={() => deleteSale(sale._id)} className="text-xs bg-red-50 text-red-500 font-bold px-3 py-1 rounded-full hover:bg-red-100 transition ml-auto">Delete</button>
               </div>
