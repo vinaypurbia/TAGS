@@ -1300,6 +1300,7 @@ function SalesModule({ showMsg }: any) {
   const [saving, setSaving] = useState(false);
   const [stockErrorModal, setStockErrorModal] = useState<string[] | null>(null);
   const [editingSale, setEditingSale] = useState<any>(null);
+  const [viewingSale, setViewingSale] = useState<any>(null);
 
   const fetchSales = () => {
     setLoading(true);
@@ -1511,7 +1512,7 @@ function SalesModule({ showMsg }: any) {
         <div className="space-y-3">
           {sales.map(sale => (
             <div key={sale._id} className="bg-white rounded-xl border border-gray-200 p-4">
-              <div className="flex items-start justify-between gap-3">
+              <div className="flex items-start justify-between gap-3 cursor-pointer" onClick={() => setViewingSale(sale)}>
                 <div>
                   <p className="font-black text-sm text-gray-900">{sale.customerName || 'Walk-in'}</p>
                   <p className="text-xs text-gray-400">{sale.saleNumber} · {sale.customerPhone}</p>
@@ -1523,12 +1524,76 @@ function SalesModule({ showMsg }: any) {
                 </div>
               </div>
               <div className="mt-3 flex gap-2 flex-wrap">
+                <button onClick={() => setViewingSale(sale)} className="text-xs bg-gray-100 text-gray-600 font-bold px-3 py-1 rounded-full hover:bg-gray-200 transition">👁️ View Items</button>
                 <button onClick={() => openEditSale(sale)} className="text-xs bg-orange-50 text-[#FA5600] font-bold px-3 py-1 rounded-full hover:bg-orange-100 transition">✏️ Edit</button>
                 <button onClick={() => printSaleInvoicePDF(sale)} className="text-xs bg-blue-50 text-blue-600 font-bold px-3 py-1 rounded-full hover:bg-blue-100 transition">🖨️ Print Invoice</button>
                 <button onClick={() => deleteSale(sale._id)} className="text-xs bg-red-50 text-red-500 font-bold px-3 py-1 rounded-full hover:bg-red-100 transition ml-auto">Delete</button>
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Sale detail popup — full itemized breakdown */}
+      {viewingSale && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => setViewingSale(null)}>
+          <div className="bg-white rounded-2xl max-w-lg w-full max-h-[85vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+            <div className="p-5 border-b border-gray-100 flex items-start justify-between gap-3 sticky top-0 bg-white rounded-t-2xl">
+              <div>
+                <h3 className="font-black text-sm text-gray-900">{viewingSale.customerName || 'Walk-in Customer'}</h3>
+                <p className="text-xs text-gray-400">{viewingSale.saleNumber} · {viewingSale.customerPhone}</p>
+                <p className="text-xs text-gray-400">{viewingSale.date ? new Date(viewingSale.date).toLocaleDateString('en-IN') : '—'}</p>
+              </div>
+              <button onClick={() => setViewingSale(null)} className="text-gray-400 hover:text-gray-600 text-xl leading-none px-1">×</button>
+            </div>
+
+            <div className="p-5 space-y-2">
+              <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-1">Items ({viewingSale.items?.length || 0})</p>
+              {(viewingSale.items || []).map((item: any, i: number) => (
+                <div key={i} className="flex items-center gap-3 bg-gray-50 rounded-xl p-3">
+                  <div className="w-6 shrink-0"><span className="text-[10px] font-black text-gray-400">{i + 1}.</span></div>
+                  <div className="w-12 h-12 rounded-lg border border-gray-200 overflow-hidden shrink-0 bg-white flex items-center justify-center">
+                    {item.imageUrl ? (
+                      <img src={item.imageUrl} alt={item.productName} className="w-full h-full object-cover" />
+                    ) : (
+                      <span className="text-[8px] text-gray-300 font-bold">IMG</span>
+                    )}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-bold text-gray-800 truncate">{item.productName}</p>
+                    <p className="text-xs text-gray-400">{item.category || '—'} · {fmt(item.price)} × {item.quantity}</p>
+                  </div>
+                  <p className="font-black text-sm text-[#FA5600] shrink-0">{fmt(item.totalPrice)}</p>
+                </div>
+              ))}
+            </div>
+
+            <div className="p-5 pt-0 space-y-1 border-t border-gray-100 mt-2">
+              <div className="flex justify-between text-xs text-gray-500 pt-3">
+                <span>Subtotal</span><span>{fmt(viewingSale.subtotal)}</span>
+              </div>
+              {viewingSale.discountAmount > 0 && (
+                <div className="flex justify-between text-xs text-green-600">
+                  <span>Discount</span><span>- {fmt(viewingSale.discountAmount)}</span>
+                </div>
+              )}
+              {viewingSale.taxAmount > 0 && (
+                <div className="flex justify-between text-xs text-gray-500">
+                  <span>Tax</span><span>{fmt(viewingSale.taxAmount)}</span>
+                </div>
+              )}
+              <div className="flex justify-between font-black text-sm text-gray-900 pt-1">
+                <span>Total</span><span className="text-[#FA5600]">{fmt(viewingSale.totalAmount)}</span>
+              </div>
+              <p className="text-xs text-gray-400 pt-2">Payment: {(viewingSale.paymentMode || '—').toUpperCase()}</p>
+              {viewingSale.notes && <p className="text-xs text-gray-400">Note: {viewingSale.notes}</p>}
+            </div>
+
+            <div className="p-5 pt-0 flex gap-2">
+              <button onClick={() => { setViewingSale(null); openEditSale(viewingSale); }} className="flex-1 text-xs bg-orange-50 text-[#FA5600] font-bold py-2 rounded-xl hover:bg-orange-100 transition">✏️ Edit Sale</button>
+              <button onClick={() => printSaleInvoicePDF(viewingSale)} className="flex-1 text-xs bg-blue-50 text-blue-600 font-bold py-2 rounded-xl hover:bg-blue-100 transition">🖨️ Print Invoice</button>
+            </div>
+          </div>
         </div>
       )}
     </div>
