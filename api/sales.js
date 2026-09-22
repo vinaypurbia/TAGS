@@ -411,6 +411,113 @@ export default async function handler(req, res) {
         return res.status(200).json({ success: true, message: 'Delivery confirmed. Notifications sent.' });
       }
 
+      // ── Edit an existing sale's items/details — reconciles inventory by the
+      // quantity difference per item. Increases are validated against current
+      // available stock (same "no stock, no sale" rule as creating a sale) and
+      // the WHOLE edit is rejected if any item can't be covered; decreases and
+      // removed items simply restore stock. Nothing is written until every
+      // item passes validation.
+      if (action === 'edit') {
+        const sale = await salesCol.findOne({ _id: new ObjectId(id) });
+        if (!sale) return res.status(404).json({ error: 'Sale not found' });
+
+        const { items: newItemsRaw, customerName: ecName, customerPhone: ecPhone, customerAddress: ecAddress, paymentMode: ecPayMode, notes: ecNotes } = req.body;
+        if (!newItemsRaw || newItemsRaw.length === 0) return res.status(400).json({ error: 'Items required' });
+
+        const oldItems = sale.items || [];
+        const newItems = newItemsRaw.map(i => ({
+          productId: i.productId || '',
+          productName: i.productName || '',
+          category: i.category || '',
+          quantity: Number(i.quantity) || 1,
+          price: Number(i.price) || 0,
+          totalPrice: (Number(i.quantity) || 1) * (Number(i.price) || 0),
+          imageUrl: i.imageUrl || '',
+        }));
+
+        // ── Pass 1: compute every diff and validate BEFORE touching anything ──
+        const diffs = []; // { productId, oldQty, newQty, diff, inv }
+        const stockErrors = [];
+        const touchedIds = new Set([...oldItems.map(i => i.productId), ...newItems.map(i => i.productId)]);
+
+        for (const productId of touchedIds) {
+          if (!productId) continue;
+          const oldItem = oldItems.find(i => i.productId === productId);
+          const newItem = newItems.find(i => i.productId === productId);
+          const oldQty = Number(oldItem?.quantity) || 0;
+          const newQty = Number(newItem?.quantity) || 0;
+          const diff = newQty - oldQty; // positive = selling more (needs MORE stock removed)
+          if (diff === 0) continue;
+
+          const inv = await inventory.findOne({ productId });
+          if (!inv) continue; // untracked — nothing to reconcile
+          diffs.push({ productId, oldQty, newQty, diff, inv, productName: newItem?.productName || oldItem?.productName });
+
+          if (diff > 0) {
+            // Selling more of this item than before — needs `diff` more units available.
+            const available = inv.availableStock ?? 0;
+            if (available < diff) {
+              stockErrors.push(`"${newItem?.productName || oldItem?.productName}" — only ${available} more unit${available !== 1 ? 's' : ''} available, but ${diff} more ${diff !== 1 ? 'were' : 'was'} requested.`);
+            }
+          }
+        }
+
+        if (stockErrors.length > 0) {
+          return res.status(400).json({
+            error: 'Sale could not be updated due to insufficient stock.',
+            stockErrors,
+            message: stockErrors.join(' | '),
+          });
+        }
+
+        // ── Pass 2: everything validated — now apply the adjustments ──────────
+        for (const d of diffs) {
+          if (d.inv.trackInventory === false) continue;
+          const newCurrent = Math.max(0, (d.inv.currentStock || 0) - d.diff);
+          const newAvailable = Math.max(0, (d.inv.availableStock || 0) - d.diff);
+          await inventory.updateOne(
+            { productId: d.productId },
+            {
+              $set: { currentStock: newCurrent, availableStock: newAvailable, updatedAt: new Date() },
+              $push: { adjustmentLog: { adjustment: -d.diff, reason: `Sale ${sale.saleNumber} edited (qty ${d.oldQty} → ${d.newQty})`, date: new Date(), stockAfter: newCurrent } },
+            }
+          );
+          await movements.insertOne({
+            productId: d.productId,
+            type: 'sale_edit',
+            quantity: -d.diff,
+            referenceId: id,
+            referenceType: 'sale',
+            reason: `Sale ${sale.saleNumber} edited (qty ${d.oldQty} → ${d.newQty})`,
+            date: new Date(),
+            createdAt: new Date(),
+          });
+        }
+
+        const subtotal = newItems.reduce((s, i) => s + i.totalPrice, 0);
+        const existingDiscount = Number(sale.discountAmount) || 0;
+        const existingTax = Number(sale.taxAmount) || 0;
+        const totalAmount = subtotal - existingDiscount + existingTax;
+        await salesCol.updateOne(
+          { _id: new ObjectId(id) },
+          {
+            $set: {
+              items: newItems,
+              subtotal,
+              totalAmount,
+              ...(ecName !== undefined && { customerName: ecName }),
+              ...(ecPhone !== undefined && { customerPhone: ecPhone }),
+              ...(ecAddress !== undefined && { customerAddress: ecAddress }),
+              ...(ecPayMode !== undefined && { paymentMode: ecPayMode }),
+              ...(ecNotes !== undefined && { notes: ecNotes }),
+              updatedAt: new Date(),
+            },
+          }
+        );
+
+        return res.status(200).json({ success: true, message: 'Sale updated and inventory reconciled.' });
+      }
+
       // ── Original PUT logic (status/paymentMode/notes update) ──────────────
       const updateData = { updatedAt: new Date() };
       if (status) updateData.status = status;
