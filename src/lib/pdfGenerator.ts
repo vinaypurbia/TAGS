@@ -572,21 +572,37 @@ export const generateSaleInvoicePDF = async (sale: SaleRecord): Promise<jsPDF> =
     tot:  173,  // right-align to 196
   };
   const ROW_H = 20;
+  const BOTTOM_MARGIN = 278; // last safe y for a full row before we need a new page
 
-  doc.setFillColor(30, 30, 30);
-  doc.rect(14, y, 182, 8, 'F');
-  doc.setFontSize(7.5);
-  doc.setFont('helvetica', 'bold');
-  doc.setTextColor(255, 255, 255);
-  doc.text('IMG',      C.img + 8,  y + 5.5, { align: 'center' });
-  doc.text('PRODUCT',  C.name,      y + 5.5);
-  doc.text('CATEGORY', C.cat,       y + 5.5);
-  doc.text('UNIT',     C.unit + 28, y + 5.5, { align: 'right' });
-  doc.text('QTY',      C.qty + 6,   y + 5.5, { align: 'center' });
-  doc.text('AMOUNT',   C.tot + 23,  y + 5.5, { align: 'right' });
-  y += 8;
+  const drawTableHeader = (yPos: number) => {
+    doc.setFillColor(30, 30, 30);
+    doc.rect(14, yPos, 182, 8, 'F');
+    doc.setFontSize(7.5);
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(255, 255, 255);
+    doc.text('IMG',      C.img + 8,  yPos + 5.5, { align: 'center' });
+    doc.text('PRODUCT',  C.name,      yPos + 5.5);
+    doc.text('CATEGORY', C.cat,       yPos + 5.5);
+    doc.text('UNIT',     C.unit + 28, yPos + 5.5, { align: 'right' });
+    doc.text('QTY',      C.qty + 6,   yPos + 5.5, { align: 'center' });
+    doc.text('AMOUNT',   C.tot + 23,  yPos + 5.5, { align: 'right' });
+    return yPos + 8;
+  };
+
+  const newPage = () => {
+    doc.addPage();
+    // Left accent bar is page-specific — every new page needs its own.
+    doc.setFillColor(250, 86, 0);
+    doc.rect(0, 0, 4, pageH, 'F');
+    return drawTableHeader(10);
+  };
+
+  y = drawTableHeader(y);
 
   sale.items.forEach((item, idx) => {
+    if (y + ROW_H > BOTTOM_MARGIN) {
+      y = newPage();
+    }
     const rowY = y;
     const even = idx % 2 === 0;
 
@@ -635,6 +651,16 @@ export const generateSaleInvoicePDF = async (sale: SaleRecord): Promise<jsPDF> =
 
     y += ROW_H;
   });
+
+  // Totals + payment/notes + footer need roughly 65mm — push to a fresh page
+  // if what's left on this one would be too cramped or would overflow.
+  const TOTALS_BLOCK_H = 65;
+  if (y + TOTALS_BLOCK_H > pageH) {
+    doc.addPage();
+    doc.setFillColor(250, 86, 0);
+    doc.rect(0, 0, 4, pageH, 'F');
+    y = 14;
+  }
 
   y += 4;
   hRule(doc, y, 14, 196, [200, 200, 200]);
