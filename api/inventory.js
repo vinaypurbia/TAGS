@@ -19,6 +19,28 @@ function computeStockStatus(availableStock, lowStockAlert, trackInventory = true
   return 'in_stock';
 }
 
+// Maps a real stockStatus to what customers should see. Used by the
+// auto-sync path — manual overrides never go through this mapping.
+function stockStatusToFrontendStatus(stockStatus) {
+  if (stockStatus === 'out_of_stock') return 'out_of_stock';
+  if (stockStatus === 'low_stock') return 'low_stock';
+  return 'normal';
+}
+
+// Call this after ANY stock quantity change (manual adjustment, sale,
+// sale edit/delete, PO receive/edit). Only touches frontendStatus for
+// products still in "Synced" mode (visibilityAutoManaged !== false) —
+// products a shop owner has manually overridden are left alone.
+// NOTE: the same helper is duplicated in sales.js and purchase-orders.js
+// (separate serverless functions can't share a local import here) — keep
+// all three in sync if this mapping logic ever changes.
+async function syncFrontendStatusIfAuto(inventoryCol, productId, invDoc) {
+  if (!invDoc || invDoc.visibilityAutoManaged === false) return;
+  const stockStatus = computeStockStatus(invDoc.availableStock ?? 0, invDoc.lowStockAlert, invDoc.trackInventory !== false);
+  const frontendStatus = stockStatusToFrontendStatus(stockStatus);
+  await inventoryCol.updateOne({ productId }, { $set: { frontendStatus, updatedAt: new Date() } });
+}
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
@@ -296,6 +318,7 @@ export default async function handler(req, res) {
             lowStockAlert: alert,
             stockStatus,
             frontendStatus: inv.frontendStatus || 'normal',
+            visibilityAutoManaged: inv.visibilityAutoManaged !== false,
           };
         }));
 
@@ -450,15 +473,19 @@ export default async function handler(req, res) {
           }
         }
       );
+      await syncFrontendStatusIfAuto(inventoryCol, productId, { ...existing, availableStock: available });
 
       return res.status(200).json({ success: true, newStock, available, stockStatus });
     }
 
     // ── PATCH: update frontendStatus OR delete a specific adjustmentLog entry ─
     if (req.method === 'PATCH') {
-      const { productId, productIds, frontendStatus, action, index } = req.body;
+      const { productId, productIds, frontendStatus, autoManaged, action, index } = req.body;
 
       // ── Bulk visibility update — used by the mass-update UI ────────────────
+      // A manual status push always means "I'm taking manual control" — so it
+      // also switches the item out of Synced mode, or automation would just
+      // overwrite this choice the next time stock changes.
       if (action === 'bulkVisibility') {
         if (!Array.isArray(productIds) || productIds.length === 0) {
           return res.status(400).json({ error: 'productIds (non-empty array) is required' });
@@ -469,15 +496,43 @@ export default async function handler(req, res) {
         }
         const result = await inventoryCol.updateMany(
           { productId: { $in: productIds } },
-          { $set: { frontendStatus, updatedAt: new Date() } }
+          { $set: { frontendStatus, visibilityAutoManaged: false, updatedAt: new Date() } }
         );
         return res.status(200).json({ success: true, matched: result.matchedCount, modified: result.modifiedCount, frontendStatus });
+      }
+
+      // ── Bulk Synced/Manual toggle ────────────────────────────────────────
+      // Switching a batch back to Synced immediately recomputes each item's
+      // frontendStatus from its current real stock, so it snaps into the
+      // right state right away instead of waiting for the next stock change.
+      if (action === 'bulkAutoManaged') {
+        if (!Array.isArray(productIds) || productIds.length === 0) {
+          return res.status(400).json({ error: 'productIds (non-empty array) is required' });
+        }
+        await inventoryCol.updateMany(
+          { productId: { $in: productIds } },
+          { $set: { visibilityAutoManaged: !!autoManaged, updatedAt: new Date() } }
+        );
+        if (autoManaged) {
+          const docs = await inventoryCol.find({ productId: { $in: productIds } }).toArray();
+          for (const doc of docs) {
+            await syncFrontendStatusIfAuto(inventoryCol, doc.productId, doc);
+          }
+        }
+        return res.status(200).json({ success: true, matched: productIds.length, autoManaged: !!autoManaged });
       }
 
       if (!productId) return res.status(400).json({ error: 'productId is required' });
 
       const existing = await inventoryCol.findOne({ productId });
       if (!existing) return res.status(404).json({ error: 'Inventory record not found' });
+
+      // ── Single-item Synced/Manual toggle ────────────────────────────────
+      if (action === 'setAutoManaged') {
+        await inventoryCol.updateOne({ productId }, { $set: { visibilityAutoManaged: !!autoManaged, updatedAt: new Date() } });
+        if (autoManaged) await syncFrontendStatusIfAuto(inventoryCol, productId, existing);
+        return res.status(200).json({ success: true, productId, autoManaged: !!autoManaged });
+      }
 
       if (action === 'deleteAdjustment') {
         const idx = Number(index);
@@ -502,10 +557,10 @@ export default async function handler(req, res) {
 
       await inventoryCol.updateOne(
         { productId },
-        { $set: { frontendStatus, updatedAt: new Date() } }
+        { $set: { frontendStatus, visibilityAutoManaged: false, updatedAt: new Date() } }
       );
 
-      return res.status(200).json({ success: true, productId, frontendStatus });
+      return res.status(200).json({ success: true, productId, frontendStatus, autoManaged: false });
     }
 
     // ── DELETE: remove inventory tracking ─────────────────────────────────────
