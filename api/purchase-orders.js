@@ -11,6 +11,24 @@ async function getClient() {
   return client;
 }
 
+// Kept in sync with inventory.js's identical helper — see the comment there.
+// Call after ANY stock quantity change so "Synced" products stay accurate.
+function computeStockStatusForVisibility(availableStock, lowStockAlert, trackInventory = true) {
+  if (availableStock <= 0) return 'out_of_stock';
+  if (trackInventory && availableStock <= (lowStockAlert || 5)) return 'low_stock';
+  return 'in_stock';
+}
+function stockStatusToFrontendStatus(stockStatus) {
+  if (stockStatus === 'out_of_stock') return 'out_of_stock';
+  if (stockStatus === 'low_stock') return 'low_stock';
+  return 'normal';
+}
+async function syncFrontendStatusIfAuto(inventoryCol, productId, invDoc) {
+  if (!invDoc || invDoc.visibilityAutoManaged === false) return;
+  const stockStatus = computeStockStatusForVisibility(invDoc.availableStock ?? 0, invDoc.lowStockAlert, invDoc.trackInventory !== false);
+  await inventoryCol.updateOne({ productId }, { $set: { frontendStatus: stockStatusToFrontendStatus(stockStatus), updatedAt: new Date() } });
+}
+
 // Auto-generate PO number: PO-2026-001
 async function generatePONumber(db) {
   const year = new Date().getFullYear();
@@ -251,6 +269,7 @@ export default async function handler(req, res) {
             // costPrice now includes this item's share of transport cost (landed cost)
             await inventory.updateOne({ productId: item.productId }, { $set: { currentStock: newStock, availableStock: existing.availableStock + receivedQty, stockStatus, costPrice: landedCostPrice || existing.costPrice, updatedAt: new Date() } });
             await movements.insertOne({ productId: item.productId, type: 'in', quantity: receivedQty, reason: 'purchase_order', referenceId: id, balanceBefore, balanceAfter: newStock, note: `Received from PO ${po.poNumber}${transportCost > 0 ? ` — incl. ₹${perUnitTransportCost.toFixed(2)}/unit transport` : ''}${item.damageNotes ? ` — ${item.damageNotes}` : ''}`, createdAt: new Date() });
+            await syncFrontendStatusIfAuto(inventory, item.productId, { ...existing, availableStock: existing.availableStock + receivedQty });
           } else {
             await inventory.insertOne({ productId: item.productId, sku: item.sku || '', currentStock: receivedQty, reservedStock: 0, availableStock: receivedQty, lowStockAlert: 10, costPrice: landedCostPrice, unit: 'pcs', trackInventory: true, stockStatus: 'in_stock', createdAt: new Date(), updatedAt: new Date() });
             await movements.insertOne({ productId: item.productId, type: 'in', quantity: receivedQty, reason: 'purchase_order', referenceId: id, balanceBefore: 0, balanceAfter: receivedQty, note: `First stock from PO ${po.poNumber}${transportCost > 0 ? ` — incl. ₹${perUnitTransportCost.toFixed(2)}/unit transport` : ''}`, createdAt: new Date() });
@@ -399,6 +418,7 @@ export default async function handler(req, res) {
             note: `PO ${po.poNumber} edited — qty corrected: ${oldQty} → ${newQty}`,
             createdAt: new Date(),
           });
+          await syncFrontendStatusIfAuto(inventory, newItem.productId, { ...existing, availableStock: available });
         }
 
         // Save corrected items and recalculate totals on the PO
@@ -477,6 +497,7 @@ export default async function handler(req, res) {
             note: `Returned to supplier — PO ${po.poNumber}${returnReason ? ` — ${returnReason}` : ''}`,
             createdAt: new Date(),
           });
+          await syncFrontendStatusIfAuto(inventory, item.productId, { ...existing, availableStock: available });
         }
 
         // Log refund as income in cashFlow
@@ -573,6 +594,7 @@ export default async function handler(req, res) {
               else if (available <= alert) stockStatus = 'low_stock';
               await inventory.updateOne({ productId: item.productId }, { $set: { currentStock: newStock, availableStock: existing.availableStock + qty, stockStatus, updatedAt: new Date() } });
               await movements.insertOne({ productId: item.productId, type: 'in', quantity: qty, reason: 'shortage_resolution', referenceId: id, balanceBefore, balanceAfter: newStock, note: `Shortage resolved — PO ${po.poNumber}`, createdAt: new Date() });
+              await syncFrontendStatusIfAuto(inventory, item.productId, { ...existing, availableStock: existing.availableStock + qty });
             }
           }
           await cashFlow.updateMany({ referenceId: id, referenceType: 'po_shortage' }, { $set: { resolved: true, resolvedAt: new Date(), resolveType: 'goods' } });
@@ -732,6 +754,7 @@ export default async function handler(req, res) {
             note: `PO ${po.poNumber} deleted — stock reversed`,
             createdAt: new Date(),
           });
+          await syncFrontendStatusIfAuto(inventory, item.productId, { ...existing, availableStock: available });
         }
 
         // Clean up all financial entries linked to this PO
