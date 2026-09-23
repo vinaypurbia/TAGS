@@ -8,6 +8,24 @@ async function getClient() {
   return client;
 }
 
+// Kept in sync with inventory.js's identical helper — see the comment there.
+// Call after ANY stock quantity change so "Synced" products stay accurate.
+function computeStockStatusForVisibility(availableStock, lowStockAlert, trackInventory = true) {
+  if (availableStock <= 0) return 'out_of_stock';
+  if (trackInventory && availableStock <= (lowStockAlert || 5)) return 'low_stock';
+  return 'in_stock';
+}
+function stockStatusToFrontendStatus(stockStatus) {
+  if (stockStatus === 'out_of_stock') return 'out_of_stock';
+  if (stockStatus === 'low_stock') return 'low_stock';
+  return 'normal';
+}
+async function syncFrontendStatusIfAuto(inventoryCol, productId, invDoc) {
+  if (!invDoc || invDoc.visibilityAutoManaged === false) return;
+  const stockStatus = computeStockStatusForVisibility(invDoc.availableStock ?? 0, invDoc.lowStockAlert, invDoc.trackInventory !== false);
+  await inventoryCol.updateOne({ productId }, { $set: { frontendStatus: stockStatusToFrontendStatus(stockStatus), updatedAt: new Date() } });
+}
+
 // ─── Web Push setup ───────────────────────────────────────────────────────────
 if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
   webpush.setVapidDetails(
@@ -231,6 +249,7 @@ export default async function handler(req, res) {
           date: new Date(),
           createdAt: new Date(),
         });
+        await syncFrontendStatusIfAuto(inventory, item.productId, { ...inv, availableStock: newAvailable });
       }
 
       if (paymentMode === 'mixed' && mixedCashAmount > 0) {
@@ -492,6 +511,7 @@ export default async function handler(req, res) {
             date: new Date(),
             createdAt: new Date(),
           });
+          await syncFrontendStatusIfAuto(inventory, d.productId, { ...d.inv, availableStock: newAvailable });
         }
 
         const subtotal = newItems.reduce((s, i) => s + i.totalPrice, 0);
@@ -580,6 +600,7 @@ export default async function handler(req, res) {
             $push: { adjustmentLog: { adjustment: item.quantity, reason: `Sale ${sale.saleNumber} deleted — stock restored`, date: new Date(), stockAfter: newCurrent } },
           }
         );
+        await syncFrontendStatusIfAuto(inventory, item.productId, { ...inv, availableStock: newAvailable });
       }
       await movements.deleteMany({ referenceId: saleId, referenceType: 'sale' });
 
