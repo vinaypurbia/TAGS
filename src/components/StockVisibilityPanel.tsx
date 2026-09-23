@@ -17,6 +17,7 @@ interface StockItem {
   lowStockAlert: number;
   stockStatus: StockStatus;
   frontendStatus: FrontendStatus;
+  visibilityAutoManaged: boolean;
 }
 
 const STATUS_OPTIONS: {
@@ -151,7 +152,7 @@ export function StockVisibilityPanel() {
 
   const updateFrontendStatus = async (productId: string, frontendStatus: FrontendStatus) => {
     setItems(prev =>
-      prev.map(item => item.productId === productId ? { ...item, frontendStatus } : item)
+      prev.map(item => item.productId === productId ? { ...item, frontendStatus, visibilityAutoManaged: false } : item)
     );
     setSaving(productId);
     setSaved(null);
@@ -169,6 +170,51 @@ export function StockVisibilityPanel() {
       load();
     } finally {
       setSaving(null);
+    }
+  };
+
+  const toggleAutoManaged = async (productId: string, autoManaged: boolean) => {
+    setItems(prev => prev.map(item => item.productId === productId ? { ...item, visibilityAutoManaged: autoManaged } : item));
+    setSaving(productId);
+    try {
+      const res = await fetch('/api/inventory', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'setAutoManaged', productId, autoManaged }),
+      });
+      if (!res.ok) throw new Error('Failed to update');
+      if (autoManaged) load(); // resync — server recomputes frontendStatus from real stock on switch-to-Synced
+      else { setSaved(productId); setTimeout(() => setSaved(null), 2000); }
+    } catch {
+      setError('Failed to update sync mode. Please try again.');
+      load();
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  const bulkSetAutoManaged = async (autoManaged: boolean) => {
+    if (selected.size === 0) return;
+    const ids = Array.from(selected);
+    if (!window.confirm(`Set ${ids.length} product${ids.length !== 1 ? 's' : ''} to ${autoManaged ? 'Synced (auto-follow stock)' : 'Manual (leave as-is)'}?`)) return;
+    setBulkSaving(true);
+    setBulkResult(null);
+    setError(null);
+    try {
+      const res = await fetch('/api/inventory', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'bulkAutoManaged', productIds: ids, autoManaged }),
+      });
+      if (!res.ok) throw new Error('Failed to update');
+      setBulkResult(`✅ Set ${ids.length} product${ids.length !== 1 ? 's' : ''} to ${autoManaged ? 'Synced' : 'Manual'}`);
+      setSelected(new Set());
+      setTimeout(() => setBulkResult(null), 4000);
+      load(); // resync — Synced items may have just had frontendStatus recomputed server-side
+    } catch {
+      setError('Bulk sync-mode update failed. Please try again.');
+    } finally {
+      setBulkSaving(false);
     }
   };
 
@@ -371,11 +417,25 @@ export function StockVisibilityPanel() {
                       </button>
                     );
                   })}
-                  <div className="ml-auto flex items-center gap-1.5 text-xs text-gray-400">
-                    {item.frontendStatus === 'hidden'
-                      ? <><EyeOff className="w-3.5 h-3.5" /> Hidden from catalog</>
-                      : <><Eye className="w-3.5 h-3.5" /> Visible in catalog</>
-                    }
+                  <div className="ml-auto flex items-center gap-3">
+                    <button
+                      onClick={() => toggleAutoManaged(item.productId, !item.visibilityAutoManaged)}
+                      disabled={saving === item.productId}
+                      title={item.visibilityAutoManaged ? 'Auto-follows real stock status. Click to switch to Manual.' : 'Manually controlled. Click to switch to Synced.'}
+                      className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold border transition-all disabled:opacity-50 disabled:cursor-wait ${
+                        item.visibilityAutoManaged
+                          ? 'bg-blue-50 text-blue-600 border-blue-200 hover:bg-blue-100'
+                          : 'bg-gray-100 text-gray-500 border-gray-300 hover:bg-gray-200'
+                      }`}
+                    >
+                      {item.visibilityAutoManaged ? <><RefreshCw className="w-3 h-3" /> Synced</> : <>✋ Manual</>}
+                    </button>
+                    <div className="flex items-center gap-1.5 text-xs text-gray-400">
+                      {item.frontendStatus === 'hidden'
+                        ? <><EyeOff className="w-3.5 h-3.5" /> Hidden from catalog</>
+                        : <><Eye className="w-3.5 h-3.5" /> Visible in catalog</>
+                      }
+                    </div>
                   </div>
                 </div>
               </div>
@@ -399,7 +459,23 @@ export function StockVisibilityPanel() {
             {selected.size} product{selected.size !== 1 ? 's' : ''} selected
             <button onClick={() => setSelected(new Set())} className="ml-3 text-xs font-bold text-gray-400 hover:text-gray-600 underline">Clear</button>
           </p>
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap gap-2 items-center">
+            <div className="flex gap-2 pr-3 border-r border-gray-200">
+              <button
+                onClick={() => bulkSetAutoManaged(true)}
+                disabled={bulkSaving}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded border-2 text-xs font-bold bg-blue-50 border-blue-200 text-blue-600 hover:opacity-80 disabled:opacity-50 disabled:cursor-wait transition-all"
+              >
+                <RefreshCw className="w-3 h-3" /> Set: Synced
+              </button>
+              <button
+                onClick={() => bulkSetAutoManaged(false)}
+                disabled={bulkSaving}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded border-2 text-xs font-bold bg-gray-100 border-gray-300 text-gray-500 hover:opacity-80 disabled:opacity-50 disabled:cursor-wait transition-all"
+              >
+                ✋ Set: Manual
+              </button>
+            </div>
             {STATUS_OPTIONS.map(opt => (
               <button
                 key={opt.value}
