@@ -81,6 +81,29 @@ export function StockVisibilityPanel() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkSaving, setBulkSaving] = useState(false);
   const [bulkResult, setBulkResult] = useState<string | null>(null);
+  const [syncingAll, setSyncingAll] = useState(false);
+
+  const syncAllNow = async () => {
+    setSyncingAll(true);
+    setError(null);
+    setBulkResult(null);
+    try {
+      const res = await fetch('/api/inventory', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'syncAllNow' }),
+      });
+      if (!res.ok) throw new Error('Failed to sync');
+      const data = await res.json();
+      setBulkResult(`✅ Checked ${data.checked} synced products — corrected ${data.updated} to match real stock`);
+      setTimeout(() => setBulkResult(null), 5000);
+      load();
+    } catch {
+      setError('Sync failed. Please try again.');
+    } finally {
+      setSyncingAll(false);
+    }
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -254,12 +277,22 @@ export function StockVisibilityPanel() {
         </div>
         <div className="flex items-center gap-3">
           {!minimized && (
-            <button
-              onClick={e => { e.stopPropagation(); load(); }}
-              className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-gray-600 hover:text-black transition-colors"
-            >
-              <RefreshCw className="w-3.5 h-3.5" /> Refresh
-            </button>
+            <>
+              <button
+                onClick={e => { e.stopPropagation(); syncAllNow(); }}
+                disabled={syncingAll}
+                title="Recompute status for every Synced product from its current real stock — needed once after this feature is added, or any time drift is suspected"
+                className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-blue-600 hover:text-blue-800 transition-colors disabled:opacity-50 disabled:cursor-wait"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${syncingAll ? 'animate-spin' : ''}`} /> {syncingAll ? 'Syncing All...' : 'Sync All Now'}
+              </button>
+              <button
+                onClick={e => { e.stopPropagation(); load(); }}
+                className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-gray-600 hover:text-black transition-colors"
+              >
+                <RefreshCw className="w-3.5 h-3.5" /> Refresh
+              </button>
+            </>
           )}
           <div className="flex items-center gap-1.5 text-xs font-bold text-gray-500 border border-gray-300 rounded px-2 py-1 bg-white">
             {minimized
@@ -269,6 +302,10 @@ export function StockVisibilityPanel() {
           </div>
         </div>
       </div>
+
+      {bulkResult && !minimized && (
+        <div className="px-6 py-2 bg-green-50 border-b border-green-100 text-xs font-bold text-green-700">{bulkResult}</div>
+      )}
 
       {/* ── Collapsible body ── */}
       {!minimized && (
