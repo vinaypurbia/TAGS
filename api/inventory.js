@@ -522,6 +522,26 @@ export default async function handler(req, res) {
         return res.status(200).json({ success: true, matched: productIds.length, autoManaged: !!autoManaged });
       }
 
+      // ── One-time catch-up: recompute frontendStatus for EVERY Synced ──────
+      // product from its current real stock, regardless of whether a stock
+      // change has happened recently. Needed once after this feature is
+      // deployed (or any time drift is suspected) — ongoing changes already
+      // stay current automatically via syncFrontendStatusIfAuto on every
+      // sale/PO/adjustment. Manually-overridden products are left untouched.
+      if (action === 'syncAllNow') {
+        const autoManagedDocs = await inventoryCol.find({ visibilityAutoManaged: { $ne: false } }).toArray();
+        let updated = 0;
+        for (const doc of autoManagedDocs) {
+          const stockStatus = computeStockStatus(doc.availableStock ?? 0, doc.lowStockAlert, doc.trackInventory !== false);
+          const newFrontendStatus = stockStatusToFrontendStatus(stockStatus);
+          if (newFrontendStatus !== (doc.frontendStatus || 'normal')) {
+            await inventoryCol.updateOne({ productId: doc.productId }, { $set: { frontendStatus: newFrontendStatus, updatedAt: new Date() } });
+            updated++;
+          }
+        }
+        return res.status(200).json({ success: true, checked: autoManagedDocs.length, updated });
+      }
+
       if (!productId) return res.status(400).json({ error: 'productId is required' });
 
       const existing = await inventoryCol.findOne({ productId });
