@@ -77,6 +77,9 @@ export function StockVisibilityPanel() {
   const [error, setError] = useState<string | null>(null);
   const [minimized, setMinimized] = useState(false);
   const [filter, setFilter] = useState<FilterType>('all');
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkSaving, setBulkSaving] = useState(false);
+  const [bulkResult, setBulkResult] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -94,6 +97,57 @@ export function StockVisibilityPanel() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+  useEffect(() => { setSelected(new Set()); }, [filter]);
+
+  const toggleSelect = (productId: string) => {
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(productId)) next.delete(productId); else next.add(productId);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = (filteredItems: StockItem[]) => {
+    setSelected(prev => {
+      const allSelected = filteredItems.length > 0 && filteredItems.every(i => prev.has(i.productId));
+      if (allSelected) {
+        const next = new Set(prev);
+        filteredItems.forEach(i => next.delete(i.productId));
+        return next;
+      }
+      const next = new Set(prev);
+      filteredItems.forEach(i => next.add(i.productId));
+      return next;
+    });
+  };
+
+  const bulkUpdateStatus = async (frontendStatus: FrontendStatus) => {
+    if (selected.size === 0) return;
+    const ids = Array.from(selected);
+    const label = STATUS_OPTIONS.find(o => o.value === frontendStatus)?.label || frontendStatus;
+    if (!window.confirm(`Set ${ids.length} product${ids.length !== 1 ? 's' : ''} to "${label}"?`)) return;
+
+    setBulkSaving(true);
+    setBulkResult(null);
+    setError(null);
+    try {
+      const res = await fetch('/api/inventory', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'bulkVisibility', productIds: ids, frontendStatus }),
+      });
+      if (!res.ok) throw new Error('Failed to update');
+      const data = await res.json();
+      setItems(prev => prev.map(item => ids.includes(item.productId) ? { ...item, frontendStatus } : item));
+      setBulkResult(`✅ Updated ${data.modified ?? ids.length} product${ids.length !== 1 ? 's' : ''} to "${label}"`);
+      setSelected(new Set());
+      setTimeout(() => setBulkResult(null), 4000);
+    } catch {
+      setError('Bulk update failed. Please try again.');
+    } finally {
+      setBulkSaving(false);
+    }
+  };
 
   const updateFrontendStatus = async (productId: string, frontendStatus: FrontendStatus) => {
     setItems(prev =>
@@ -208,6 +262,22 @@ export function StockVisibilityPanel() {
             ))}
           </div>
 
+          {/* ── Select all + bulk result ── */}
+          {!loading && filteredItems.length > 0 && (
+            <div className="px-6 py-2 border-b border-gray-200 bg-white flex items-center justify-between flex-wrap gap-2">
+              <label className="flex items-center gap-2 text-xs font-bold text-gray-600 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={filteredItems.length > 0 && filteredItems.every(i => selected.has(i.productId))}
+                  onChange={() => toggleSelectAll(filteredItems)}
+                  className="w-4 h-4 accent-black cursor-pointer"
+                />
+                Select all {filter !== 'all' ? `(${filteredItems.length} in this filter)` : `(${filteredItems.length})`}
+              </label>
+              {bulkResult && <span className="text-xs font-bold text-green-600">{bulkResult}</span>}
+            </div>
+          )}
+
           {/* ── Error ── */}
           {error && (
             <div className="mx-6 mt-4 p-3 bg-red-50 border border-red-200 text-red-700 text-sm rounded flex items-center gap-2">
@@ -238,8 +308,14 @@ export function StockVisibilityPanel() {
           {/* ── Product rows ── */}
           <div className="divide-y divide-gray-100">
             {filteredItems.map(item => (
-              <div key={item.productId} className="px-6 py-4">
+              <div key={item.productId} className={`px-6 py-4 ${selected.has(item.productId) ? 'bg-blue-50/50' : ''}`}>
                 <div className="flex items-center gap-3 mb-3">
+                  <input
+                    type="checkbox"
+                    checked={selected.has(item.productId)}
+                    onChange={() => toggleSelect(item.productId)}
+                    className="w-4 h-4 accent-black cursor-pointer flex-shrink-0"
+                  />
                   {item.image ? (
                     <img
                       src={item.image}
@@ -314,6 +390,28 @@ export function StockVisibilityPanel() {
             </div>
           )}
         </>
+      )}
+
+      {/* ── Sticky mass-update bar ── */}
+      {!minimized && selected.size > 0 && (
+        <div className="sticky bottom-0 left-0 right-0 border-t-2 border-black bg-white px-6 py-3 flex items-center justify-between flex-wrap gap-3 shadow-[0_-4px_12px_rgba(0,0,0,0.06)]">
+          <p className="text-sm font-black">
+            {selected.size} product{selected.size !== 1 ? 's' : ''} selected
+            <button onClick={() => setSelected(new Set())} className="ml-3 text-xs font-bold text-gray-400 hover:text-gray-600 underline">Clear</button>
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {STATUS_OPTIONS.map(opt => (
+              <button
+                key={opt.value}
+                onClick={() => bulkUpdateStatus(opt.value)}
+                disabled={bulkSaving}
+                className={`px-3 py-1.5 rounded border text-xs font-bold transition-all ${opt.bg} ${opt.border} ${opt.color} border-2 hover:opacity-80 disabled:opacity-50 disabled:cursor-wait`}
+              >
+                {bulkSaving ? 'Saving...' : `Set: ${opt.label}`}
+              </button>
+            ))}
+          </div>
+        </div>
       )}
     </div>
   );
