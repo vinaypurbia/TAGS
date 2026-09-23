@@ -456,7 +456,24 @@ export default async function handler(req, res) {
 
     // ── PATCH: update frontendStatus OR delete a specific adjustmentLog entry ─
     if (req.method === 'PATCH') {
-      const { productId, frontendStatus, action, index } = req.body;
+      const { productId, productIds, frontendStatus, action, index } = req.body;
+
+      // ── Bulk visibility update — used by the mass-update UI ────────────────
+      if (action === 'bulkVisibility') {
+        if (!Array.isArray(productIds) || productIds.length === 0) {
+          return res.status(400).json({ error: 'productIds (non-empty array) is required' });
+        }
+        const validStatuses = ['normal', 'low_stock', 'out_of_stock', 'hidden'];
+        if (!validStatuses.includes(frontendStatus)) {
+          return res.status(400).json({ error: `frontendStatus must be one of: ${validStatuses.join(', ')}` });
+        }
+        const result = await inventoryCol.updateMany(
+          { productId: { $in: productIds } },
+          { $set: { frontendStatus, updatedAt: new Date() } }
+        );
+        return res.status(200).json({ success: true, matched: result.matchedCount, modified: result.modifiedCount, frontendStatus });
+      }
+
       if (!productId) return res.status(400).json({ error: 'productId is required' });
 
       const existing = await inventoryCol.findOne({ productId });
