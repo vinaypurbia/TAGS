@@ -2579,7 +2579,7 @@ function StoryComposer({ product, imageUrl, price, origPrice, caption }: {
   );
 }
 
-// ── Bulk WhatsApp (many products → messages with pictures) ─────────────────
+// ── Bulk WhatsApp (many products → pictures with their own text) ──────────
 const isMobileDevice = () => typeof navigator !== 'undefined' && (
   /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
   (/Macintosh/i.test(navigator.userAgent) && navigator.maxTouchPoints > 1)
@@ -2590,54 +2590,129 @@ const isMobileDevice = () => typeof navigator !== 'undefined' && (
 const waLinkText = (t: string) =>
   isMobileDevice() ? t : t.replace(/[\u{10000}-\u{10FFFF}\u2728]\uFE0F?[ \t]?/gu, '').trim();
 
-// Product photo → JPEG File (WhatsApp may treat .webp shares as stickers, so always convert)
-async function productPhotoFile(url: string, baseName: string): Promise<File> {
+type BulkItem = { id: string; name: string; price: number; origPrice: number; image: string };
+type BulkFiles = { photo: File; card: File; cardUrl: string };
+
+// Loads a product photo through fetch→blob so the canvas is never tainted (needs CORS on the image host)
+async function loadImageElement(url: string): Promise<{ im: HTMLImageElement; release: () => void }> {
   const res = await fetch(url, { mode: 'cors', cache: 'reload' });
   if (!res.ok) throw new Error('fetch failed');
   const objUrl = URL.createObjectURL(await res.blob());
+  const im = new window.Image();   // NOTE: `Image` alone is the lucide icon in this file
   try {
-    const im = new window.Image();   // NOTE: `Image` alone is the lucide icon in this file
     await new Promise<void>((ok, bad) => { im.onload = () => ok(); im.onerror = () => bad(new Error('decode')); im.src = objUrl; });
-    const scale = Math.min(1, 1200 / Math.max(im.width, im.height));
-    const c = document.createElement('canvas');
-    c.width = Math.round(im.width * scale); c.height = Math.round(im.height * scale);
-    const ctx = c.getContext('2d')!;
-    ctx.fillStyle = '#FFFFFF'; ctx.fillRect(0, 0, c.width, c.height);
-    ctx.drawImage(im, 0, 0, c.width, c.height);
-    const blob: Blob = await new Promise((ok, bad) => c.toBlob(b => b ? ok(b) : bad(new Error('export')), 'image/jpeg', 0.9));
-    return new File([blob], `${baseName}.jpg`, { type: 'image/jpeg' });
-  } finally { URL.revokeObjectURL(objUrl); }
+  } catch (e) { URL.revokeObjectURL(objUrl); throw e; }
+  return { im, release: () => URL.revokeObjectURL(objUrl) };
 }
 
-type BulkItem = { id: string; name: string; price: number; origPrice: number; image: string };
+const canvasToJpegFile = (c: HTMLCanvasElement, name: string) =>
+  new Promise<File>((ok, bad) => c.toBlob(b => b ? ok(new File([b], name, { type: 'image/jpeg' })) : bad(new Error('export')), 'image/jpeg', 0.9));
+
+// Plain product photo as JPEG (WhatsApp may treat .webp shares as stickers, so always convert)
+function renderPhoto(im: HTMLImageElement): HTMLCanvasElement {
+  const scale = Math.min(1, 1200 / Math.max(im.width, im.height));
+  const c = document.createElement('canvas');
+  c.width = Math.round(im.width * scale); c.height = Math.round(im.height * scale);
+  const ctx = c.getContext('2d')!;
+  ctx.fillStyle = '#FFFFFF'; ctx.fillRect(0, 0, c.width, c.height);
+  ctx.drawImage(im, 0, 0, c.width, c.height);
+  return c;
+}
+
+// Picture card: product photo on top, name / price / discount / contact printed underneath (1080×1350)
+function renderProductCard(im: HTMLImageElement, it: BulkItem): HTMLCanvasElement {
+  const W = 1080, H = 1350, photoH = 900;
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const ctx = c.getContext('2d')!;
+  const font = (w: number, s: number) => `${w} ${s}px Inter, "Segoe UI", Arial, sans-serif`;
+
+  ctx.fillStyle = '#FFFFFF'; ctx.fillRect(0, 0, W, photoH);
+  const pad = 50;
+  const scale = Math.min((W - pad * 2) / im.width, (photoH - pad * 2) / im.height);
+  const w = im.width * scale, h = im.height * scale;
+  ctx.drawImage(im, (W - w) / 2, (photoH - h) / 2, w, h);
+
+  const g = ctx.createLinearGradient(0, photoH, 0, H);
+  g.addColorStop(0, '#FA5600'); g.addColorStop(1, '#FF8A3D');
+  ctx.fillStyle = g; ctx.fillRect(0, photoH, W, H - photoH);
+
+  const disc = it.origPrice > it.price && it.price > 0 ? Math.round(((it.origPrice - it.price) / it.origPrice) * 100) : 0;
+  if (disc > 0) {
+    ctx.fillStyle = '#E11D48';
+    ctx.beginPath(); ctx.arc(W - 130, 130, 95, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#FFFFFF'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.font = font(900, 58); ctx.fillText(`${disc}%`, W - 130, 116);
+    ctx.font = font(900, 30); ctx.fillText('OFF', W - 130, 166);
+  }
+
+  ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic'; ctx.fillStyle = '#FFFFFF';
+  ctx.font = font(900, 48);
+  const lines = storyWrap(ctx, (it.name || '').toUpperCase(), 960, 2);
+  lines.forEach((ln, i) => ctx.fillText(ln, 60, 972 + i * 58));
+
+  if (it.price > 0) {
+    const baseY = 972 + (lines.length - 1) * 58 + 140;
+    const priceTxt = `₹${it.price.toFixed(0)}`;
+    ctx.font = font(900, 96); ctx.fillText(priceTxt, 60, baseY);
+    if (it.origPrice > it.price) {
+      const pw = ctx.measureText(priceTxt).width;
+      const origTxt = `₹${it.origPrice.toFixed(0)}`;
+      ctx.font = font(700, 46); ctx.fillStyle = 'rgba(255,255,255,0.8)';
+      ctx.fillText(origTxt, 60 + pw + 30, baseY);
+      ctx.fillRect(60 + pw + 30, baseY - 16, ctx.measureText(origTxt).width, 4);
+      ctx.fillStyle = '#FFFFFF';
+    }
+  }
+
+  ctx.fillStyle = 'rgba(255,255,255,0.35)'; ctx.fillRect(60, 1225, W - 120, 3);
+  ctx.fillStyle = '#FFFFFF'; ctx.font = font(800, 32);
+  ctx.fillText('ta-gs.online   ·   WhatsApp 63500 21226', 60, 1290);
+  return c;
+}
 
 function BulkWhatsAppModal({ items, onClose }: { items: BulkItem[]; onClose: () => void }) {
+  const [mode, setMode]           = useState<'cards' | 'captions'>('cards');
   const [perPart, setPerPart]     = useState(5);
   const [intro, setIntro]         = useState('🔥 *New at TAGS!*');
-  const [sent, setSent]           = useState<Set<number>>(new Set());
+  const [sent, setSent]           = useState<Set<string>>(new Set());
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
-  const [files, setFiles]         = useState<Record<string, File | null>>({});
+  const [files, setFiles]         = useState<Record<string, BulkFiles | null>>({});
   const [prepared, setPrepared]   = useState(0);
   const [notice, setNotice]       = useState('');
 
-  useEffect(() => { setSent(new Set()); setNotice(''); }, [perPart, intro, items.length]);
+  useEffect(() => { setSent(new Set()); setNotice(''); }, [mode, perPart, intro, items.length]);
 
-  // Pre-load every product photo as a JPEG so sharing can start instantly on click
+  // Pre-build every product's photo + picture card so sharing can start instantly on click
   const idKey = items.map(i => i.id).join(',');
   useEffect(() => {
     let cancelled = false;
+    const urls: string[] = [];
     setFiles({}); setPrepared(0);
     items.forEach(async it => {
-      let f: File | null = null;
+      let f: BulkFiles | null = null;
       try {
-        if (it.image) f = await productPhotoFile(it.image, `${(it.name || 'product').toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40)}-${it.id.slice(-4)}`);
+        if (it.image) {
+          const { im, release } = await loadImageElement(it.image);
+          try {
+            const base = `${(it.name || 'product').toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40)}-${it.id.slice(-4)}`;
+            const photo = await canvasToJpegFile(renderPhoto(im), `${base}.jpg`);
+            const card  = await canvasToJpegFile(renderProductCard(im, it), `${base}-card.jpg`);
+            const cardUrl = URL.createObjectURL(card);
+            urls.push(cardUrl);
+            f = { photo, card, cardUrl };
+          } finally { release(); }
+        }
       } catch { f = null; }
-      if (!cancelled) { setFiles(prev => ({ ...prev, [it.id]: f })); setPrepared(n => n + 1); }
+      if (cancelled) { if (f) URL.revokeObjectURL(f.cardUrl); return; }
+      setFiles(prev => ({ ...prev, [it.id]: f }));
+      setPrepared(n => n + 1);
     });
-    return () => { cancelled = true; };
+    return () => { cancelled = true; urls.forEach(u => URL.revokeObjectURL(u)); };
   }, [idKey]);
   const ready = prepared >= items.length;
+  const loadedCount = Object.values(files).filter(Boolean).length;
 
+  // ── Text versions ──
   const productLine = (it: BulkItem, num: number) => {
     const name = it.name.length > 60 ? it.name.slice(0, 57) + '...' : it.name;
     let l = num ? `${num}. *${name}*` : `*${name}*`;
@@ -2647,6 +2722,13 @@ function BulkWhatsAppModal({ items, onClose }: { items: BulkItem[]; onClose: () 
     }
     l += `\n   🔗 https://ta-gs.online/products/${it.id}`;
     return l;
+  };
+  const captionFor = (it: BulkItem) => {
+    const disc = it.origPrice > it.price && it.price > 0 ? Math.round(((it.origPrice - it.price) / it.origPrice) * 100) : 0;
+    let t = `*${it.name}*\n`;
+    if (it.price > 0) t += `💰 ₹${it.price.toFixed(0)}` + (disc > 0 ? ` ~₹${it.origPrice.toFixed(0)}~ (${disc}% OFF)` : '') + '\n';
+    t += `🔗 https://ta-gs.online/products/${it.id}\n\n📞 To order: wa.me/916350021226\n📍 TAGS, Hathipole, Udaipur`;
+    return t;
   };
 
   const chunks: BulkItem[][] = [];
@@ -2659,105 +2741,159 @@ function BulkWhatsAppModal({ items, onClose }: { items: BulkItem[]; onClose: () 
     return msg;
   });
 
-  const markSent = (i: number) => setSent(prev => new Set(prev).add(i));
-
-  const openTextOnly = (i: number) => {
-    window.open(`https://wa.me/?text=${encodeURIComponent(waLinkText(parts[i]))}`, '_blank');
-    markSent(i);
-  };
+  const markSent = (key: string) => setSent(prev => new Set(prev).add(key));
   const copyPart = (i: number) => {
     navigator.clipboard.writeText(parts[i]).then(() => { setCopiedIdx(i); setTimeout(() => setCopiedIdx(null), 2000); });
   };
+  const openTextOnly = (i: number) => {
+    window.open(`https://wa.me/?text=${encodeURIComponent(waLinkText(parts[i]))}`, '_blank');
+    markSent(`p${i}`);
+  };
 
-  // Pictures + text: opens the share dialog with all product photos attached.
-  // WhatsApp Desktop ignores the shared text, so it is also copied → paste it into the message box.
-  const sendWithPictures = (i: number) => {
-    const fs = chunks[i].map(it => files[it.id]).filter((f): f is File => !!f);
-    const missing = chunks[i].length - fs.length;
-    if (fs.length === 0) { setNotice('❌ None of these products has a picture that could be loaded. Use "Text only" instead.'); return; }
-    navigator.clipboard.writeText(parts[i]).catch(() => {});
-    const tail = missing > 0 ? ` (${missing} picture${missing > 1 ? 's' : ''} couldn't be loaded and were skipped.)` : '';
+  const downloadFiles = (fs: File[]) => fs.forEach((f, k) => setTimeout(() => {
+    const a = document.createElement('a'); a.href = URL.createObjectURL(f); a.download = f.name; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 3000);
+  }, k * 300));
+
+  const shareOrSave = (fs: File[], text: string, key: string, shareMsg: string, saveMsg: string) => {
     if (navigator.canShare && navigator.canShare({ files: fs })) {
-      setNotice(`✓ Text copied. In WhatsApp, pick the chat(s) and paste the text (Ctrl+V / long-press → Paste) into the message box.${tail}`);
-      navigator.share({ files: fs, text: parts[i] })
-        .then(() => markSent(i))
+      setNotice(shareMsg);
+      navigator.share(text ? { files: fs, text } : { files: fs })
+        .then(() => markSent(key))
         .catch((e: any) => { if (e?.name === 'AbortError') setNotice(''); else setNotice('❌ ' + (e?.message || 'Share failed')); });
     } else {
-      fs.forEach((f, k) => setTimeout(() => {
-        const a = document.createElement('a'); a.href = URL.createObjectURL(f); a.download = f.name; a.click();
-        setTimeout(() => URL.revokeObjectURL(a.href), 3000);
-      }, k * 300));
-      markSent(i);
-      setNotice(`✓ Pictures saved and text copied. In WhatsApp, attach the saved pictures to a chat and paste the text.${tail}`);
+      downloadFiles(fs); markSent(key); setNotice(saveMsg);
     }
   };
+
+  // Mode 1 — picture cards: every picture already has its own text underneath, one share for all
+  const sendCards = (i: number) => {
+    const fs = chunks[i].map(it => files[it.id]?.card).filter((f): f is File => !!f);
+    const missing = chunks[i].length - fs.length;
+    if (fs.length === 0) { setNotice('❌ None of these products has a picture that could be loaded. Use "Text only" instead.'); return; }
+    const tail = missing > 0 ? ` (${missing} without a loadable picture skipped.)` : '';
+    shareOrSave(fs, '', `p${i}`,
+      `✓ Pick the chat(s) in WhatsApp and send — each picture already has its name, price and contact underneath.${tail}`,
+      `✓ Pictures saved. Attach them to a chat in WhatsApp — each one has its text underneath.${tail}`);
+  };
+
+  // Mode 2 — real WhatsApp caption: one product at a time; caption is copied, paste it in the message box
+  const sendWithCaption = (it: BulkItem) => {
+    const f = files[it.id]?.photo;
+    if (!f) { setNotice('❌ This product has no picture that could be loaded.'); return; }
+    const cap = captionFor(it);
+    navigator.clipboard.writeText(cap).catch(() => {});
+    shareOrSave([f], cap, `c${it.id}`,
+      '✓ Caption copied. In WhatsApp pick the chat(s), click the message box, paste (Ctrl+V) and send. Then come back for the next product.',
+      '✓ Picture saved and caption copied. Attach the picture in WhatsApp and paste the caption.');
+  };
+
+  const tabCls = (on: boolean) =>
+    `flex-1 text-[10px] font-black uppercase tracking-widest py-2 px-2 rounded-xl border-2 transition-all ${on ? 'bg-[#FA5600] text-white border-[#FA5600]' : 'border-gray-200 text-gray-400 bg-white hover:border-[#FA5600]/50'}`;
 
   return (
     <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={onClose}>
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between p-4 border-b border-gray-100 sticky top-0 bg-white z-10">
           <div>
-            <h3 className="font-black text-sm uppercase tracking-widest text-gray-800">Bulk WhatsApp Message</h3>
+            <h3 className="font-black text-sm uppercase tracking-widest text-gray-800">Bulk WhatsApp</h3>
             <p className="text-[10px] text-gray-400 font-bold">
-              {items.length} product{items.length > 1 ? 's' : ''} → {parts.length} message{parts.length > 1 ? 's' : ''} ·{' '}
-              {ready ? `pictures ready (${Object.values(files).filter(Boolean).length}/${items.length})` : `loading pictures ${prepared}/${items.length}…`}
+              {items.length} product{items.length > 1 ? 's' : ''} · {ready ? `pictures ready (${loadedCount}/${items.length})` : `preparing pictures ${prepared}/${items.length}…`}
             </p>
           </div>
           <button onClick={onClose} className="p-2 rounded-lg hover:bg-gray-100 text-gray-400"><X className="w-4 h-4" /></button>
         </div>
 
         <div className="p-4 space-y-4">
-          <div className="flex gap-3 flex-wrap items-end">
-            <div className="flex-1 min-w-[160px]">
-              <p className="text-[10px] font-black uppercase tracking-widest text-gray-500 mb-1.5">Opening line</p>
-              <input value={intro} onChange={e => setIntro(e.target.value)} maxLength={80}
-                className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-xs font-bold focus:border-[#FA5600] outline-none bg-white" />
+          <div>
+            <div className="flex gap-2">
+              <button onClick={() => setMode('cards')} className={tabCls(mode === 'cards')}>Text on picture · all at once</button>
+              <button onClick={() => setMode('captions')} className={tabCls(mode === 'captions')}>WhatsApp caption · one by one</button>
             </div>
-            <div>
-              <p className="text-[10px] font-black uppercase tracking-widest text-gray-500 mb-1.5">Products per message</p>
-              <div className="flex gap-1.5">
-                {[1, 3, 5, 8].map(n => (
-                  <button key={n} onClick={() => setPerPart(n)}
-                    className={`text-[10px] font-black w-9 py-1.5 rounded-lg border-2 transition-all ${perPart === n ? 'bg-[#FA5600] text-white border-[#FA5600]' : 'border-gray-200 text-gray-400 bg-white hover:border-[#FA5600]/50'}`}>{n}</button>
-                ))}
-              </div>
-            </div>
+            <p className="text-[9px] text-gray-400 font-semibold mt-1.5">
+              {mode === 'cards'
+                ? 'Each picture is rebuilt with its name, price, discount and contact printed underneath, so all pictures go in one share.'
+                : 'Real WhatsApp captions with clickable links. WhatsApp allows one caption box per share, so you send each product separately.'}
+            </p>
           </div>
 
           {notice && <p className="text-[11px] font-bold text-gray-700 bg-orange-50 border border-orange-100 rounded-xl px-3 py-2">{notice}</p>}
 
-          {parts.map((msg, i) => (
-            <div key={i} className={`rounded-xl border-2 p-3 space-y-2 ${sent.has(i) ? 'border-green-200 bg-green-50/50' : 'border-gray-100'}`}>
-              <div className="flex items-center justify-between gap-2">
-                <p className="text-[10px] font-black uppercase tracking-widest text-gray-500">
-                  Message {i + 1} of {parts.length} · {chunks[i].length} product{chunks[i].length > 1 ? 's' : ''} {sent.has(i) && <span className="text-green-600 normal-case">· opened ✓</span>}
-                </p>
-                <button onClick={() => copyPart(i)}
-                  className={`flex items-center gap-1 text-[10px] font-black uppercase px-2 py-1 rounded-lg transition ${copiedIdx === i ? 'bg-green-100 text-green-600' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>
-                  {copiedIdx === i ? <><Check className="w-3 h-3" /> Copied</> : <><Copy className="w-3 h-3" /> Copy</>}
-                </button>
+          {mode === 'cards' && (
+            <>
+              <div className="flex gap-3 flex-wrap items-end">
+                <div className="flex-1 min-w-[160px]">
+                  <p className="text-[10px] font-black uppercase tracking-widest text-gray-500 mb-1.5">Opening line (text version)</p>
+                  <input value={intro} onChange={e => setIntro(e.target.value)} maxLength={80}
+                    className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-xs font-bold focus:border-[#FA5600] outline-none bg-white" />
+                </div>
+                <div>
+                  <p className="text-[10px] font-black uppercase tracking-widest text-gray-500 mb-1.5">Pictures per share</p>
+                  <div className="flex gap-1.5">
+                    {[1, 3, 5, 8].map(n => (
+                      <button key={n} onClick={() => setPerPart(n)}
+                        className={`text-[10px] font-black w-9 py-1.5 rounded-lg border-2 transition-all ${perPart === n ? 'bg-[#FA5600] text-white border-[#FA5600]' : 'border-gray-200 text-gray-400 bg-white hover:border-[#FA5600]/50'}`}>{n}</button>
+                    ))}
+                  </div>
+                </div>
               </div>
-              <div className="flex gap-1.5 overflow-x-auto no-scrollbar">
-                {chunks[i].map(it => (
-                  <div key={it.id} className="shrink-0 w-12 h-12 rounded-lg overflow-hidden bg-gray-100 border border-gray-200">
+
+              {chunks.map((chunk, i) => (
+                <div key={i} className={`rounded-xl border-2 p-3 space-y-2 ${sent.has(`p${i}`) ? 'border-green-200 bg-green-50/50' : 'border-gray-100'}`}>
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-[10px] font-black uppercase tracking-widest text-gray-500">
+                      Share {i + 1} of {chunks.length} · {chunk.length} picture{chunk.length > 1 ? 's' : ''} {sent.has(`p${i}`) && <span className="text-green-600 normal-case">· done ✓</span>}
+                    </p>
+                    <button onClick={() => copyPart(i)}
+                      className={`flex items-center gap-1 text-[10px] font-black uppercase px-2 py-1 rounded-lg transition ${copiedIdx === i ? 'bg-green-100 text-green-600' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>
+                      {copiedIdx === i ? <><Check className="w-3 h-3" /> Copied</> : <><Copy className="w-3 h-3" /> Copy text + links</>}
+                    </button>
+                  </div>
+                  <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1">
+                    {chunk.map(it => (
+                      <div key={it.id} className="shrink-0 w-24 rounded-lg overflow-hidden bg-gray-100 border border-gray-200" style={{ aspectRatio: '4 / 5' }}>
+                        {files[it.id]?.cardUrl
+                          ? <img src={files[it.id]!.cardUrl} alt="" className="w-full h-full object-cover" />
+                          : <div className="w-full h-full flex items-center justify-center text-[9px] font-black text-gray-300 text-center px-1">{files[it.id] === null ? 'No picture' : '…'}</div>}
+                      </div>
+                    ))}
+                  </div>
+                  <button onClick={() => sendCards(i)} disabled={!ready}
+                    className="w-full flex items-center justify-center gap-2 bg-[#25D366] text-white font-black py-2.5 rounded-xl hover:bg-[#20bd5a] transition-all text-xs uppercase tracking-widest disabled:opacity-50">
+                    {ready ? `Send ${chunk.length} picture${chunk.length > 1 ? 's' : ''} to WhatsApp` : 'Preparing pictures…'}
+                  </button>
+                  <button onClick={() => openTextOnly(i)}
+                    className="w-full border-2 border-gray-200 text-gray-600 font-black py-2 rounded-xl hover:border-[#25D366] hover:text-[#25D366] transition-all text-[10px] uppercase tracking-widest">
+                    Text only (WhatsApp link)
+                  </button>
+                </div>
+              ))}
+            </>
+          )}
+
+          {mode === 'captions' && (
+            <div className="space-y-2">
+              {items.map((it, n) => (
+                <div key={it.id} className={`rounded-xl border-2 p-3 flex items-center gap-3 ${sent.has(`c${it.id}`) ? 'border-green-200 bg-green-50/50' : 'border-gray-100'}`}>
+                  <div className="shrink-0 w-14 h-14 rounded-lg overflow-hidden bg-gray-100 border border-gray-200">
                     {it.image ? <img src={it.image} alt="" className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center text-gray-300"><Package className="w-4 h-4" /></div>}
                   </div>
-                ))}
-              </div>
-              <pre className="text-[11px] font-mono whitespace-pre-wrap text-gray-600 bg-gray-50 rounded-lg p-2 max-h-32 overflow-y-auto">{msg}</pre>
-              <button onClick={() => sendWithPictures(i)} disabled={!ready}
-                className="w-full flex items-center justify-center gap-2 bg-[#25D366] text-white font-black py-2.5 rounded-xl hover:bg-[#20bd5a] transition-all text-xs uppercase tracking-widest disabled:opacity-50">
-                {ready ? `Send with ${chunks[i].length} picture${chunks[i].length > 1 ? 's' : ''} + text` : 'Loading pictures…'}
-              </button>
-              <button onClick={() => openTextOnly(i)}
-                className="w-full flex items-center justify-center gap-2 border-2 border-gray-200 text-gray-600 font-black py-2 rounded-xl hover:border-[#25D366] hover:text-[#25D366] transition-all text-[10px] uppercase tracking-widest">
-                Text only (WhatsApp link)
-              </button>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[10px] font-black uppercase tracking-widest text-gray-400">Product {n + 1} of {items.length} {sent.has(`c${it.id}`) && <span className="text-green-600 normal-case">· done ✓</span>}</p>
+                    <p className="font-black text-sm text-gray-900 truncate">{it.name}</p>
+                    <p className="text-xs font-black text-[#FA5600]">₹{it.price.toFixed(0)}</p>
+                  </div>
+                  <button onClick={() => sendWithCaption(it)} disabled={!ready}
+                    className="shrink-0 bg-[#25D366] text-white font-black text-[10px] uppercase tracking-widest px-3 py-2.5 rounded-xl hover:bg-[#20bd5a] transition-all disabled:opacity-50">
+                    {ready ? 'Send' : '…'}
+                  </button>
+                </div>
+              ))}
             </div>
-          ))}
+          )}
 
           <p className="text-[9px] text-gray-400 font-semibold text-center">
-            The share window lets you tick several chats at once, so one click can reach many contacts. Emoji are kept in “Send with pictures” and “Copy”; the text-only link drops them on desktop because WhatsApp Desktop garbles them.
+            In WhatsApp's share window you can tick several chats, so one send reaches many contacts.
           </p>
         </div>
       </div>
