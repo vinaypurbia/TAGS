@@ -2579,6 +2579,104 @@ function StoryComposer({ product, imageUrl, price, origPrice, caption }: {
   );
 }
 
+// ── Bulk WhatsApp (many products → one message, split into parts) ──────────
+// wa.me can't pick recipients or send by itself, so each part opens WhatsApp's chat picker
+// with the text pre-filled: choose the contact/group/broadcast list and press send.
+function BulkWhatsAppModal({ items, onClose }: {
+  items: { id: string; name: string; price: number; origPrice: number }[];
+  onClose: () => void;
+}) {
+  const [perPart, setPerPart]     = useState(5);
+  const [intro, setIntro]         = useState('🔥 *New at TAGS!*');
+  const [sent, setSent]           = useState<Set<number>>(new Set());
+  const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
+
+  useEffect(() => { setSent(new Set()); }, [perPart, intro, items.length]);
+
+  const productLine = (it: { id: string; name: string; price: number; origPrice: number }, n: number) => {
+    const name = it.name.length > 60 ? it.name.slice(0, 57) + '...' : it.name;
+    let l = `${n}. *${name}*`;
+    if (it.price > 0) {
+      const disc = it.origPrice > it.price ? Math.round(((it.origPrice - it.price) / it.origPrice) * 100) : 0;
+      l += `\n   💰 ₹${it.price.toFixed(0)}` + (disc > 0 ? ` ~₹${it.origPrice.toFixed(0)}~ (${disc}% OFF)` : '');
+    }
+    l += `\n   🔗 https://ta-gs.online/products/${it.id}`;
+    return l;
+  };
+
+  const parts: string[] = [];
+  for (let i = 0; i < items.length; i += perPart) {
+    let msg = intro.trim() ? intro.trim() + '\n\n' : '';
+    msg += items.slice(i, i + perPart).map((it, j) => productLine(it, i + j + 1)).join('\n\n');
+    msg += `\n\n📞 To order, WhatsApp us:\nwa.me/916350021226\n\n✨ *TAGS — Toys · Adventure · Gadgets · Sports*\n📍 Hathipole, Udaipur`;
+    parts.push(msg);
+  }
+
+  const openPart = (i: number) => {
+    window.open(`https://wa.me/?text=${encodeURIComponent(parts[i])}`, '_blank');
+    setSent(prev => new Set(prev).add(i));
+  };
+  const copyPart = (i: number) => {
+    navigator.clipboard.writeText(parts[i]).then(() => { setCopiedIdx(i); setTimeout(() => setCopiedIdx(null), 2000); });
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between p-4 border-b border-gray-100 sticky top-0 bg-white z-10">
+          <div>
+            <h3 className="font-black text-sm uppercase tracking-widest text-gray-800">Bulk WhatsApp Message</h3>
+            <p className="text-[10px] text-gray-400 font-bold">{items.length} product{items.length > 1 ? 's' : ''} → {parts.length} message{parts.length > 1 ? 's' : ''}</p>
+          </div>
+          <button onClick={onClose} className="p-2 rounded-lg hover:bg-gray-100 text-gray-400"><X className="w-4 h-4" /></button>
+        </div>
+
+        <div className="p-4 space-y-4">
+          <div className="flex gap-3 flex-wrap items-end">
+            <div className="flex-1 min-w-[160px]">
+              <p className="text-[10px] font-black uppercase tracking-widest text-gray-500 mb-1.5">Opening line</p>
+              <input value={intro} onChange={e => setIntro(e.target.value)} maxLength={80}
+                className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-xs font-bold focus:border-[#FA5600] outline-none bg-white" />
+            </div>
+            <div>
+              <p className="text-[10px] font-black uppercase tracking-widest text-gray-500 mb-1.5">Products per message</p>
+              <div className="flex gap-1.5">
+                {[1, 3, 5, 8].map(n => (
+                  <button key={n} onClick={() => setPerPart(n)}
+                    className={`text-[10px] font-black w-9 py-1.5 rounded-lg border-2 transition-all ${perPart === n ? 'bg-[#FA5600] text-white border-[#FA5600]' : 'border-gray-200 text-gray-400 bg-white hover:border-[#FA5600]/50'}`}>{n}</button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {parts.map((msg, i) => (
+            <div key={i} className={`rounded-xl border-2 p-3 space-y-2 ${sent.has(i) ? 'border-green-200 bg-green-50/50' : 'border-gray-100'}`}>
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-[10px] font-black uppercase tracking-widest text-gray-500">
+                  Message {i + 1} of {parts.length} {sent.has(i) && <span className="text-green-600 normal-case">· opened ✓</span>}
+                </p>
+                <button onClick={() => copyPart(i)}
+                  className={`flex items-center gap-1 text-[10px] font-black uppercase px-2 py-1 rounded-lg transition ${copiedIdx === i ? 'bg-green-100 text-green-600' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>
+                  {copiedIdx === i ? <><Check className="w-3 h-3" /> Copied</> : <><Copy className="w-3 h-3" /> Copy</>}
+                </button>
+              </div>
+              <pre className="text-[11px] font-mono whitespace-pre-wrap text-gray-600 bg-gray-50 rounded-lg p-2 max-h-40 overflow-y-auto">{msg}</pre>
+              <button onClick={() => openPart(i)}
+                className="w-full flex items-center justify-center gap-2 bg-[#25D366] text-white font-black py-2.5 rounded-xl hover:bg-[#20bd5a] transition-all text-xs uppercase tracking-widest">
+                Open message {i + 1} in WhatsApp
+              </button>
+            </div>
+          ))}
+
+          <p className="text-[9px] text-gray-400 font-semibold text-center">
+            WhatsApp opens with the text ready — choose the contact, group or broadcast list and press send. Then come back for the next message.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Broadcast Section ──────────────────────────────────────────────────────
 function BroadcastSection() {
   const [products, setProducts]             = useState<any[]>([]);
@@ -2602,6 +2700,7 @@ function BroadcastSection() {
   const [selectedImageIndex, setSelectedImageIndex] = useState(0);
   const [telegramSuccess, setTelegramSuccess] = useState(false);
   const [rightTab, setRightTab]           = useState<'message' | 'story'>('message');
+  const [showBulkWA, setShowBulkWA]         = useState(false);
 
   const categories = ['All', ...Array.from(new Set(products.map((p:any) => p.category || '').filter(Boolean))).sort()];
 
@@ -2782,7 +2881,7 @@ function BroadcastSection() {
           </div>
           <div className="min-w-0">
             <p className="text-xs font-black text-gray-800">
-              {selectedCount === 0 ? 'Tick checkboxes to batch-send to Telegram' : `${selectedCount} product${selectedCount > 1 ? 's' : ''} selected for batch send`}
+              {selectedCount === 0 ? 'Tick checkboxes to batch-send to Telegram or WhatsApp' : `${selectedCount} product${selectedCount > 1 ? 's' : ''} selected for batch send`}
             </p>
             {progress && (
               <div className="flex items-center gap-2 mt-0.5">
@@ -2804,6 +2903,10 @@ function BroadcastSection() {
           </button>
           <button onClick={clearAll} className="text-[10px] font-black uppercase px-3 py-1.5 rounded-lg bg-gray-100 text-gray-600 hover:bg-red-100 hover:text-red-500 transition">
             Clear
+          </button>
+          <button onClick={() => setShowBulkWA(true)} disabled={selectedCount === 0}
+            className="flex items-center gap-2 font-black py-2 px-4 rounded-xl transition-all text-sm uppercase tracking-widest disabled:opacity-50 bg-[#25D366] hover:bg-[#20bd5a] text-white shadow-md">
+            WhatsApp {selectedCount > 0 ? `(${selectedCount})` : ''}
           </button>
           <button onClick={handleTelegramBatch} disabled={sending || selectedCount === 0}
             className={`flex items-center gap-2 font-black py-2 px-4 rounded-xl transition-all text-sm uppercase tracking-widest disabled:opacity-50 ${
@@ -3046,6 +3149,14 @@ function BroadcastSection() {
           )}
         </div>
       </div>
+      {showBulkWA && (
+        <BulkWhatsAppModal
+          items={products.filter(p => selectedIds.has(p._id)).map(p => ({
+            id: String(p._id), name: p.name || '', price: resolvePrice(p), origPrice: resolveOrigPrice(p),
+          }))}
+          onClose={() => setShowBulkWA(false)}
+        />
+      )}
     </div>
   );
 }
