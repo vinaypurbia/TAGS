@@ -1,5 +1,6 @@
 import { MongoClient, ObjectId } from 'mongodb';
 import { v2 as cloudinary } from 'cloudinary';
+import { waitUntil } from '@vercel/functions';
 
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -640,9 +641,14 @@ export default async function handler(req, res) {
     // price. Either can be omitted entirely to leave that price type alone
     // (e.g. only updating the discount price without touching the base price).
     // Which `ids` get sent is entirely up to the caller — the frontend resolves
-    // "individual products / by category / by price range / all" into a plain
-    // id list before calling this, so this endpoint doesn't need to know about
-    // scope at all. Writes nothing — this is a dry run for review before apply.
+    // "individual products / by category / by price range / by PO / all" into
+    // a plain id list before calling this, so this endpoint doesn't need to
+    // know about scope at all. Writes nothing — this is a dry run for review
+    // before apply.
+    //
+    // PERF: batched with a single $in query per collection instead of one
+    // findOne per product — this is what lets preview stay fast at any list
+    // size instead of doing N×2 sequential round-trips to Mongo.
     if (req.method === 'POST' && req.query.bulkPricingPreview === 'true') {
       const { originalPercent, discountedPercent, ids } = req.body || {};
       const origPct = originalPercent === undefined || originalPercent === null || originalPercent === '' ? null : Number(originalPercent);
@@ -652,14 +658,26 @@ export default async function handler(req, res) {
       if (discPct !== null && !Number.isFinite(discPct)) return res.status(400).json({ error: 'discountedPercent must be a number' });
       if (!Array.isArray(ids) || ids.length === 0) return res.status(400).json({ error: 'ids array is required' });
 
+      const objIds = [];
+      const validIdStrs = [];
+      for (const idStr of ids) {
+        try { objIds.push(new ObjectId(idStr)); validIdStrs.push(idStr); } catch { /* skip invalid id, ignored same as before */ }
+      }
+
+      const [productDocs, inventoryDocs] = await Promise.all([
+        objIds.length > 0 ? collection.find({ _id: { $in: objIds } }).toArray() : [],
+        validIdStrs.length > 0 ? inventory.find({ productId: { $in: validIdStrs } }).toArray() : [],
+      ]);
+
+      const productMap = new Map(productDocs.map(p => [p._id.toString(), p]));
+      const inventoryMap = new Map(inventoryDocs.map(i => [i.productId, i]));
+
       const items = [];
       const skipped = [];
-      for (const idStr of ids) {
-        let objId;
-        try { objId = new ObjectId(idStr); } catch { continue; }
-        const product = await collection.findOne({ _id: objId });
+      for (const idStr of validIdStrs) {
+        const product = productMap.get(idStr);
         if (!product) continue;
-        const inv = await inventory.findOne({ productId: idStr });
+        const inv = inventoryMap.get(idStr);
         const costPrice = Number(inv?.costPrice) || 0;
         if (costPrice <= 0) {
           skipped.push({ _id: idStr, name: product.name, reason: 'No cost price recorded' });
@@ -688,53 +706,82 @@ export default async function handler(req, res) {
     // meantime. Per item, only the price types that were actually included
     // (non-null) get written — omitting newDiscountedPrice on an item leaves
     // its existing discountedPrice completely untouched, and vice versa.
+    //
+    // PERF: all price writes go through a single bulkWrite instead of N
+    // sequential updateOne calls, so the DB side is effectively instant
+    // regardless of how many products are being updated. The Meta/WhatsApp
+    // catalog sync — the slow, external part — is moved OUT of the request/
+    // response cycle entirely via waitUntil (@vercel/functions), so the user
+    // gets an immediate "saved" response and the Meta sync finishes quietly
+    // in the background, batched to avoid hammering Facebook's API.
     if (req.method === 'POST' && req.query.bulkPricingApply === 'true') {
       const { updates } = req.body || {};
       if (!Array.isArray(updates) || updates.length === 0) return res.status(400).json({ error: 'updates array is required' });
 
-      let updatedCount = 0;
-      let metaSyncedCount = 0;
+      const bulkOps = [];
       const errors = [];
-      const metaErrors = [];
-      for (const u of updates) {
-        try {
-          const objId = new ObjectId(u.id);
-          const setFields = { updatedAt: new Date() };
-          if (u.newOriginalPrice !== undefined && u.newOriginalPrice !== null) {
-            const v = Math.round(Number(u.newOriginalPrice));
-            if (!Number.isFinite(v)) { errors.push({ id: u.id, error: 'Invalid newOriginalPrice' }); continue; }
-            setFields.originalPrice = v;
-            setFields.price = v;
-          }
-          if (u.newDiscountedPrice !== undefined && u.newDiscountedPrice !== null) {
-            const v = Math.round(Number(u.newDiscountedPrice));
-            if (!Number.isFinite(v)) { errors.push({ id: u.id, error: 'Invalid newDiscountedPrice' }); continue; }
-            setFields.discountedPrice = v;
-          }
-          if (Object.keys(setFields).length <= 1) { errors.push({ id: u.id, error: 'No price fields to update' }); continue; }
+      const idToFields = new Map();
 
-          const existing = await collection.findOne({ _id: objId });
-          const result = await collection.updateOne({ _id: objId }, { $set: setFields });
-          if (result.matchedCount > 0) {
-            updatedCount++;
-            // Best-effort push to Meta (WhatsApp Catalog / Facebook Shop) so the
-            // new price doesn't silently drift from what customers see there —
-            // same call the single-item edit form makes on save.
-            if (existing) {
-              try {
-                await pushProductToMeta({ ...existing, ...setFields, _id: objId }, existing.metaId || null, inventory);
-                metaSyncedCount++;
-              } catch (metaErr) {
-                metaErrors.push({ id: u.id, error: metaErr.message });
-              }
-            }
-          }
-        } catch (err) {
-          errors.push({ id: u.id, error: err.message });
+      for (const u of updates) {
+        let objId;
+        try { objId = new ObjectId(u.id); } catch { errors.push({ id: u.id, error: 'Invalid id' }); continue; }
+
+        const setFields = { updatedAt: new Date() };
+        if (u.newOriginalPrice !== undefined && u.newOriginalPrice !== null) {
+          const v = Math.round(Number(u.newOriginalPrice));
+          if (!Number.isFinite(v)) { errors.push({ id: u.id, error: 'Invalid newOriginalPrice' }); continue; }
+          setFields.originalPrice = v;
+          setFields.price = v;
         }
+        if (u.newDiscountedPrice !== undefined && u.newDiscountedPrice !== null) {
+          const v = Math.round(Number(u.newDiscountedPrice));
+          if (!Number.isFinite(v)) { errors.push({ id: u.id, error: 'Invalid newDiscountedPrice' }); continue; }
+          setFields.discountedPrice = v;
+        }
+        if (Object.keys(setFields).length <= 1) { errors.push({ id: u.id, error: 'No price fields to update' }); continue; }
+
+        bulkOps.push({ updateOne: { filter: { _id: objId }, update: { $set: setFields } } });
+        idToFields.set(objId.toString(), setFields);
       }
 
-      return res.status(200).json({ success: true, updatedCount, metaSyncedCount, errors, metaErrors });
+      let updatedCount = 0;
+      if (bulkOps.length > 0) {
+        const bulkResult = await collection.bulkWrite(bulkOps, { ordered: false });
+        updatedCount = (bulkResult.modifiedCount || 0) + (bulkResult.upsertedCount || 0);
+      }
+
+      // Fetch the updated docs in ONE query — needed for the Meta push below.
+      const updatedIds = [...idToFields.keys()].map(idStr => new ObjectId(idStr));
+      const updatedDocs = updatedIds.length > 0
+        ? await collection.find({ _id: { $in: updatedIds } }).toArray()
+        : [];
+
+      // ── Respond immediately — prices are already durably saved in Mongo.
+      res.status(200).json({ success: true, updatedCount, errors });
+
+      // ── Meta/WhatsApp catalog sync runs AFTER the response is sent.
+      // waitUntil keeps this Vercel function alive long enough to finish
+      // the work even though the HTTP response has already gone out, so
+      // the user never has to wait on Facebook's API to see their prices
+      // saved. Batched (5 at a time) to avoid Meta rate limits; failures
+      // here don't affect the already-saved prices — worst case the
+      // catalog briefly lags and can be refreshed later via the existing
+      // ?pushAll=true endpoint.
+      waitUntil((async () => {
+        const CONCURRENCY = 5;
+        for (let i = 0; i < updatedDocs.length; i += CONCURRENCY) {
+          const batch = updatedDocs.slice(i, i + CONCURRENCY);
+          const results = await Promise.allSettled(
+            batch.map(doc => pushProductToMeta(doc, doc.metaId || null, inventory))
+          );
+          const failed = results.filter(r => r.status === 'rejected');
+          if (failed.length > 0) {
+            console.error(`Bulk pricing background Meta sync: ${failed.length} failed in batch starting at index ${i}`);
+          }
+        }
+      })());
+
+      return;
     }
 
     if (req.method === 'POST') {
