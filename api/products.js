@@ -357,6 +357,13 @@ export default async function handler(req, res) {
             }
           }
         } catch (e) { out.token = { error: e.message }; }
+        if (!process.env.FB_PAGE_ID) {
+          // Help find the right FB_PAGE_ID: list the Pages this token can access
+          try {
+            const acc = await metaCall('me/accounts', { fields: 'id,name,instagram_business_account{username}', limit: '25', access_token: base }, 'GET');
+            out.availablePages = (acc.data || []).map(x => ({ id: x.id, name: x.name, instagram: x.instagram_business_account?.username || null }));
+          } catch (e) { out.availablePages = { error: e.message }; }
+        }
         if (process.env.FB_PAGE_ID) {
           try {
             const pg = await metaCall(process.env.FB_PAGE_ID, { fields: 'name,instagram_business_account{id,username}', access_token: base }, 'GET');
