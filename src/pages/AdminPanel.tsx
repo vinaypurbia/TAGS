@@ -13,7 +13,7 @@ import {
   Save, Check, Trash2, Eye, Upload, BarChart2,
   LayoutDashboard, ShoppingBag, Menu, X,
   TrendingUp, TrendingDown, Users, AlertTriangle, DollarSign, IndianRupee,
-  KeyRound, EyeOff, MessageSquare, Pencil, Database, Send, Radio, Copy,
+  KeyRound, EyeOff, MessageSquare, Pencil, Database, Send, Radio, Copy, Download,
 } from 'lucide-react';
 
 const VISIBILITY_KEY = 'tagsAdminVisibility';
@@ -30,7 +30,7 @@ const ALL_MODULES: { id: Section; label: string; icon: any; desc: string }[] = [
   { id: 'dashboard',       label: 'Dashboard',       icon: LayoutDashboard, desc: 'Overview & quick stats' },
   { id: 'business',        label: 'Business',         icon: BarChart2,       desc: 'Sales, PO, Cash Flow, Reports' },
   { id: 'inventory',       label: 'Inventory',        icon: ShoppingBag,     desc: 'Stock management' },
-  { id: 'broadcast',       label: 'Broadcast',        icon: Megaphone,       desc: 'Promote products on WhatsApp & Telegram' },
+  { id: 'broadcast',       label: 'Broadcast',        icon: Megaphone,       desc: 'Promote products on WhatsApp, Telegram & Stories' },
   { id: 'products',        label: 'Products',         icon: Package,         desc: 'Add & edit products' },
   { id: 'categories',      label: 'Categories',       icon: FolderTree,      desc: 'Manage categories' },
   { id: 'category-images', label: 'Category Images',  icon: Tag,             desc: 'Upload category covers' },
@@ -2203,7 +2203,367 @@ function CustomersSection() {
 
 
 
-// ── Broadcast Section ──────────────────────────────────────────────────────
+// ── Story Composer (Instagram / Facebook / WhatsApp Status) ────────────────
+// Renders a 1080×1920 (9:16) story image on a canvas, then either:
+//   • posts it to Instagram + Facebook Page stories via /api/products (Meta Graph API), or
+//   • hands it to the phone's share sheet so it can go to WhatsApp Status (no official API exists).
+type StoryTheme = 'brand' | 'dark' | 'light';
+
+const STORY_W = 1080;
+const STORY_H = 1920;
+
+const STORY_THEMES: Record<StoryTheme, {
+  label: string; bg: [string, string]; text: string; sub: string; accent: string; ctaBg: string; ctaText: string;
+}> = {
+  brand: { label: 'Orange', bg: ['#FA5600', '#FF9A3D'], text: '#FFFFFF', sub: 'rgba(255,255,255,0.75)', accent: '#FFFFFF', ctaBg: '#FFFFFF', ctaText: '#FA5600' },
+  dark:  { label: 'Dark',   bg: ['#0B0B0C', '#1E1E22'], text: '#FFFFFF', sub: 'rgba(255,255,255,0.55)', accent: '#FA5600', ctaBg: '#FA5600', ctaText: '#FFFFFF' },
+  light: { label: 'Light',  bg: ['#FFF7F0', '#FFE3CF'], text: '#1A1A1A', sub: 'rgba(0,0,0,0.45)',       accent: '#FA5600', ctaBg: '#1A1A1A', ctaText: '#FFFFFF' },
+};
+
+function storyRoundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+function storyWrap(ctx: CanvasRenderingContext2D, text: string, maxWidth: number, maxLines: number): string[] {
+  const lines: string[] = [];
+  let line = '';
+  for (const word of text.split(/\s+/).filter(Boolean)) {
+    const test = line ? `${line} ${word}` : word;
+    if (ctx.measureText(test).width > maxWidth && line) { lines.push(line); line = word; }
+    else line = test;
+  }
+  if (line) lines.push(line);
+  if (lines.length <= maxLines) return lines;
+  const kept = lines.slice(0, maxLines);
+  let last = kept[maxLines - 1];
+  while (last.length > 1 && ctx.measureText(last + '…').width > maxWidth) last = last.slice(0, -1);
+  kept[maxLines - 1] = last + '…';
+  return kept;
+}
+
+function drawStory(
+  canvas: HTMLCanvasElement,
+  img: HTMLImageElement | null,
+  o: { theme: StoryTheme; name: string; price: number; origPrice: number; tag: string; cta: string; showPrice: boolean; showDiscount: boolean },
+) {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  canvas.width = STORY_W;
+  canvas.height = STORY_H;
+  const t = STORY_THEMES[o.theme];
+  const font = (weight: number, size: number) => `${weight} ${size}px Inter, "Segoe UI", Arial, sans-serif`;
+  const discount = o.origPrice > o.price && o.price > 0 ? Math.round(((o.origPrice - o.price) / o.origPrice) * 100) : 0;
+
+  // Background
+  const bg = ctx.createLinearGradient(0, 0, 0, STORY_H);
+  bg.addColorStop(0, t.bg[0]);
+  bg.addColorStop(1, t.bg[1]);
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, STORY_W, STORY_H);
+  ctx.fillStyle = 'rgba(255,255,255,0.07)';
+  ctx.beginPath(); ctx.arc(980, 200, 320, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(60, 1700, 260, 0, Math.PI * 2); ctx.fill();
+
+  // Instagram/Facebook overlay their UI on roughly the top & bottom 250px,
+  // so all key content stays between y≈250 and y≈1670.
+
+  // Tag pill
+  ctx.textBaseline = 'middle';
+  ctx.textAlign = 'center';
+  if (o.tag.trim()) {
+    ctx.font = font(900, 34);
+    const label = o.tag.trim().toUpperCase();
+    const w = ctx.measureText(label).width + 80;
+    storyRoundRect(ctx, (STORY_W - w) / 2, 250, w, 66, 33);
+    ctx.fillStyle = t.ctaBg; ctx.fill();
+    ctx.fillStyle = t.ctaText;
+    ctx.fillText(label, STORY_W / 2, 250 + 34);
+  }
+
+  // Image card (white, product shown "contain" so nothing is cropped)
+  const cx = 120, cy = 350, cs = 840;
+  ctx.save();
+  ctx.shadowColor = 'rgba(0,0,0,0.28)'; ctx.shadowBlur = 50; ctx.shadowOffsetY = 20;
+  storyRoundRect(ctx, cx, cy, cs, cs, 56);
+  ctx.fillStyle = '#FFFFFF'; ctx.fill();
+  ctx.restore();
+  if (img) {
+    const pad = 30;
+    const scale = Math.min((cs - pad * 2) / img.width, (cs - pad * 2) / img.height);
+    const w = img.width * scale, h = img.height * scale;
+    ctx.save();
+    storyRoundRect(ctx, cx, cy, cs, cs, 56);
+    ctx.clip();
+    ctx.drawImage(img, cx + (cs - w) / 2, cy + (cs - h) / 2, w, h);
+    ctx.restore();
+  } else {
+    ctx.fillStyle = '#9CA3AF'; ctx.font = font(700, 40);
+    ctx.fillText('Loading image…', STORY_W / 2, cy + cs / 2);
+  }
+
+  // Discount badge
+  if (o.showDiscount && discount > 0) {
+    const bx = cx + cs - 40, by = cy + 40;
+    ctx.fillStyle = '#E11D48';
+    ctx.beginPath(); ctx.arc(bx, by, 100, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#FFFFFF';
+    ctx.font = font(900, 62); ctx.fillText(`${discount}%`, bx, by - 14);
+    ctx.font = font(900, 34); ctx.fillText('OFF', bx, by + 40);
+  }
+
+  // Product name (max 2 lines)
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillStyle = t.text;
+  ctx.font = font(900, 62);
+  storyWrap(ctx, (o.name || '').toUpperCase(), 880, 2).forEach((ln, i) => ctx.fillText(ln, STORY_W / 2, 1270 + i * 74));
+
+  // Price (+ struck-through original price)
+  if (o.showPrice && o.price > 0) {
+    const priceTxt = `₹${o.price.toFixed(0)}`;
+    const origTxt = o.origPrice > o.price ? `₹${o.origPrice.toFixed(0)}` : '';
+    ctx.font = font(900, 130);
+    const pw = ctx.measureText(priceTxt).width;
+    ctx.font = font(700, 56);
+    const ow = origTxt ? ctx.measureText(origTxt).width : 0;
+    const gap = origTxt ? 32 : 0;
+    const x0 = (STORY_W - (pw + gap + ow)) / 2;
+    const baseY = 1525;
+    ctx.textAlign = 'left';
+    ctx.font = font(900, 130); ctx.fillStyle = t.accent; ctx.fillText(priceTxt, x0, baseY);
+    if (origTxt) {
+      ctx.font = font(700, 56); ctx.fillStyle = t.sub;
+      ctx.fillText(origTxt, x0 + pw + gap, baseY);
+      ctx.fillRect(x0 + pw + gap, baseY - 20, ow, 4);
+    }
+    ctx.textAlign = 'center';
+  }
+
+  // Call-to-action pill
+  if (o.cta.trim()) {
+    ctx.font = font(900, 38);
+    const w = Math.min(900, ctx.measureText(o.cta.trim()).width + 100);
+    storyRoundRect(ctx, (STORY_W - w) / 2, 1575, w, 92, 46);
+    ctx.fillStyle = t.ctaBg; ctx.fill();
+    ctx.fillStyle = t.ctaText; ctx.textBaseline = 'middle';
+    ctx.fillText(o.cta.trim(), STORY_W / 2, 1575 + 48);
+  }
+
+  // Brand line
+  ctx.textBaseline = 'alphabetic';
+  ctx.font = font(800, 28); ctx.fillStyle = t.sub;
+  ctx.fillText('TAGS  ·  TOYS · ADVENTURE · GADGETS · SPORTS', STORY_W / 2, 1722);
+}
+
+type StoryResult = { ok: boolean; error?: string };
+
+function StoryComposer({ product, imageUrl, price, origPrice, caption }: {
+  product: any; imageUrl: string; price: number; origPrice: number; caption: string;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [img, setImg]                   = useState<HTMLImageElement | null>(null);
+  const [imgError, setImgError]         = useState('');
+  const [theme, setTheme]               = useState<StoryTheme>('brand');
+  const [tag, setTag]                   = useState('New Arrival');
+  const [cta, setCta]                   = useState('WhatsApp 63500 21226');
+  const [showPrice, setShowPrice]       = useState(true);
+  const [showDiscount, setShowDiscount] = useState(true);
+  const [platforms, setPlatforms]       = useState({ instagram: true, facebook: true });
+  const [posting, setPosting]           = useState(false);
+  const [results, setResults]           = useState<Record<string, StoryResult> | null>(null);
+  const [notice, setNotice]             = useState('');
+
+  // Load the product image. Fetched as a blob so the canvas is never "tainted"
+  // (a tainted canvas can't be exported). Needs CORS on the image host — Cloudinary allows it.
+  useEffect(() => {
+    let cancelled = false;
+    let objUrl = '';
+    setImg(null); setImgError('');
+    if (!imageUrl) { setImgError('This product has no image.'); return; }
+    (async () => {
+      try {
+        const res = await fetch(imageUrl, { mode: 'cors', cache: 'reload' });
+        if (!res.ok) throw new Error('bad status');
+        objUrl = URL.createObjectURL(await res.blob());
+        const im = new window.Image();   // NOTE: `Image` alone is the lucide icon in this file
+        await new Promise<void>((ok, bad) => { im.onload = () => ok(); im.onerror = () => bad(new Error('decode')); im.src = objUrl; });
+        if (!cancelled) setImg(im);
+      } catch {
+        if (!cancelled) setImgError("Couldn't load this image for the story (the image host may block cross-origin access).");
+      }
+    })();
+    return () => { cancelled = true; if (objUrl) URL.revokeObjectURL(objUrl); };
+  }, [imageUrl]);
+
+  // Redraw whenever anything changes
+  useEffect(() => {
+    if (canvasRef.current) {
+      drawStory(canvasRef.current, img, { theme, name: product?.name || '', price, origPrice, tag, cta, showPrice, showDiscount });
+    }
+  }, [img, theme, tag, cta, showPrice, showDiscount, product?.name, price, origPrice]);
+
+  const fileName = `story-${String(product?.name || 'product').toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40)}.jpg`;
+
+  // Instagram only accepts JPEG for stories, so always export JPEG.
+  const getBlob = (): Promise<Blob> => new Promise((resolve, reject) => {
+    try {
+      canvasRef.current!.toBlob(b => b ? resolve(b) : reject(new Error('Could not export the story image.')), 'image/jpeg', 0.92);
+    } catch {
+      reject(new Error('Could not export the story image (image host blocks cross-origin access).'));
+    }
+  });
+
+  const handleDownload = async () => {
+    setNotice('');
+    try {
+      const blob = await getBlob();
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = fileName;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 3000);
+    } catch (e: any) { setNotice('❌ ' + e.message); }
+  };
+
+  // WhatsApp has no public API for Status, so use the native share sheet:
+  // on a phone, pick WhatsApp → "My status". On desktop we fall back to a download.
+  const handleWhatsAppStatus = async () => {
+    setNotice('');
+    try {
+      const blob = await getBlob();
+      const file = new File([blob], fileName, { type: 'image/jpeg' });
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], text: caption });
+      } else {
+        await handleDownload();
+        setNotice('Image downloaded. Open WhatsApp → Status → add this image. (Sharing straight to Status works from a phone.)');
+      }
+    } catch (e: any) {
+      if (e?.name !== 'AbortError') setNotice('❌ ' + (e.message || 'Share failed'));
+    }
+  };
+
+  const handlePostStories = async () => {
+    const selected = (Object.keys(platforms) as Array<'instagram' | 'facebook'>).filter(k => platforms[k]);
+    if (selected.length === 0) { setNotice('Select Instagram and/or Facebook first.'); return; }
+    setPosting(true); setResults(null); setNotice('');
+    try {
+      // 1) Meta needs a public URL, so host the rendered JPEG on Cloudinary via the existing upload endpoint
+      const blob = await getBlob();
+      const up = await fetch('/api/upload', { method: 'POST', body: blob, headers: { 'Content-Type': 'image/jpeg' } });
+      const upData = await up.json();
+      if (!upData.url) throw new Error('Image upload failed');
+      // 2) Ask the server to publish it as a story
+      const res = await fetch('/api/products', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ storyBroadcast: true, imageUrl: upData.url, platforms: selected }),
+      });
+      const data = await res.json();
+      if (!res.ok && !data.results) throw new Error(data.error || 'Failed to post story');
+      setResults(data.results || {});
+    } catch (e: any) {
+      setNotice('❌ ' + e.message);
+    } finally {
+      setPosting(false);
+    }
+  };
+
+  const pill = (active: boolean) =>
+    `text-[10px] font-black uppercase tracking-widest px-3 py-1.5 rounded-lg border-2 transition-all ${
+      active ? 'bg-[#FA5600] text-white border-[#FA5600]' : 'border-gray-200 text-gray-400 bg-white hover:border-[#FA5600]/50'}`;
+  const inputCls = 'w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-xs font-bold focus:border-[#FA5600] outline-none transition bg-white';
+
+  return (
+    <div className="p-4 space-y-4">
+      <div className="flex flex-col sm:flex-row gap-4">
+        {/* Live 9:16 preview */}
+        <div className="shrink-0 mx-auto sm:mx-0">
+          <canvas ref={canvasRef} className="w-[190px] rounded-xl shadow-lg border border-gray-200 bg-gray-100" style={{ aspectRatio: '9 / 16' }} />
+          <p className="text-[9px] text-gray-400 text-center mt-1">1080 × 1920 · 9:16</p>
+        </div>
+
+        {/* Controls */}
+        <div className="flex-1 min-w-0 space-y-3">
+          <div>
+            <p className="text-[10px] font-black uppercase tracking-widest text-gray-500 mb-1.5">Theme</p>
+            <div className="flex gap-2 flex-wrap">
+              {(Object.keys(STORY_THEMES) as StoryTheme[]).map(k => (
+                <button key={k} onClick={() => setTheme(k)} className={pill(theme === k)}>{STORY_THEMES[k].label}</button>
+              ))}
+            </div>
+          </div>
+          <div>
+            <p className="text-[10px] font-black uppercase tracking-widest text-gray-500 mb-1.5">Top Label</p>
+            <input value={tag} onChange={e => setTag(e.target.value)} maxLength={24} placeholder="New Arrival / Low Stock / Festive Offer" className={inputCls} />
+          </div>
+          <div>
+            <p className="text-[10px] font-black uppercase tracking-widest text-gray-500 mb-1.5">Bottom Button Text</p>
+            <input value={cta} onChange={e => setCta(e.target.value)} maxLength={34} placeholder="WhatsApp 63500 21226" className={inputCls} />
+            <p className="text-[9px] text-gray-400 mt-1">Story APIs can't add tappable link stickers, so put your contact or site here.</p>
+          </div>
+          <div className="flex gap-2 flex-wrap">
+            <button onClick={() => setShowPrice(v => !v)} className={pill(showPrice)}>Price {showPrice ? 'On' : 'Off'}</button>
+            <button onClick={() => setShowDiscount(v => !v)} className={pill(showDiscount)}>Discount Badge {showDiscount ? 'On' : 'Off'}</button>
+          </div>
+        </div>
+      </div>
+
+      {imgError && <p className="text-[11px] font-bold text-red-500 bg-red-50 rounded-xl px-3 py-2">{imgError}</p>}
+
+      {/* Publish actions */}
+      <div className="border-t border-gray-100 pt-4 space-y-2.5">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-[10px] font-black uppercase tracking-widest text-gray-500">Post to</span>
+          {([['instagram', 'Instagram'], ['facebook', 'Facebook']] as const).map(([k, label]) => (
+            <button key={k} onClick={() => setPlatforms(p => ({ ...p, [k]: !p[k] }))} className={pill(platforms[k])}>
+              {platforms[k] ? '✓ ' : ''}{label}
+            </button>
+          ))}
+        </div>
+
+        <button onClick={handlePostStories} disabled={posting || !img}
+          className="w-full flex items-center justify-center gap-2 text-white font-black py-3.5 rounded-xl shadow-md text-sm uppercase tracking-widest transition-all disabled:opacity-50 bg-gradient-to-r from-[#F58529] via-[#DD2A7B] to-[#8134AF] hover:opacity-90">
+          {posting ? (
+            <><svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>Posting stories...</>
+          ) : (
+            <><Send className="w-4 h-4" /> Post Story to Instagram / Facebook</>
+          )}
+        </button>
+
+        <button onClick={handleWhatsAppStatus} disabled={!img}
+          className="w-full flex items-center justify-center gap-2 bg-[#25D366] text-white font-black py-3.5 rounded-xl hover:bg-[#20bd5a] transition-all shadow-md text-sm uppercase tracking-widest disabled:opacity-50">
+          <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>
+          Share to WhatsApp Status
+        </button>
+
+        <button onClick={handleDownload} disabled={!img}
+          className="w-full flex items-center justify-center gap-2 border-2 border-gray-200 text-gray-600 font-black py-2.5 rounded-xl hover:border-[#FA5600] hover:text-[#FA5600] transition-all text-xs uppercase tracking-widest disabled:opacity-50">
+          <Download className="w-4 h-4" /> Download Story Image
+        </button>
+
+        {results && (
+          <div className="bg-gray-50 rounded-xl px-3 py-2 space-y-1">
+            {Object.entries(results).map(([k, r]) => (
+              <p key={k} className={`text-[11px] font-bold ${r.ok ? 'text-green-600' : 'text-red-500'}`}>
+                {r.ok ? '✓' : '✗'} {k === 'instagram' ? 'Instagram' : 'Facebook'}: {r.ok ? 'Story posted' : r.error}
+              </p>
+            ))}
+          </div>
+        )}
+        {notice && <p className="text-[11px] font-bold text-gray-600 bg-gray-50 rounded-xl px-3 py-2">{notice}</p>}
+        <p className="text-[9px] text-center text-gray-400 font-semibold">
+          Instagram &amp; Facebook post automatically · WhatsApp Status opens your share sheet (phone) — WhatsApp has no posting API
+        </p>
+      </div>
+    </div>
+  );
+}
 
 // ── Broadcast Section ──────────────────────────────────────────────────────
 function BroadcastSection() {
@@ -2227,6 +2587,7 @@ function BroadcastSection() {
   const [copied, setCopied]                 = useState(false);
   const [selectedImageIndex, setSelectedImageIndex] = useState(0);
   const [telegramSuccess, setTelegramSuccess] = useState(false);
+  const [rightTab, setRightTab]           = useState<'message' | 'story'>('message');
 
   const categories = ['All', ...Array.from(new Set(products.map((p:any) => p.category || '').filter(Boolean))).sort()];
 
@@ -2263,6 +2624,8 @@ function BroadcastSection() {
     }
     return 0;
   };
+
+  const resolveOrigPrice = (p: any) => p.originalPrice ? (parseFloat(String(p.originalPrice).replace(/[^0-9.]/g, '')) || 0) : 0;
 
   const getStock = (p: any): number | null => {
     if (p.stock?.availableStock !== undefined) return p.stock.availableStock;
@@ -2395,7 +2758,7 @@ function BroadcastSection() {
 
   return (
     <div className="space-y-5">
-      <SectionHeader icon={Megaphone} title="Product Broadcast" desc="Select products and send promotional messages via WhatsApp or Telegram" />
+      <SectionHeader icon={Megaphone} title="Product Broadcast" desc="Send promo messages via WhatsApp or Telegram, or post product stories to Instagram, Facebook & WhatsApp Status" />
 
       {/* ── Sticky Send Bar ── */}
       <div className="sticky top-0 z-20 bg-white border border-gray-100 rounded-2xl shadow-md px-4 py-3 flex items-center gap-3 flex-wrap">
@@ -2589,7 +2952,28 @@ function BroadcastSection() {
                   </div>
                 )}
 
+                {/* Tabs: Message vs Story */}
+                <div className="px-4 py-3 border-b border-gray-100 flex gap-2">
+                  {([['message', 'Message Post'], ['story', 'Story']] as const).map(([id, label]) => (
+                    <button key={id} onClick={() => setRightTab(id)}
+                      className={`flex-1 text-[10px] font-black uppercase tracking-widest py-2 rounded-xl border-2 transition-all ${
+                        rightTab === id ? 'bg-[#FA5600] text-white border-[#FA5600]' : 'border-gray-200 text-gray-400 bg-white hover:border-[#FA5600]/50'
+                      }`}>{label}</button>
+                  ))}
+                </div>
+
+                {rightTab === 'story' && (
+                  <StoryComposer
+                    product={preview}
+                    imageUrl={getProductImages(preview)[selectedImageIndex] || ''}
+                    price={resolvePrice(preview)}
+                    origPrice={resolveOrigPrice(preview)}
+                    caption={customMsg}
+                  />
+                )}
+
                 {/* Editable message */}
+                {rightTab === 'message' && (
                 <div className="p-4">
                   <div className="flex items-center justify-between mb-2">
                     <p className="text-[10px] font-black uppercase tracking-widest text-gray-500">Promotional Message</p>
@@ -2602,9 +2986,11 @@ function BroadcastSection() {
                     className="w-full border-2 border-gray-200 rounded-xl px-3 py-2.5 text-xs font-mono focus:border-[#FA5600] outline-none resize-none transition" />
                   <p className="text-[9px] text-gray-400 mt-1">You can edit this message before sending</p>
                 </div>
+                )}
               </div>
 
               {/* Send buttons */}
+              {rightTab === 'message' && (
               <div className="sticky bottom-4 z-10 bg-white/95 backdrop-blur-sm rounded-2xl p-3 shadow-xl border border-gray-100 grid grid-cols-1 gap-2">
                 {/* WhatsApp */}
                 <button onClick={handleWhatsApp} disabled={sending}
@@ -2641,6 +3027,7 @@ function BroadcastSection() {
                   Telegram posts image + message directly to your TAGS channel
                 </p>
               </div>
+              )}
             </>
           )}
         </div>
