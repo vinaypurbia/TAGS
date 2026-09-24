@@ -38,6 +38,57 @@ const uri = process.env.TAGS_MONGO;
 const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN;
 const CATALOG_ID = '1901314136807871';
 
+// ── Story broadcast helpers (Instagram + Facebook Page stories) ─────────────
+// Env: META_ACCESS_TOKEN (already set) + FB_PAGE_ID (required).
+// Optional: IG_USER_ID (auto-discovered from the Page), META_PAGE_TOKEN (overrides META_ACCESS_TOKEN for stories).
+const META_GRAPH = 'https://graph.facebook.com/v25.0';
+
+async function metaCall(path, params, method = 'POST') {
+  const qs = new URLSearchParams(params);
+  const r = method === 'GET'
+    ? await fetch(`${META_GRAPH}/${path}?${qs}`)
+    : await fetch(`${META_GRAPH}/${path}`, { method, body: qs });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || j.error) throw new Error(j.error?.message || `Meta API error (${r.status})`);
+  return j;
+}
+
+// Works whether the token is a user/system-user token (exchanged for the Page token here)
+// or already a Page token. The Instagram account is discovered from the Page unless IG_USER_ID is set.
+async function resolveStoryAccounts() {
+  const baseToken = process.env.META_PAGE_TOKEN || META_ACCESS_TOKEN;
+  const pageId = process.env.FB_PAGE_ID;
+  if (!baseToken) throw new Error('META_ACCESS_TOKEN is not set');
+  if (!pageId) throw new Error('FB_PAGE_ID is not set in Vercel env vars');
+  let pageToken = baseToken;
+  let igId = process.env.IG_USER_ID || '';
+  try {
+    const pg = await metaCall(pageId, { fields: 'access_token,instagram_business_account', access_token: baseToken }, 'GET');
+    if (pg.access_token) pageToken = pg.access_token;
+    if (!igId && pg.instagram_business_account?.id) igId = pg.instagram_business_account.id;
+  } catch { /* keep the token as-is */ }
+  return { pageId, pageToken, igId };
+}
+
+async function postInstagramStory(imageUrl, { igId, pageToken }) {
+  if (!igId) throw new Error('No Instagram Business/Creator account is linked to this Page (or set IG_USER_ID)');
+  const container = await metaCall(`${igId}/media`, { image_url: imageUrl, media_type: 'STORIES', access_token: pageToken });
+  for (let i = 0; i < 6; i++) {
+    const st = await metaCall(container.id, { fields: 'status_code', access_token: pageToken }, 'GET');
+    if (st.status_code === 'FINISHED') break;
+    if (st.status_code === 'ERROR' || st.status_code === 'EXPIRED') throw new Error(`Instagram rejected the image (${st.status_code})`);
+    await new Promise(r => setTimeout(r, 1000));
+  }
+  const pub = await metaCall(`${igId}/media_publish`, { creation_id: container.id, access_token: pageToken });
+  return pub.id;
+}
+
+async function postFacebookStory(imageUrl, { pageId, pageToken }) {
+  const photo = await metaCall(`${pageId}/photos`, { url: imageUrl, published: 'false', access_token: pageToken });
+  const story = await metaCall(`${pageId}/photo_stories`, { photo_id: photo.id, access_token: pageToken });
+  return story.post_id;
+}
+
 let client;
 
 async function getClient() {
@@ -280,6 +331,45 @@ export default async function handler(req, res) {
     const purchaseOrders = db.collection('purchaseOrders');
     const salesCol = db.collection('sales');
 
+    // ── Story setup check ────────────────────────────────────────────────────
+    // GET /api/products?storyCheck=true  → read-only; shows what is configured / missing (no secrets returned)
+    if (req.method === 'GET' && req.query.storyCheck === 'true') {
+      const base = process.env.META_PAGE_TOKEN || META_ACCESS_TOKEN;
+      const out = {
+        env: {
+          META_ACCESS_TOKEN: !!META_ACCESS_TOKEN,
+          FB_PAGE_ID: !!process.env.FB_PAGE_ID,
+          IG_USER_ID: process.env.IG_USER_ID ? 'set' : 'not set (auto-discovered from Page)',
+          CLOUDINARY_CLOUD_NAME: !!process.env.CLOUDINARY_CLOUD_NAME,
+        },
+        token: null, page: null, instagram: null, missing: [],
+      };
+      if (!META_ACCESS_TOKEN) out.missing.push('META_ACCESS_TOKEN env var');
+      if (!process.env.FB_PAGE_ID) out.missing.push('FB_PAGE_ID env var');
+      if (base) {
+        try {
+          const d = (await metaCall('debug_token', { input_token: base, access_token: base }, 'GET')).data || {};
+          out.token = { type: d.type, valid: d.is_valid, expires: d.expires_at ? new Date(d.expires_at * 1000).toISOString() : 'never', scopes: d.scopes || [] };
+          if (d.is_valid === false) out.missing.push('a valid (non-expired) token');
+          if (d.scopes?.length) {
+            for (const sc of ['pages_manage_posts', 'pages_read_engagement', 'pages_show_list', 'instagram_basic', 'instagram_content_publish']) {
+              if (!d.scopes.includes(sc)) out.missing.push(`token permission: ${sc}`);
+            }
+          }
+        } catch (e) { out.token = { error: e.message }; }
+        if (process.env.FB_PAGE_ID) {
+          try {
+            const pg = await metaCall(process.env.FB_PAGE_ID, { fields: 'name,instagram_business_account{id,username}', access_token: base }, 'GET');
+            out.page = { name: pg.name };
+            out.instagram = pg.instagram_business_account || null;
+            if (!pg.instagram_business_account && !process.env.IG_USER_ID) out.missing.push('Instagram Business account linked to the Page');
+          } catch (e) { out.page = { error: e.message }; out.missing.push('access to the Page with this token'); }
+        }
+      }
+      out.ready = out.missing.length === 0;
+      return res.status(200).json(out);
+    }
+
     if (req.method === 'GET') {
       const {
         id, withStock, syncMeta, pushAll,
@@ -518,6 +608,38 @@ export default async function handler(req, res) {
         total,
         hasMore: (search && search.trim() !== '') ? false : (pageNum * pageSize) < total,
       });
+    }
+
+    // ── Story Broadcast (Instagram + Facebook Page stories) ──────────────────
+    // POST /api/products  body: { storyBroadcast: true, imageUrl, platforms: ['instagram','facebook'] }
+    if (req.method === 'POST' && req.body?.storyBroadcast === true) {
+      const { imageUrl, platforms } = req.body;
+      const clean = String(imageUrl || '').replace(/\?.*$/, '');   // keep the exact upload URL (incl. version segment)
+      // Only our own Cloudinary images, and JPEG only (Instagram rejects other formats for stories)
+      if (!clean.startsWith(`https://res.cloudinary.com/${process.env.CLOUDINARY_CLOUD_NAME}/`)) {
+        return res.status(400).json({ error: 'imageUrl must be one of your Cloudinary images' });
+      }
+      if (!/\.jpe?g$/i.test(clean)) {
+        return res.status(400).json({ error: 'Story image must be a JPEG — /api/upload returned a different format' });
+      }
+      const wanted = Array.isArray(platforms) ? platforms.filter(p => p === 'instagram' || p === 'facebook') : [];
+      if (wanted.length === 0) return res.status(400).json({ error: 'No platforms selected' });
+
+      try {
+        const acct = await resolveStoryAccounts();
+        const jobs = { instagram: postInstagramStory, facebook: postFacebookStory };
+        const settled = await Promise.allSettled(wanted.map(p => jobs[p](clean, acct)));
+        const results = {};
+        wanted.forEach((p, i) => {
+          const r = settled[i];
+          results[p] = r.status === 'fulfilled' ? { ok: true, id: r.value } : { ok: false, error: r.reason?.message || 'Failed' };
+          if (r.status === 'rejected') console.error(`[Story:${p}]`, r.reason?.message);
+        });
+        return res.status(200).json({ results });
+      } catch (err) {
+        console.error('[Story] error:', err.message);
+        return res.status(500).json({ error: err.message });
+      }
     }
 
     // ── Telegram Broadcast ───────────────────────────────────────────────────
