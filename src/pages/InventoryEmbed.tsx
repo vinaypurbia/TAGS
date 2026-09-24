@@ -33,6 +33,7 @@ type FilterType = 'all' | 'in_stock' | 'out_of_stock' | 'low_stock' | 'untracked
 export function InventoryEmbed() {
   const [products, setProducts] = useState<ProductInventory[]>([]);
   const [loading, setLoading] = useState(true);
+  const [brokenImages, setBrokenImages] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState('');
   const [filter, setFilter] = useState<FilterType>('all');
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -47,7 +48,10 @@ export function InventoryEmbed() {
   const [quickToggling, setQuickToggling] = useState<string | null>(null);
   const [backfilling, setBackfilling] = useState(false);
   const [pricingOpen, setPricingOpen] = useState(false);
-  const [pricingScope, setPricingScope] = useState<'all' | 'category' | 'range' | 'individual'>('all');
+  const [pricingScope, setPricingScope] = useState<'all' | 'category' | 'range' | 'individual' | 'po'>('all');
+  const [pricingPOs, setPricingPOs] = useState<any[]>([]);
+  const [pricingPOsLoading, setPricingPOsLoading] = useState(false);
+  const [pricingSelectedPOId, setPricingSelectedPOId] = useState('');
   const [pricingCategories, setPricingCategories] = useState<Set<string>>(new Set());
   const [pricingRangeField, setPricingRangeField] = useState<'cost' | 'selling'>('cost');
   const [pricingRangeMin, setPricingRangeMin] = useState('');
@@ -292,7 +296,12 @@ export function InventoryEmbed() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed');
-      showMessage(`✅ Updated pricing for ${data.updatedCount} product(s).`, 'success');
+      const metaFailCount = data.metaErrors?.length || 0;
+      if (metaFailCount > 0) {
+        showMessage(`✅ Updated ${data.updatedCount} product(s). ⚠️ ${metaFailCount} failed to sync to WhatsApp/Facebook — DB price is correct, catalog may lag until next sync.`, 'error');
+      } else {
+        showMessage(`✅ Updated pricing for ${data.updatedCount} product(s) — synced to WhatsApp/Facebook catalog too.`, 'success');
+      }
       setPricingPreview(null);
       setPricingOpen(false);
       setPricingSelectedIds(new Set());
@@ -334,9 +343,35 @@ export function InventoryEmbed() {
   // the currently searched/filtered list, so it stays relevant to what's on screen.
   const pricingAvailableCategories = Array.from(new Set(filtered.map(p => p.category).filter(Boolean))).sort();
 
+  // Lazily loads received POs the first time the "By Purchase Order" scope is
+  // opened. Only "received" POs matter here — a draft/ordered PO's items
+  // haven't actually landed in inventory yet, so there's nothing real to price.
+  const fetchPricingPOs = async () => {
+    if (pricingPOs.length > 0 || pricingPOsLoading) return;
+    setPricingPOsLoading(true);
+    try {
+      const res = await fetch('/api/purchase-orders');
+      const data = await res.json();
+      const list = Array.isArray(data) ? data : (data.purchaseOrders || data.data || []);
+      setPricingPOs(list.filter((po: any) => po.status === 'received'));
+    } catch {
+      showMessage('Could not load purchase orders.', 'error');
+    } finally {
+      setPricingPOsLoading(false);
+    }
+  };
+
+  const selectedPO = pricingPOs.find(po => po._id === pricingSelectedPOId);
+  // PO item productIds resolved against the current PO — used below to find
+  // matching products in the full (unfiltered) list.
+  const selectedPOProductIds = new Set((selectedPO?.receivedItems || selectedPO?.items || []).map((i: any) => i.productId).filter(Boolean));
+
   // Resolve the Bulk Price Update scope down to a plain product list, on top
   // of the existing search/filter above. "All Items" = everything currently
-  // visible; the other three scopes narrow further from there.
+  // visible; category/range/individual narrow further from there. "By PO"
+  // is resolved against the FULL product list (not the filtered/searched
+  // one) — an active search or category tab in Stock Levels shouldn't
+  // silently exclude items that genuinely belong to the chosen PO.
   const pricingScopeTargets: ProductInventory[] =
     pricingScope === 'all' ? filtered :
     pricingScope === 'category' ? filtered.filter(p => pricingCategories.has(p.category)) :
@@ -346,6 +381,7 @@ export function InventoryEmbed() {
       const max = pricingRangeMax === '' ? Infinity : Number(pricingRangeMax);
       return val >= min && val <= max;
     }) :
+    pricingScope === 'po' ? products.filter(p => selectedPOProductIds.has(p._id)) :
     /* individual */ filtered.filter(p => pricingSelectedIds.has(p._id));
 
   // Search box just for picking individual products in the pricing panel —
@@ -458,14 +494,15 @@ export function InventoryEmbed() {
             {/* Scope selector */}
             <div>
               <label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1.5">Apply To</label>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
                 {([
                   ['all', 'All Items'],
                   ['category', 'By Category'],
                   ['range', 'By Value Range'],
+                  ['po', 'By Purchase Order'],
                   ['individual', 'Select Individually'],
                 ] as const).map(([val, label]) => (
-                  <button key={val} onClick={() => { setPricingScope(val); setPricingPreview(null); }}
+                  <button key={val} onClick={() => { setPricingScope(val); setPricingPreview(null); if (val === 'po') fetchPricingPOs(); }}
                     className={`text-xs font-black px-3 py-2 rounded-lg border-2 transition ${pricingScope === val ? 'bg-[#FA5600] border-[#FA5600] text-white' : 'bg-white border-gray-200 text-gray-600 hover:border-[#FA5600]/50'}`}>
                     {label}
                   </button>
@@ -522,6 +559,33 @@ export function InventoryEmbed() {
                   <input type="number" value={pricingRangeMax} onChange={e => { setPricingRangeMax(e.target.value); setPricingPreview(null); }}
                     placeholder="No limit" className="w-full border-2 border-gray-200 rounded-lg px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none" />
                 </div>
+              </div>
+            )}
+
+            {/* By Purchase Order scope */}
+            {pricingScope === 'po' && (
+              <div>
+                <label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1.5">Choose Received PO</label>
+                {pricingPOsLoading ? (
+                  <p className="text-xs text-gray-400 font-bold py-2">Loading purchase orders...</p>
+                ) : pricingPOs.length === 0 ? (
+                  <p className="text-xs text-gray-400 font-bold py-2">No received purchase orders found.</p>
+                ) : (
+                  <select value={pricingSelectedPOId} onChange={e => { setPricingSelectedPOId(e.target.value); setPricingPreview(null); }}
+                    className="w-full border-2 border-gray-200 rounded-lg px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none bg-white">
+                    <option value="">Select a purchase order...</option>
+                    {pricingPOs.map(po => (
+                      <option key={po._id} value={po._id}>
+                        {po.poNumber} — {po.supplier?.name || 'Unknown supplier'} ({(po.receivedItems || po.items || []).length} items, {po.date ? new Date(po.date).toLocaleDateString('en-IN') : ''})
+                      </option>
+                    ))}
+                  </select>
+                )}
+                {selectedPO && (
+                  <p className="text-[10px] text-gray-400 mt-1.5">
+                    Only items from this PO that match a product in your catalog are included. New margin is based on each item's <span className="font-bold">current cost price in inventory</span>, not necessarily this PO's price (if cost has changed since receiving).
+                  </p>
+                )}
               </div>
             )}
 
@@ -654,8 +718,9 @@ export function InventoryEmbed() {
 
                 {/* Product Row */}
                 <div className="flex items-center gap-3 p-4 cursor-pointer" onClick={() => setExpandedId(isExpanded ? null : product._id)}>
-                  {product.image ? (
-                    <img src={product.image} alt={product.name} className="w-12 h-12 rounded-lg object-cover border border-gray-200 shrink-0" />
+                  {product.image && !brokenImages.has(product._id) ? (
+                    <img src={product.image} alt={product.name} className="w-12 h-12 rounded-lg object-cover border border-gray-200 shrink-0"
+                      onError={() => setBrokenImages(prev => new Set(prev).add(product._id))} />
                   ) : (
                     <div className="w-12 h-12 rounded-lg bg-gray-100 flex items-center justify-center text-xl shrink-0">📦</div>
                   )}
