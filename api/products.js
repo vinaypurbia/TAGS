@@ -693,7 +693,9 @@ export default async function handler(req, res) {
       if (!Array.isArray(updates) || updates.length === 0) return res.status(400).json({ error: 'updates array is required' });
 
       let updatedCount = 0;
+      let metaSyncedCount = 0;
       const errors = [];
+      const metaErrors = [];
       for (const u of updates) {
         try {
           const objId = new ObjectId(u.id);
@@ -711,14 +713,28 @@ export default async function handler(req, res) {
           }
           if (Object.keys(setFields).length <= 1) { errors.push({ id: u.id, error: 'No price fields to update' }); continue; }
 
+          const existing = await collection.findOne({ _id: objId });
           const result = await collection.updateOne({ _id: objId }, { $set: setFields });
-          if (result.matchedCount > 0) updatedCount++;
+          if (result.matchedCount > 0) {
+            updatedCount++;
+            // Best-effort push to Meta (WhatsApp Catalog / Facebook Shop) so the
+            // new price doesn't silently drift from what customers see there —
+            // same call the single-item edit form makes on save.
+            if (existing) {
+              try {
+                await pushProductToMeta({ ...existing, ...setFields, _id: objId }, existing.metaId || null, inventory);
+                metaSyncedCount++;
+              } catch (metaErr) {
+                metaErrors.push({ id: u.id, error: metaErr.message });
+              }
+            }
+          }
         } catch (err) {
           errors.push({ id: u.id, error: err.message });
         }
       }
 
-      return res.status(200).json({ success: true, updatedCount, errors });
+      return res.status(200).json({ success: true, updatedCount, metaSyncedCount, errors, metaErrors });
     }
 
     if (req.method === 'POST') {
