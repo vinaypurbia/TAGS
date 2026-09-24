@@ -52,6 +52,8 @@ export function InventoryEmbed() {
   const [pricingPOs, setPricingPOs] = useState<any[]>([]);
   const [pricingPOsLoading, setPricingPOsLoading] = useState(false);
   const [pricingSelectedPOId, setPricingSelectedPOId] = useState('');
+  const [pricingPoRangeMin, setPricingPoRangeMin] = useState('');
+  const [pricingPoRangeMax, setPricingPoRangeMax] = useState('');
   const [pricingCategories, setPricingCategories] = useState<Set<string>>(new Set());
   const [pricingRangeField, setPricingRangeField] = useState<'cost' | 'selling'>('cost');
   const [pricingRangeMin, setPricingRangeMin] = useState('');
@@ -278,6 +280,12 @@ export function InventoryEmbed() {
   };
 
   // Apply exactly what was previewed — doesn't recompute, so what you saw is what gets saved.
+  // NOTE: the backend now saves all prices in one bulk write and responds
+  // immediately — the WhatsApp/Facebook catalog sync happens afterward in the
+  // background (via Vercel's waitUntil), so metaSyncedCount/metaErrors are no
+  // longer available synchronously here. Any catalog sync issues never affect
+  // the prices already saved in the database, and can be re-pushed later from
+  // the existing "push to Meta" tooling if ever needed.
   const applyBulkPricing = async () => {
     if (!pricingPreview || pricingPreview.items.length === 0) return;
     if (!confirm(`Update pricing for ${pricingPreview.items.length} product(s)? This cannot be undone automatically.`)) return;
@@ -296,12 +304,7 @@ export function InventoryEmbed() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed');
-      const metaFailCount = data.metaErrors?.length || 0;
-      if (metaFailCount > 0) {
-        showMessage(`✅ Updated ${data.updatedCount} product(s). ⚠️ ${metaFailCount} failed to sync to WhatsApp/Facebook — DB price is correct, catalog may lag until next sync.`, 'error');
-      } else {
-        showMessage(`✅ Updated pricing for ${data.updatedCount} product(s) — synced to WhatsApp/Facebook catalog too.`, 'success');
-      }
+      showMessage(`✅ Updated pricing for ${data.updatedCount} product(s) — syncing to WhatsApp/Facebook catalog in the background.`, 'success');
       setPricingPreview(null);
       setPricingOpen(false);
       setPricingSelectedIds(new Set());
@@ -381,7 +384,15 @@ export function InventoryEmbed() {
       const max = pricingRangeMax === '' ? Infinity : Number(pricingRangeMax);
       return val >= min && val <= max;
     }) :
-    pricingScope === 'po' ? products.filter(p => selectedPOProductIds.has(p._id)) :
+    pricingScope === 'po' ? products.filter(p => selectedPOProductIds.has(p._id)).filter(p => {
+      // Sub-filter within the chosen PO: only items whose current cost price
+      // falls in this range. Left blank on either side = no bound on that side,
+      // so leaving both blank keeps every item in the PO (unchanged behavior).
+      const cost = p.stock.costPrice || 0;
+      const min = pricingPoRangeMin === '' ? -Infinity : Number(pricingPoRangeMin);
+      const max = pricingPoRangeMax === '' ? Infinity : Number(pricingPoRangeMax);
+      return cost >= min && cost <= max;
+    }) :
     /* individual */ filtered.filter(p => pricingSelectedIds.has(p._id));
 
   // Search box just for picking individual products in the pricing panel —
@@ -502,7 +513,7 @@ export function InventoryEmbed() {
                   ['po', 'By Purchase Order'],
                   ['individual', 'Select Individually'],
                 ] as const).map(([val, label]) => (
-                  <button key={val} onClick={() => { setPricingScope(val); setPricingPreview(null); if (val === 'po') fetchPricingPOs(); }}
+                  <button key={val} onClick={() => { setPricingScope(val); setPricingPreview(null); if (val === 'po') { fetchPricingPOs(); } else { setPricingPoRangeMin(''); setPricingPoRangeMax(''); } }}
                     className={`text-xs font-black px-3 py-2 rounded-lg border-2 transition ${pricingScope === val ? 'bg-[#FA5600] border-[#FA5600] text-white' : 'bg-white border-gray-200 text-gray-600 hover:border-[#FA5600]/50'}`}>
                     {label}
                   </button>
@@ -571,7 +582,7 @@ export function InventoryEmbed() {
                 ) : pricingPOs.length === 0 ? (
                   <p className="text-xs text-gray-400 font-bold py-2">No received purchase orders found.</p>
                 ) : (
-                  <select value={pricingSelectedPOId} onChange={e => { setPricingSelectedPOId(e.target.value); setPricingPreview(null); }}
+                  <select value={pricingSelectedPOId} onChange={e => { setPricingSelectedPOId(e.target.value); setPricingPoRangeMin(''); setPricingPoRangeMax(''); setPricingPreview(null); }}
                     className="w-full border-2 border-gray-200 rounded-lg px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none bg-white">
                     <option value="">Select a purchase order...</option>
                     {pricingPOs.map(po => (
@@ -582,9 +593,38 @@ export function InventoryEmbed() {
                   </select>
                 )}
                 {selectedPO && (
-                  <p className="text-[10px] text-gray-400 mt-1.5">
-                    Only items from this PO that match a product in your catalog are included. New margin is based on each item's <span className="font-bold">current cost price in inventory</span>, not necessarily this PO's price (if cost has changed since receiving).
-                  </p>
+                  <>
+                    <p className="text-[10px] text-gray-400 mt-1.5">
+                      Only items from this PO that match a product in your catalog are included. New margin is based on each item's <span className="font-bold">current cost price in inventory</span>, not necessarily this PO's price (if cost has changed since receiving).
+                    </p>
+
+                    {/* Cost-price sub-filter — lets you set different margins for
+                        differently-priced items within the same PO, by running
+                        Preview/Apply once per price band. */}
+                    <div className="mt-3 bg-gray-50 rounded-lg p-3">
+                      <label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1.5">
+                        Narrow by Cost Price (optional)
+                      </label>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="block text-[10px] font-bold text-gray-400 mb-1">Min ₹</label>
+                          <input type="number" value={pricingPoRangeMin}
+                            onChange={e => { setPricingPoRangeMin(e.target.value); setPricingPreview(null); }}
+                            placeholder="0" className="w-full border-2 border-gray-200 rounded-lg px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none bg-white" />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] font-bold text-gray-400 mb-1">Max ₹</label>
+                          <input type="number" value={pricingPoRangeMax}
+                            onChange={e => { setPricingPoRangeMax(e.target.value); setPricingPreview(null); }}
+                            placeholder="No limit" className="w-full border-2 border-gray-200 rounded-lg px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none bg-white" />
+                        </div>
+                      </div>
+                      <p className="text-[10px] text-gray-400 mt-1.5">
+                        Leave both blank to include every item in this PO. Set a range to target only items in that cost band —
+                        useful for giving cheaper and pricier items different margin %, one Preview/Apply run per band.
+                      </p>
+                    </div>
+                  </>
                 )}
               </div>
             )}
