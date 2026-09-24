@@ -2579,23 +2579,68 @@ function StoryComposer({ product, imageUrl, price, origPrice, caption }: {
   );
 }
 
-// ── Bulk WhatsApp (many products → one message, split into parts) ──────────
-// wa.me can't pick recipients or send by itself, so each part opens WhatsApp's chat picker
-// with the text pre-filled: choose the contact/group/broadcast list and press send.
-function BulkWhatsAppModal({ items, onClose }: {
-  items: { id: string; name: string; price: number; origPrice: number }[];
-  onClose: () => void;
-}) {
+// ── Bulk WhatsApp (many products → messages with pictures) ─────────────────
+const isMobileDevice = () => typeof navigator !== 'undefined' && (
+  /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+  (/Macintosh/i.test(navigator.userAgent) && navigator.maxTouchPoints > 1)
+);
+
+// WhatsApp Desktop garbles emoji that arrive through a wa.me link (shown as "�"), so drop them
+// from link text on desktop. Phones handle them fine. "Copy" and picture-sharing keep the emoji.
+const waLinkText = (t: string) =>
+  isMobileDevice() ? t : t.replace(/[\u{10000}-\u{10FFFF}\u2728]\uFE0F?[ \t]?/gu, '').trim();
+
+// Product photo → JPEG File (WhatsApp may treat .webp shares as stickers, so always convert)
+async function productPhotoFile(url: string, baseName: string): Promise<File> {
+  const res = await fetch(url, { mode: 'cors', cache: 'reload' });
+  if (!res.ok) throw new Error('fetch failed');
+  const objUrl = URL.createObjectURL(await res.blob());
+  try {
+    const im = new window.Image();   // NOTE: `Image` alone is the lucide icon in this file
+    await new Promise<void>((ok, bad) => { im.onload = () => ok(); im.onerror = () => bad(new Error('decode')); im.src = objUrl; });
+    const scale = Math.min(1, 1200 / Math.max(im.width, im.height));
+    const c = document.createElement('canvas');
+    c.width = Math.round(im.width * scale); c.height = Math.round(im.height * scale);
+    const ctx = c.getContext('2d')!;
+    ctx.fillStyle = '#FFFFFF'; ctx.fillRect(0, 0, c.width, c.height);
+    ctx.drawImage(im, 0, 0, c.width, c.height);
+    const blob: Blob = await new Promise((ok, bad) => c.toBlob(b => b ? ok(b) : bad(new Error('export')), 'image/jpeg', 0.9));
+    return new File([blob], `${baseName}.jpg`, { type: 'image/jpeg' });
+  } finally { URL.revokeObjectURL(objUrl); }
+}
+
+type BulkItem = { id: string; name: string; price: number; origPrice: number; image: string };
+
+function BulkWhatsAppModal({ items, onClose }: { items: BulkItem[]; onClose: () => void }) {
   const [perPart, setPerPart]     = useState(5);
   const [intro, setIntro]         = useState('🔥 *New at TAGS!*');
   const [sent, setSent]           = useState<Set<number>>(new Set());
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
+  const [files, setFiles]         = useState<Record<string, File | null>>({});
+  const [prepared, setPrepared]   = useState(0);
+  const [notice, setNotice]       = useState('');
 
-  useEffect(() => { setSent(new Set()); }, [perPart, intro, items.length]);
+  useEffect(() => { setSent(new Set()); setNotice(''); }, [perPart, intro, items.length]);
 
-  const productLine = (it: { id: string; name: string; price: number; origPrice: number }, n: number) => {
+  // Pre-load every product photo as a JPEG so sharing can start instantly on click
+  const idKey = items.map(i => i.id).join(',');
+  useEffect(() => {
+    let cancelled = false;
+    setFiles({}); setPrepared(0);
+    items.forEach(async it => {
+      let f: File | null = null;
+      try {
+        if (it.image) f = await productPhotoFile(it.image, `${(it.name || 'product').toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40)}-${it.id.slice(-4)}`);
+      } catch { f = null; }
+      if (!cancelled) { setFiles(prev => ({ ...prev, [it.id]: f })); setPrepared(n => n + 1); }
+    });
+    return () => { cancelled = true; };
+  }, [idKey]);
+  const ready = prepared >= items.length;
+
+  const productLine = (it: BulkItem, num: number) => {
     const name = it.name.length > 60 ? it.name.slice(0, 57) + '...' : it.name;
-    let l = `${n}. *${name}*`;
+    let l = num ? `${num}. *${name}*` : `*${name}*`;
     if (it.price > 0) {
       const disc = it.origPrice > it.price ? Math.round(((it.origPrice - it.price) / it.origPrice) * 100) : 0;
       l += `\n   💰 ₹${it.price.toFixed(0)}` + (disc > 0 ? ` ~₹${it.origPrice.toFixed(0)}~ (${disc}% OFF)` : '');
@@ -2604,20 +2649,47 @@ function BulkWhatsAppModal({ items, onClose }: {
     return l;
   };
 
-  const parts: string[] = [];
-  for (let i = 0; i < items.length; i += perPart) {
+  const chunks: BulkItem[][] = [];
+  for (let i = 0; i < items.length; i += perPart) chunks.push(items.slice(i, i + perPart));
+  const parts = chunks.map(chunk => {
     let msg = intro.trim() ? intro.trim() + '\n\n' : '';
-    msg += items.slice(i, i + perPart).map((it, j) => productLine(it, i + j + 1)).join('\n\n');
+    // numbering restarts in every message, and is skipped when a message holds a single product
+    msg += chunk.map((it, j) => productLine(it, chunk.length > 1 ? j + 1 : 0)).join('\n\n');
     msg += `\n\n📞 To order, WhatsApp us:\nwa.me/916350021226\n\n✨ *TAGS — Toys · Adventure · Gadgets · Sports*\n📍 Hathipole, Udaipur`;
-    parts.push(msg);
-  }
+    return msg;
+  });
 
-  const openPart = (i: number) => {
-    window.open(`https://wa.me/?text=${encodeURIComponent(parts[i])}`, '_blank');
-    setSent(prev => new Set(prev).add(i));
+  const markSent = (i: number) => setSent(prev => new Set(prev).add(i));
+
+  const openTextOnly = (i: number) => {
+    window.open(`https://wa.me/?text=${encodeURIComponent(waLinkText(parts[i]))}`, '_blank');
+    markSent(i);
   };
   const copyPart = (i: number) => {
     navigator.clipboard.writeText(parts[i]).then(() => { setCopiedIdx(i); setTimeout(() => setCopiedIdx(null), 2000); });
+  };
+
+  // Pictures + text: opens the share dialog with all product photos attached.
+  // WhatsApp Desktop ignores the shared text, so it is also copied → paste it into the message box.
+  const sendWithPictures = (i: number) => {
+    const fs = chunks[i].map(it => files[it.id]).filter((f): f is File => !!f);
+    const missing = chunks[i].length - fs.length;
+    if (fs.length === 0) { setNotice('❌ None of these products has a picture that could be loaded. Use "Text only" instead.'); return; }
+    navigator.clipboard.writeText(parts[i]).catch(() => {});
+    const tail = missing > 0 ? ` (${missing} picture${missing > 1 ? 's' : ''} couldn't be loaded and were skipped.)` : '';
+    if (navigator.canShare && navigator.canShare({ files: fs })) {
+      setNotice(`✓ Text copied. In WhatsApp, pick the chat(s) and paste the text (Ctrl+V / long-press → Paste) into the message box.${tail}`);
+      navigator.share({ files: fs, text: parts[i] })
+        .then(() => markSent(i))
+        .catch((e: any) => { if (e?.name === 'AbortError') setNotice(''); else setNotice('❌ ' + (e?.message || 'Share failed')); });
+    } else {
+      fs.forEach((f, k) => setTimeout(() => {
+        const a = document.createElement('a'); a.href = URL.createObjectURL(f); a.download = f.name; a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 3000);
+      }, k * 300));
+      markSent(i);
+      setNotice(`✓ Pictures saved and text copied. In WhatsApp, attach the saved pictures to a chat and paste the text.${tail}`);
+    }
   };
 
   return (
@@ -2626,7 +2698,10 @@ function BulkWhatsAppModal({ items, onClose }: {
         <div className="flex items-center justify-between p-4 border-b border-gray-100 sticky top-0 bg-white z-10">
           <div>
             <h3 className="font-black text-sm uppercase tracking-widest text-gray-800">Bulk WhatsApp Message</h3>
-            <p className="text-[10px] text-gray-400 font-bold">{items.length} product{items.length > 1 ? 's' : ''} → {parts.length} message{parts.length > 1 ? 's' : ''}</p>
+            <p className="text-[10px] text-gray-400 font-bold">
+              {items.length} product{items.length > 1 ? 's' : ''} → {parts.length} message{parts.length > 1 ? 's' : ''} ·{' '}
+              {ready ? `pictures ready (${Object.values(files).filter(Boolean).length}/${items.length})` : `loading pictures ${prepared}/${items.length}…`}
+            </p>
           </div>
           <button onClick={onClose} className="p-2 rounded-lg hover:bg-gray-100 text-gray-400"><X className="w-4 h-4" /></button>
         </div>
@@ -2649,27 +2724,40 @@ function BulkWhatsAppModal({ items, onClose }: {
             </div>
           </div>
 
+          {notice && <p className="text-[11px] font-bold text-gray-700 bg-orange-50 border border-orange-100 rounded-xl px-3 py-2">{notice}</p>}
+
           {parts.map((msg, i) => (
             <div key={i} className={`rounded-xl border-2 p-3 space-y-2 ${sent.has(i) ? 'border-green-200 bg-green-50/50' : 'border-gray-100'}`}>
               <div className="flex items-center justify-between gap-2">
                 <p className="text-[10px] font-black uppercase tracking-widest text-gray-500">
-                  Message {i + 1} of {parts.length} {sent.has(i) && <span className="text-green-600 normal-case">· opened ✓</span>}
+                  Message {i + 1} of {parts.length} · {chunks[i].length} product{chunks[i].length > 1 ? 's' : ''} {sent.has(i) && <span className="text-green-600 normal-case">· opened ✓</span>}
                 </p>
                 <button onClick={() => copyPart(i)}
                   className={`flex items-center gap-1 text-[10px] font-black uppercase px-2 py-1 rounded-lg transition ${copiedIdx === i ? 'bg-green-100 text-green-600' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>
                   {copiedIdx === i ? <><Check className="w-3 h-3" /> Copied</> : <><Copy className="w-3 h-3" /> Copy</>}
                 </button>
               </div>
-              <pre className="text-[11px] font-mono whitespace-pre-wrap text-gray-600 bg-gray-50 rounded-lg p-2 max-h-40 overflow-y-auto">{msg}</pre>
-              <button onClick={() => openPart(i)}
-                className="w-full flex items-center justify-center gap-2 bg-[#25D366] text-white font-black py-2.5 rounded-xl hover:bg-[#20bd5a] transition-all text-xs uppercase tracking-widest">
-                Open message {i + 1} in WhatsApp
+              <div className="flex gap-1.5 overflow-x-auto no-scrollbar">
+                {chunks[i].map(it => (
+                  <div key={it.id} className="shrink-0 w-12 h-12 rounded-lg overflow-hidden bg-gray-100 border border-gray-200">
+                    {it.image ? <img src={it.image} alt="" className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center text-gray-300"><Package className="w-4 h-4" /></div>}
+                  </div>
+                ))}
+              </div>
+              <pre className="text-[11px] font-mono whitespace-pre-wrap text-gray-600 bg-gray-50 rounded-lg p-2 max-h-32 overflow-y-auto">{msg}</pre>
+              <button onClick={() => sendWithPictures(i)} disabled={!ready}
+                className="w-full flex items-center justify-center gap-2 bg-[#25D366] text-white font-black py-2.5 rounded-xl hover:bg-[#20bd5a] transition-all text-xs uppercase tracking-widest disabled:opacity-50">
+                {ready ? `Send with ${chunks[i].length} picture${chunks[i].length > 1 ? 's' : ''} + text` : 'Loading pictures…'}
+              </button>
+              <button onClick={() => openTextOnly(i)}
+                className="w-full flex items-center justify-center gap-2 border-2 border-gray-200 text-gray-600 font-black py-2 rounded-xl hover:border-[#25D366] hover:text-[#25D366] transition-all text-[10px] uppercase tracking-widest">
+                Text only (WhatsApp link)
               </button>
             </div>
           ))}
 
           <p className="text-[9px] text-gray-400 font-semibold text-center">
-            WhatsApp opens with the text ready — choose the contact, group or broadcast list and press send. Then come back for the next message.
+            The share window lets you tick several chats at once, so one click can reach many contacts. Emoji are kept in “Send with pictures” and “Copy”; the text-only link drops them on desktop because WhatsApp Desktop garbles them.
           </p>
         </div>
       </div>
@@ -2805,7 +2893,7 @@ function BroadcastSection() {
 
   const handleWhatsApp = () => {
     if (!preview) return;
-    window.open(`https://wa.me/?text=${encodeURIComponent(customMsg)}`, '_blank');
+    window.open(`https://wa.me/?text=${encodeURIComponent(waLinkText(customMsg))}`, '_blank');
   };
 
   const handleTelegramSingle = async () => {
@@ -3153,6 +3241,7 @@ function BroadcastSection() {
         <BulkWhatsAppModal
           items={products.filter(p => selectedIds.has(p._id)).map(p => ({
             id: String(p._id), name: p.name || '', price: resolvePrice(p), origPrice: resolveOrigPrice(p),
+            image: getProductImages(p)[0] || '',
           }))}
           onClose={() => setShowBulkWA(false)}
         />
