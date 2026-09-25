@@ -14,6 +14,7 @@ import {
   LayoutDashboard, ShoppingBag, Menu, X,
   TrendingUp, TrendingDown, Users, AlertTriangle, DollarSign, IndianRupee,
   KeyRound, EyeOff, MessageSquare, Pencil, Database, Send, Radio, Copy, Download,
+  CheckCircle, RefreshCw,
 } from 'lucide-react';
 
 const VISIBILITY_KEY = 'tagsAdminVisibility';
@@ -2250,7 +2251,7 @@ function storyWrap(ctx: CanvasRenderingContext2D, text: string, maxWidth: number
 function drawStory(
   canvas: HTMLCanvasElement,
   img: HTMLImageElement | null,
-  o: { theme: StoryTheme; name: string; price: number; origPrice: number; tag: string; cta: string; showPrice: boolean; showDiscount: boolean },
+  o: { theme: StoryTheme; name: string; description: string; price: number; origPrice: number; tag: string; cta: string; showPrice: boolean; showDiscount: boolean },
 ) {
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
@@ -2321,56 +2322,165 @@ function drawStory(
   ctx.textBaseline = 'alphabetic';
   ctx.fillStyle = t.text;
   ctx.font = font(900, 62);
-  storyWrap(ctx, (o.name || '').toUpperCase(), 880, 2).forEach((ln, i) => ctx.fillText(ln, STORY_W / 2, 1270 + i * 74));
+  const nameLines = storyWrap(ctx, (o.name || '').toUpperCase(), 880, 2);
+  const nameY = 1270;
+  nameLines.forEach((ln, i) => ctx.fillText(ln, STORY_W / 2, nameY + i * 68));
+  let cursorY = nameY + (nameLines.length - 1) * 68 + 16; // bottom edge of the name block
+
+  // Short description (optional — only drawn if the product has one)
+  const descText = (o.description || '').trim();
+  if (descText) {
+    ctx.font = font(600, 30);
+    ctx.fillStyle = t.sub;
+    const descLines = storyWrap(ctx, descText, 820, 2);
+    const descY = cursorY + 26;
+    descLines.forEach((ln, i) => ctx.fillText(ln, STORY_W / 2, descY + i * 38));
+    cursorY = descY + (descLines.length - 1) * 38 + 10;
+  }
 
   // Price (+ struck-through original price)
   if (o.showPrice && o.price > 0) {
     const priceTxt = `₹${o.price.toFixed(0)}`;
     const origTxt = o.origPrice > o.price ? `₹${o.origPrice.toFixed(0)}` : '';
-    ctx.font = font(900, 130);
+    ctx.font = font(900, 116);
     const pw = ctx.measureText(priceTxt).width;
-    ctx.font = font(700, 56);
+    ctx.font = font(700, 50);
     const ow = origTxt ? ctx.measureText(origTxt).width : 0;
-    const gap = origTxt ? 32 : 0;
+    const gap = origTxt ? 28 : 0;
     const x0 = (STORY_W - (pw + gap + ow)) / 2;
-    const baseY = 1525;
+    const baseY = cursorY + 80;
     ctx.textAlign = 'left';
-    ctx.font = font(900, 130); ctx.fillStyle = t.accent; ctx.fillText(priceTxt, x0, baseY);
+    ctx.font = font(900, 116); ctx.fillStyle = t.accent; ctx.fillText(priceTxt, x0, baseY);
     if (origTxt) {
-      ctx.font = font(700, 56); ctx.fillStyle = t.sub;
+      ctx.font = font(700, 50); ctx.fillStyle = t.sub;
       ctx.fillText(origTxt, x0 + pw + gap, baseY);
-      ctx.fillRect(x0 + pw + gap, baseY - 20, ow, 4);
+      ctx.fillRect(x0 + pw + gap, baseY - 18, ow, 4);
     }
     ctx.textAlign = 'center';
+    cursorY = baseY;
   }
 
-  // Call-to-action pill
+  // Call-to-action pill (optional short marketing line, e.g. "Limited Stock!")
   if (o.cta.trim()) {
     ctx.font = font(900, 38);
     const w = Math.min(900, ctx.measureText(o.cta.trim()).width + 100);
-    storyRoundRect(ctx, (STORY_W - w) / 2, 1575, w, 92, 46);
+    const ctaTop = cursorY + 48;
+    storyRoundRect(ctx, (STORY_W - w) / 2, ctaTop, w, 92, 46);
     ctx.fillStyle = t.ctaBg; ctx.fill();
     ctx.fillStyle = t.ctaText; ctx.textBaseline = 'middle';
-    ctx.fillText(o.cta.trim(), STORY_W / 2, 1575 + 48);
+    ctx.fillText(o.cta.trim(), STORY_W / 2, ctaTop + 48);
+    ctx.textBaseline = 'alphabetic';
+    cursorY = ctaTop + 92;
   }
 
-  // Brand line
+  // Contact bar — website + phone, always shown regardless of the CTA text above,
+  // so every exported image reliably carries both, clearly readable.
+  const contactTop = cursorY + 34;
+  const contactH = 68;
+  ctx.font = font(800, 32);
+  const site = 'www.ta-gs.online';
+  const phone = '📞 6350021226';
+  const sw = ctx.measureText(site).width;
+  const dotGap = 28;
+  ctx.font = font(800, 32);
+  const pw2 = ctx.measureText(phone).width;
+  const barW = sw + dotGap + 10 + pw2 + 64;
+  storyRoundRect(ctx, (STORY_W - barW) / 2, contactTop, barW, contactH, contactH / 2);
+  ctx.fillStyle = 'rgba(255,255,255,0.16)';
+  ctx.strokeStyle = t.text; ctx.lineWidth = 2;
+  ctx.fill(); ctx.stroke();
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = t.text;
+  ctx.font = font(800, 32);
+  const midY = contactTop + contactH / 2;
+  const startX = (STORY_W - barW) / 2 + 32;
+  ctx.textAlign = 'left';
+  ctx.fillText(site, startX, midY);
+  ctx.fillStyle = t.sub;
+  ctx.fillText('•', startX + sw + dotGap / 2 - 4, midY);
+  ctx.fillStyle = t.text;
+  ctx.fillText(phone, startX + sw + dotGap + 10, midY);
+  ctx.textAlign = 'center';
   ctx.textBaseline = 'alphabetic';
-  ctx.font = font(800, 28); ctx.fillStyle = t.sub;
-  ctx.fillText('TAGS  ·  TOYS · ADVENTURE · GADGETS · SPORTS', STORY_W / 2, 1722);
+
+  // Brand line
+  ctx.font = font(800, 26); ctx.fillStyle = t.sub;
+  ctx.fillText('TAGS  ·  TOYS · ADVENTURE · GADGETS · SPORTS', STORY_W / 2, Math.min(contactTop + contactH + 46, STORY_H - 30));
 }
 
 type StoryResult = { ok: boolean; error?: string };
 
-function StoryComposer({ product, imageUrl, price, origPrice, caption }: {
-  product: any; imageUrl: string; price: number; origPrice: number; caption: string;
+// Shows which Facebook Page and Instagram account Story posting is actually
+// connected to, by calling the existing read-only diagnostic endpoint
+// (GET /api/products?storyCheck=true). No secrets are fetched or shown.
+function ConnectedAccountsStatus() {
+  const [data, setData]       = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError]     = useState('');
+
+  const check = () => {
+    setLoading(true); setError('');
+    fetch('/api/products?storyCheck=true')
+      .then(r => r.json())
+      .then(d => setData(d))
+      .catch(() => setError('Could not reach the server to check.'))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => { check(); }, []);
+
+  return (
+    <div className={`rounded-xl border-2 px-3 py-2.5 text-[11px] font-bold flex items-start gap-2.5 ${
+      loading ? 'border-gray-100 bg-gray-50 text-gray-400'
+      : error || !data?.ready ? 'border-amber-200 bg-amber-50 text-amber-700'
+      : 'border-green-200 bg-green-50 text-green-700'
+    }`}>
+      {loading ? (
+        <RefreshCw className="w-3.5 h-3.5 mt-0.5 shrink-0 animate-spin" />
+      ) : error || !data?.ready ? (
+        <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+      ) : (
+        <CheckCircle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+      )}
+      <div className="flex-1 min-w-0">
+        {loading && <span>Checking connected Facebook Page &amp; Instagram account…</span>}
+
+        {!loading && error && <span>{error}</span>}
+
+        {!loading && !error && data?.ready && (
+          <span>
+            Posting to <span className="font-black">{data.page?.name || 'this Page'}</span> (Facebook)
+            {data.instagram?.username && <> &middot; <span className="font-black">@{data.instagram.username}</span> (Instagram)</>}
+          </span>
+        )}
+
+        {!loading && !error && !data?.ready && (
+          <div className="space-y-1">
+            <p>Not fully connected yet — missing: {(data?.missing || []).join(', ') || 'unknown'}.</p>
+            {Array.isArray(data?.availablePages) && data.availablePages.length > 0 && (
+              <p className="font-normal text-amber-600">
+                Set FB_PAGE_ID to one of: {data.availablePages.map((p: any) => `${p.name} (${p.id})`).join(', ')}
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+      <button onClick={check} disabled={loading} className="shrink-0 text-gray-400 hover:text-gray-600 disabled:opacity-40">
+        <RefreshCw className="w-3.5 h-3.5" />
+      </button>
+    </div>
+  );
+}
+
+function StoryComposer({ product, imageUrl, price, origPrice, caption, description }: {
+  product: any; imageUrl: string; price: number; origPrice: number; caption: string; description: string;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [img, setImg]                   = useState<HTMLImageElement | null>(null);
   const [imgError, setImgError]         = useState('');
   const [theme, setTheme]               = useState<StoryTheme>('brand');
   const [tag, setTag]                   = useState('New Arrival');
-  const [cta, setCta]                   = useState('WhatsApp 63500 21226');
+  const [cta, setCta]                   = useState('Limited Stock — Order Now!');
   const [showPrice, setShowPrice]       = useState(true);
   const [showDiscount, setShowDiscount] = useState(true);
   const [platforms, setPlatforms]       = useState({ instagram: true, facebook: true });
@@ -2403,9 +2513,9 @@ function StoryComposer({ product, imageUrl, price, origPrice, caption }: {
   // Redraw whenever anything changes
   useEffect(() => {
     if (canvasRef.current) {
-      drawStory(canvasRef.current, img, { theme, name: product?.name || '', price, origPrice, tag, cta, showPrice, showDiscount });
+      drawStory(canvasRef.current, img, { theme, name: product?.name || '', description: description || '', price, origPrice, tag, cta, showPrice, showDiscount });
     }
-  }, [img, theme, tag, cta, showPrice, showDiscount, product?.name, price, origPrice]);
+  }, [img, theme, tag, cta, showPrice, showDiscount, product?.name, description, price, origPrice]);
 
   const fileName = `story-${String(product?.name || 'product').toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40)}.jpg`;
 
@@ -2517,9 +2627,9 @@ function StoryComposer({ product, imageUrl, price, origPrice, caption }: {
             <input value={tag} onChange={e => setTag(e.target.value)} maxLength={24} placeholder="New Arrival / Low Stock / Festive Offer" className={inputCls} />
           </div>
           <div>
-            <p className="text-[10px] font-black uppercase tracking-widest text-gray-500 mb-1.5">Bottom Button Text</p>
-            <input value={cta} onChange={e => setCta(e.target.value)} maxLength={34} placeholder="WhatsApp 63500 21226" className={inputCls} />
-            <p className="text-[9px] text-gray-400 mt-1">Story APIs can't add tappable link stickers, so put your contact or site here.</p>
+            <p className="text-[10px] font-black uppercase tracking-widest text-gray-500 mb-1.5">Marketing Line (optional)</p>
+            <input value={cta} onChange={e => setCta(e.target.value)} maxLength={34} placeholder="Limited Stock — Order Now!" className={inputCls} />
+            <p className="text-[9px] text-gray-400 mt-1">Your website and phone number are always shown below this, automatically.</p>
           </div>
           <div className="flex gap-2 flex-wrap">
             <button onClick={() => setShowPrice(v => !v)} className={pill(showPrice)}>Price {showPrice ? 'On' : 'Off'}</button>
@@ -2532,6 +2642,8 @@ function StoryComposer({ product, imageUrl, price, origPrice, caption }: {
 
       {/* Publish actions */}
       <div className="border-t border-gray-100 pt-4 space-y-2.5">
+        <ConnectedAccountsStatus />
+
         <div className="flex items-center gap-2 flex-wrap">
           <span className="text-[10px] font-black uppercase tracking-widest text-gray-500">Post to</span>
           {([['instagram', 'Instagram'], ['facebook', 'Facebook']] as const).map(([k, label]) => (
@@ -2590,8 +2702,8 @@ const isMobileDevice = () => typeof navigator !== 'undefined' && (
 const waLinkText = (t: string) =>
   isMobileDevice() ? t : t.replace(/[\u{10000}-\u{10FFFF}\u2728]\uFE0F?[ \t]?/gu, '').trim();
 
-type BulkItem = { id: string; name: string; price: number; origPrice: number; image: string };
-type BulkFiles = { photo: File; card: File; cardUrl: string };
+type BulkItem = { id: string; name: string; description: string; price: number; origPrice: number; image: string };
+type BulkFiles = { photo: File; card: File; cardUrl: string; status: File; statusUrl: string };
 
 // Loads a product photo through fetch→blob so the canvas is never tainted (needs CORS on the image host)
 async function loadImageElement(url: string): Promise<{ im: HTMLImageElement; release: () => void }> {
@@ -2619,9 +2731,9 @@ function renderPhoto(im: HTMLImageElement): HTMLCanvasElement {
   return c;
 }
 
-// Picture card: product photo on top, name / price / discount / contact printed underneath (1080×1350)
+// Picture card: product photo on top, name / short description / price / discount / contact printed underneath (1080×1350)
 function renderProductCard(im: HTMLImageElement, it: BulkItem): HTMLCanvasElement {
-  const W = 1080, H = 1350, photoH = 900;
+  const W = 1080, H = 1350, photoH = 860;
   const c = document.createElement('canvas'); c.width = W; c.height = H;
   const ctx = c.getContext('2d')!;
   const font = (w: number, s: number) => `${w} ${s}px Inter, "Segoe UI", Arial, sans-serif`;
@@ -2646,32 +2758,71 @@ function renderProductCard(im: HTMLImageElement, it: BulkItem): HTMLCanvasElemen
   }
 
   ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic'; ctx.fillStyle = '#FFFFFF';
-  ctx.font = font(900, 48);
+  ctx.font = font(900, 46);
   const lines = storyWrap(ctx, (it.name || '').toUpperCase(), 960, 2);
-  lines.forEach((ln, i) => ctx.fillText(ln, 60, 972 + i * 58));
+  lines.forEach((ln, i) => ctx.fillText(ln, 60, 940 + i * 56));
+  let cursorY = 940 + (lines.length - 1) * 56 + 8;
+
+  // Short description (optional)
+  const descText = (it.description || '').trim();
+  if (descText) {
+    ctx.font = font(500, 28);
+    ctx.fillStyle = 'rgba(255,255,255,0.88)';
+    const descLines = storyWrap(ctx, descText, 960, 2);
+    descLines.forEach((ln, i) => ctx.fillText(ln, 60, cursorY + 38 + i * 34));
+    cursorY = cursorY + 38 + (descLines.length - 1) * 34 + 6;
+    ctx.fillStyle = '#FFFFFF';
+  }
 
   if (it.price > 0) {
-    const baseY = 972 + (lines.length - 1) * 58 + 140;
+    const baseY = cursorY + 96;
     const priceTxt = `₹${it.price.toFixed(0)}`;
-    ctx.font = font(900, 96); ctx.fillText(priceTxt, 60, baseY);
+    ctx.font = font(900, 88); ctx.fillText(priceTxt, 60, baseY);
     if (it.origPrice > it.price) {
       const pw = ctx.measureText(priceTxt).width;
       const origTxt = `₹${it.origPrice.toFixed(0)}`;
-      ctx.font = font(700, 46); ctx.fillStyle = 'rgba(255,255,255,0.8)';
-      ctx.fillText(origTxt, 60 + pw + 30, baseY);
-      ctx.fillRect(60 + pw + 30, baseY - 16, ctx.measureText(origTxt).width, 4);
+      ctx.font = font(700, 42); ctx.fillStyle = 'rgba(255,255,255,0.8)';
+      ctx.fillText(origTxt, 60 + pw + 28, baseY);
+      ctx.fillRect(60 + pw + 28, baseY - 15, ctx.measureText(origTxt).width, 4);
       ctx.fillStyle = '#FFFFFF';
     }
+    cursorY = baseY;
   }
 
-  ctx.fillStyle = 'rgba(255,255,255,0.35)'; ctx.fillRect(60, 1225, W - 120, 3);
-  ctx.fillStyle = '#FFFFFF'; ctx.font = font(800, 32);
-  ctx.fillText('ta-gs.online   ·   WhatsApp 63500 21226', 60, 1290);
+  // Contact bar — website + phone, clearly separated from the price with a divider
+  const barY = Math.min(cursorY + 70, H - 65);
+  ctx.fillStyle = 'rgba(255,255,255,0.35)'; ctx.fillRect(60, barY - 45, W - 120, 3);
+  ctx.font = font(800, 34);
+  ctx.fillStyle = '#FFFFFF';
+  ctx.fillText('www.ta-gs.online', 60, barY);
+  ctx.font = font(600, 30);
+  ctx.fillStyle = 'rgba(255,255,255,0.9)';
+  const siteW = ctx.measureText('www.ta-gs.online').width;
+  ctx.font = font(800, 34);
+  ctx.fillText('•  📞 6350021226', 60 + ctx.measureText('www.ta-gs.online').width + 22, barY);
+  return c;
+}
+
+// Attractive 9:16 WhatsApp-Status-format image, reusing the same design as the
+// single-product Story composer (photo, name, description, price, contact bar).
+function renderStatusCard(im: HTMLImageElement, it: BulkItem): HTMLCanvasElement {
+  const c = document.createElement('canvas');
+  drawStory(c, im, {
+    theme: 'brand',
+    name: it.name || '',
+    description: it.description || '',
+    price: it.price,
+    origPrice: it.origPrice,
+    tag: '',
+    cta: '',
+    showPrice: true,
+    showDiscount: true,
+  });
   return c;
 }
 
 function BulkWhatsAppModal({ items, onClose }: { items: BulkItem[]; onClose: () => void }) {
-  const [mode, setMode]           = useState<'cards' | 'captions'>('cards');
+  const [mode, setMode]           = useState<'cards' | 'status' | 'captions'>('cards');
   const [perPart, setPerPart]     = useState(5);
   const [intro, setIntro]         = useState('🔥 *New at TAGS!*');
   const [sent, setSent]           = useState<Set<string>>(new Set());
@@ -2698,12 +2849,14 @@ function BulkWhatsAppModal({ items, onClose }: { items: BulkItem[]; onClose: () 
             const photo = await canvasToJpegFile(renderPhoto(im), `${base}.jpg`);
             const card  = await canvasToJpegFile(renderProductCard(im, it), `${base}-card.jpg`);
             const cardUrl = URL.createObjectURL(card);
-            urls.push(cardUrl);
-            f = { photo, card, cardUrl };
+            const status  = await canvasToJpegFile(renderStatusCard(im, it), `${base}-status.jpg`);
+            const statusUrl = URL.createObjectURL(status);
+            urls.push(cardUrl, statusUrl);
+            f = { photo, card, cardUrl, status, statusUrl };
           } finally { release(); }
         }
       } catch { f = null; }
-      if (cancelled) { if (f) URL.revokeObjectURL(f.cardUrl); return; }
+      if (cancelled) { if (f) { URL.revokeObjectURL(f.cardUrl); URL.revokeObjectURL(f.statusUrl); } return; }
       setFiles(prev => ({ ...prev, [it.id]: f }));
       setPrepared(n => n + 1);
     });
@@ -2777,6 +2930,26 @@ function BulkWhatsAppModal({ items, onClose }: { items: BulkItem[]; onClose: () 
       `✓ Pictures saved. Attach them to a chat in WhatsApp — each one has its text underneath.${tail}`);
   };
 
+  // Mode "status" — attractive full-screen (9:16) images, sized for WhatsApp Status.
+  // Nothing here posts automatically: this either opens the native share sheet
+  // (where you pick "My Status" yourself) or downloads the files for manual posting.
+  const sendStatus = (i: number) => {
+    const fs = chunks[i].map(it => files[it.id]?.status).filter((f): f is File => !!f);
+    const missing = chunks[i].length - fs.length;
+    if (fs.length === 0) { setNotice('❌ None of these products has a picture that could be loaded.'); return; }
+    const tail = missing > 0 ? ` (${missing} without a loadable picture skipped.)` : '';
+    shareOrSave(fs, '', `s${i}`,
+      `✓ Pick "My Status" (or a community) in the share window and post — you're always the one who taps post.${tail}`,
+      `✓ Status images saved. Open WhatsApp, go to Status, and add them from your gallery.${tail}`);
+  };
+
+  const downloadAllStatus = () => {
+    const fs = items.map(it => files[it.id]?.status).filter((f): f is File => !!f);
+    if (fs.length === 0) { setNotice('❌ No Status images are ready yet.'); return; }
+    downloadFiles(fs);
+    setNotice(`✓ Downloading ${fs.length} Status image${fs.length > 1 ? 's' : ''} — post them from your gallery whenever you like.`);
+  };
+
   // Mode 2 — real WhatsApp caption: one product at a time; caption is copied, paste it in the message box
   const sendWithCaption = (it: BulkItem) => {
     const f = files[it.id]?.photo;
@@ -2808,11 +2981,14 @@ function BulkWhatsAppModal({ items, onClose }: { items: BulkItem[]; onClose: () 
           <div>
             <div className="flex gap-2">
               <button onClick={() => setMode('cards')} className={tabCls(mode === 'cards')}>Text on picture · all at once</button>
+              <button onClick={() => setMode('status')} className={tabCls(mode === 'status')}>WhatsApp Status images</button>
               <button onClick={() => setMode('captions')} className={tabCls(mode === 'captions')}>WhatsApp caption · one by one</button>
             </div>
             <p className="text-[9px] text-gray-400 font-semibold mt-1.5">
               {mode === 'cards'
                 ? 'Each picture is rebuilt with its name, price, discount and contact printed underneath, so all pictures go in one share.'
+                : mode === 'status'
+                ? 'Attractive full-screen (9:16) images with photo, description, price and contact — download them, or pick "My Status" in the share window.'
                 : 'Real WhatsApp captions with clickable links. WhatsApp allows one caption box per share, so you send each product separately.'}
             </p>
           </div>
@@ -2865,6 +3041,53 @@ function BulkWhatsAppModal({ items, onClose }: { items: BulkItem[]; onClose: () 
                   <button onClick={() => openTextOnly(i)}
                     className="w-full border-2 border-gray-200 text-gray-600 font-black py-2 rounded-xl hover:border-[#25D366] hover:text-[#25D366] transition-all text-[10px] uppercase tracking-widest">
                     Text only (WhatsApp link)
+                  </button>
+                </div>
+              ))}
+            </>
+          )}
+
+          {mode === 'status' && (
+            <>
+              <button onClick={downloadAllStatus} disabled={!ready}
+                className="w-full flex items-center justify-center gap-2 border-2 border-[#FA5600] text-[#FA5600] font-black py-2.5 rounded-xl hover:bg-[#FA5600] hover:text-white transition-all text-xs uppercase tracking-widest disabled:opacity-50">
+                {ready ? `⬇ Download All ${items.length} Status Images` : 'Preparing images…'}
+              </button>
+
+              <div className="flex gap-3 flex-wrap items-end">
+                <div>
+                  <p className="text-[10px] font-black uppercase tracking-widest text-gray-500 mb-1.5">Images per share</p>
+                  <div className="flex gap-1.5">
+                    {[1, 3, 5, 8].map(n => (
+                      <button key={n} onClick={() => setPerPart(n)}
+                        className={`text-[10px] font-black w-9 py-1.5 rounded-lg border-2 transition-all ${perPart === n ? 'bg-[#FA5600] text-white border-[#FA5600]' : 'border-gray-200 text-gray-400 bg-white hover:border-[#FA5600]/50'}`}>{n}</button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {chunks.map((chunk, i) => (
+                <div key={i} className={`rounded-xl border-2 p-3 space-y-2 ${sent.has(`s${i}`) ? 'border-green-200 bg-green-50/50' : 'border-gray-100'}`}>
+                  <p className="text-[10px] font-black uppercase tracking-widest text-gray-500">
+                    Group {i + 1} of {chunks.length} · {chunk.length} image{chunk.length > 1 ? 's' : ''} {sent.has(`s${i}`) && <span className="text-green-600 normal-case">· done ✓</span>}
+                  </p>
+                  <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1">
+                    {chunk.map(it => (
+                      <div key={it.id} className="shrink-0 w-16 rounded-lg overflow-hidden bg-gray-100 border border-gray-200" style={{ aspectRatio: '9 / 16' }}>
+                        {files[it.id]?.statusUrl
+                          ? <img src={files[it.id]!.statusUrl} alt="" className="w-full h-full object-cover" />
+                          : <div className="w-full h-full flex items-center justify-center text-[9px] font-black text-gray-300 text-center px-1">{files[it.id] === null ? 'No picture' : '…'}</div>}
+                      </div>
+                    ))}
+                  </div>
+                  <button onClick={() => sendStatus(i)} disabled={!ready}
+                    className="w-full flex items-center justify-center gap-2 bg-[#25D366] text-white font-black py-2.5 rounded-xl hover:bg-[#20bd5a] transition-all text-xs uppercase tracking-widest disabled:opacity-50">
+                    {ready ? `Share ${chunk.length} image${chunk.length > 1 ? 's' : ''} (pick "My Status")` : 'Preparing images…'}
+                  </button>
+                  <button onClick={() => { downloadFiles(chunk.map(it => files[it.id]?.status).filter((f): f is File => !!f)); markSent(`s${i}`); }}
+                    disabled={!ready}
+                    className="w-full border-2 border-gray-200 text-gray-600 font-black py-2 rounded-xl hover:border-[#FA5600] hover:text-[#FA5600] transition-all text-[10px] uppercase tracking-widest disabled:opacity-50">
+                    Download this group
                   </button>
                 </div>
               ))}
@@ -3310,6 +3533,7 @@ function BroadcastSection() {
                     price={resolvePrice(preview)}
                     origPrice={resolveOrigPrice(preview)}
                     caption={customMsg}
+                    description={preview.description || ''}
                   />
                 )}
 
@@ -3376,7 +3600,7 @@ function BroadcastSection() {
       {showBulkWA && (
         <BulkWhatsAppModal
           items={products.filter(p => selectedIds.has(p._id)).map(p => ({
-            id: String(p._id), name: p.name || '', price: resolvePrice(p), origPrice: resolveOrigPrice(p),
+            id: String(p._id), name: p.name || '', description: p.description || '', price: resolvePrice(p), origPrice: resolveOrigPrice(p),
             image: getProductImages(p)[0] || '',
           }))}
           onClose={() => setShowBulkWA(false)}
