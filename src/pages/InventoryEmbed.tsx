@@ -62,7 +62,9 @@ export function InventoryEmbed() {
   const [pricingIndividualSearch, setPricingIndividualSearch] = useState('');
   const [originalPercent, setOriginalPercent] = useState('30');
   const [discountedPercent, setDiscountedPercent] = useState('');
-  const [pricingPreview, setPricingPreview] = useState<{ items: any[]; skipped: any[] } | null>(null);
+  const [pricingPreview, setPricingPreview] = useState<{ items: any[]; skipped: any[]; belowCostCount: number; originalPercent: number | null; discountedPercent: number | null } | null>(null);
+  const [showBelowCostModal, setShowBelowCostModal] = useState(false);
+  const [manualOverrides, setManualOverrides] = useState<Record<string, { originalPct?: string; discountedPct?: string }>>({});
   const [pricingLoading, setPricingLoading] = useState(false);
   const [pricingApplying, setPricingApplying] = useState(false);
 
@@ -263,6 +265,7 @@ export function InventoryEmbed() {
 
     setPricingLoading(true);
     setPricingPreview(null);
+    setManualOverrides({});
     try {
       const res = await fetch('/api/products?bulkPricingPreview=true', {
         method: 'POST',
@@ -271,7 +274,7 @@ export function InventoryEmbed() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed');
-      setPricingPreview({ items: data.items || [], skipped: data.skipped || [] });
+      setPricingPreview({ items: data.items || [], skipped: data.skipped || [], belowCostCount: data.belowCostCount || 0, originalPercent: data.originalPercent ?? null, discountedPercent: data.discountedPercent ?? null });
     } catch (err: any) {
       showMessage(err.message || 'Failed to calculate prices.', 'error');
     } finally {
@@ -286,20 +289,39 @@ export function InventoryEmbed() {
   // longer available synchronously here. Any catalog sync issues never affect
   // the prices already saved in the database, and can be re-pushed later from
   // the existing "push to Meta" tooling if ever needed.
+
+  // Resolves a manually-typed override % (from the below-cost modal) into an
+  // actual price for one item/field. Returns null if nothing was typed for it.
+  const getManualOverridePrice = (it: any, field: 'original' | 'discounted'): number | null => {
+    const key = field === 'original' ? 'originalPct' : 'discountedPct';
+    const raw = manualOverrides[it._id]?.[key];
+    if (raw === undefined || raw === '') return null;
+    const pct = Number(raw);
+    if (!Number.isFinite(pct)) return null;
+    return Math.round(it.costPrice * (1 + pct / 100));
+  };
+
+  // Does the actual write. Below-cost items that got a manual override in the
+  // modal use that instead of the original batch-computed (below-cost) price;
+  // anything left un-overridden still applies at the originally previewed
+  // price — i.e. "leave blank" = apply anyway for just that item/field.
   const applyBulkPricing = async () => {
     if (!pricingPreview || pricingPreview.items.length === 0) return;
-    if (!confirm(`Update pricing for ${pricingPreview.items.length} product(s)? This cannot be undone automatically.`)) return;
     setPricingApplying(true);
     try {
       const res = await fetch('/api/products?bulkPricingApply=true', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          updates: pricingPreview.items.map((it: any) => ({
-            id: it._id,
-            newOriginalPrice: it.newOriginalPrice,
-            newDiscountedPrice: it.newDiscountedPrice,
-          })),
+          updates: pricingPreview.items.map((it: any) => {
+            const overrideOriginal = it.originalBelowCost ? getManualOverridePrice(it, 'original') : null;
+            const overrideDiscounted = it.discountedBelowCost ? getManualOverridePrice(it, 'discounted') : null;
+            return {
+              id: it._id,
+              newOriginalPrice: overrideOriginal !== null ? overrideOriginal : it.newOriginalPrice,
+              newDiscountedPrice: overrideDiscounted !== null ? overrideDiscounted : it.newDiscountedPrice,
+            };
+          }),
         }),
       });
       const data = await res.json();
@@ -308,12 +330,28 @@ export function InventoryEmbed() {
       setPricingPreview(null);
       setPricingOpen(false);
       setPricingSelectedIds(new Set());
+      setManualOverrides({});
+      setShowBelowCostModal(false);
       fetchInventory();
     } catch (err: any) {
       showMessage(err.message || 'Failed to apply prices.', 'error');
     } finally {
       setPricingApplying(false);
     }
+  };
+
+  // Entry point for the visible Apply button. Clean batches confirm normally;
+  // batches with below-cost items open the override modal instead of writing
+  // straight away, so a loss-making price is never applied without the shop
+  // owner seeing it first and getting a chance to fix it per-item.
+  const handleApplyClick = () => {
+    if (!pricingPreview || pricingPreview.items.length === 0) return;
+    if (pricingPreview.belowCostCount > 0) {
+      setShowBelowCostModal(true);
+      return;
+    }
+    if (!confirm(`Update pricing for ${pricingPreview.items.length} product(s)? This cannot be undone automatically.`)) return;
+    applyBulkPricing();
   };
 
 
@@ -691,28 +729,48 @@ export function InventoryEmbed() {
               <div className="space-y-3">
                 {pricingPreview.items.length > 0 ? (
                   <>
+                    {pricingPreview.belowCostCount > 0 && (
+                      <div className="bg-red-50 border-2 border-red-200 rounded-lg px-3 py-2">
+                        <p className="text-xs font-black text-red-700">⚠️ {pricingPreview.belowCostCount} item{pricingPreview.belowCostCount !== 1 ? 's' : ''} would be priced AT OR BELOW cost price with this margin %.</p>
+                        <p className="text-[10px] text-red-500 mt-0.5">You'll be able to set a manual margin for just these item(s) before applying.</p>
+                      </div>
+                    )}
                     <div className="max-h-64 overflow-y-auto space-y-1.5 pr-1">
-                      {pricingPreview.items.map((it: any) => (
-                        <div key={it._id} className="bg-gray-50 rounded-lg px-3 py-2">
-                          <p className="text-xs font-bold text-gray-700 truncate">{it.name}</p>
-                          <div className="flex flex-wrap gap-x-4 gap-y-0.5 mt-0.5 text-[11px] font-black">
-                            <span className="text-gray-400">Cost ₹{it.costPrice.toFixed(2)}</span>
-                            {it.newOriginalPrice !== null && (
-                              <span>Original: <span className="text-gray-400 line-through">₹{it.currentOriginalPrice.toFixed(2)}</span> → <span className="text-green-600">₹{it.newOriginalPrice.toFixed(2)}</span></span>
-                            )}
-                            {it.newDiscountedPrice !== null && (
-                              <span>Discounted: <span className="text-gray-400 line-through">₹{it.currentDiscountedPrice.toFixed(2)}</span> → <span className="text-green-600">₹{it.newDiscountedPrice.toFixed(2)}</span></span>
+                      {pricingPreview.items.map((it: any) => {
+                        const belowCost = it.originalBelowCost || it.discountedBelowCost;
+                        // When scoped to a specific PO, show what THAT PO actually paid
+                        // for this item too, in case it differs from the live cost price
+                        // (e.g. cost was corrected since receiving).
+                        const poItem = pricingScope === 'po' ? (selectedPO?.receivedItems || selectedPO?.items || []).find((pi: any) => pi.productId === it._id) : null;
+                        const poCostDiffers = poItem && Number(poItem.costPrice) > 0 && Math.abs(Number(poItem.costPrice) - it.costPrice) > 0.01;
+                        return (
+                          <div key={it._id} className={`rounded-lg px-3 py-2 ${belowCost ? 'bg-red-50 border-2 border-red-300' : 'bg-gray-50'}`}>
+                            <div className="flex items-start justify-between gap-2">
+                              <p className="text-xs font-bold text-gray-700 truncate">{it.name}</p>
+                              {belowCost && <span className="text-[10px] font-black text-red-600 shrink-0">⚠️ BELOW COST</span>}
+                            </div>
+                            <div className="flex flex-wrap gap-x-4 gap-y-0.5 mt-0.5 text-[11px] font-black">
+                              <span className="text-gray-400">Cost ₹{it.costPrice.toFixed(2)}</span>
+                              {it.newOriginalPrice !== null && (
+                                <span>Original: <span className="text-gray-400 line-through">₹{it.currentOriginalPrice.toFixed(2)}</span> → <span className={it.originalBelowCost ? 'text-red-600' : 'text-green-600'}>₹{it.newOriginalPrice.toFixed(2)}</span></span>
+                              )}
+                              {it.newDiscountedPrice !== null && (
+                                <span>Discounted: <span className="text-gray-400 line-through">₹{it.currentDiscountedPrice.toFixed(2)}</span> → <span className={it.discountedBelowCost ? 'text-red-600' : 'text-green-600'}>₹{it.newDiscountedPrice.toFixed(2)}</span></span>
+                              )}
+                            </div>
+                            {poCostDiffers && (
+                              <p className="text-[10px] text-amber-600 font-bold mt-0.5">This item's cost in {selectedPO?.poNumber} was ₹{Number(poItem.costPrice).toFixed(2)} — current inventory cost (used above) is ₹{it.costPrice.toFixed(2)}.</p>
                             )}
                           </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                     {pricingPreview.skipped.length > 0 && (
                       <p className="text-[11px] text-yellow-600 font-bold">⚠️ Skipping {pricingPreview.skipped.length} product(s) with no cost price set: {pricingPreview.skipped.map((s: any) => s.name).join(', ')}</p>
                     )}
-                    <button onClick={applyBulkPricing} disabled={pricingApplying}
-                      className="w-full bg-green-500 text-white text-xs font-black py-2.5 rounded-xl hover:bg-green-600 transition disabled:opacity-50">
-                      {pricingApplying ? 'Applying...' : `✓ Apply to ${pricingPreview.items.length} Product(s)`}
+                    <button onClick={handleApplyClick} disabled={pricingApplying}
+                      className={`w-full text-white text-xs font-black py-2.5 rounded-xl transition disabled:opacity-50 ${pricingPreview.belowCostCount > 0 ? 'bg-red-500 hover:bg-red-600' : 'bg-green-500 hover:bg-green-600'}`}>
+                      {pricingApplying ? 'Applying...' : pricingPreview.belowCostCount > 0 ? `⚠️ Review ${pricingPreview.belowCostCount} Below-Cost Item(s)` : `✓ Apply to ${pricingPreview.items.length} Product(s)`}
                     </button>
                   </>
                 ) : (
@@ -960,6 +1018,77 @@ export function InventoryEmbed() {
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* Below-cost manual override modal — opens instead of a plain confirm
+          when Apply would price one or more items at or below their cost.
+          Leaving an item's override blank still applies the original
+          (below-cost) batch price for just that item — this is a deliberate
+          per-item choice, not a block. */}
+      {showBelowCostModal && pricingPreview && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => setShowBelowCostModal(false)}>
+          <div className="bg-white rounded-2xl max-w-lg w-full max-h-[85vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+            <div className="p-5 border-b border-gray-100 sticky top-0 bg-white rounded-t-2xl">
+              <h3 className="font-black text-sm text-gray-900">⚠️ Set a Manual Margin for Below-Cost Items</h3>
+              <p className="text-xs text-gray-400 mt-1">
+                {pricingPreview.belowCostCount} item{pricingPreview.belowCostCount !== 1 ? 's' : ''} would sell at or below cost with the batch margin. Enter a different margin % for any of these — the rest of the batch keeps its originally previewed price. Leave a field blank to apply that item at the original (below-cost) price anyway.
+              </p>
+            </div>
+
+            <div className="p-5 space-y-3">
+              {pricingPreview.items.filter((it: any) => it.originalBelowCost || it.discountedBelowCost).map((it: any) => {
+                const overrideOriginal = it.originalBelowCost ? getManualOverridePrice(it, 'original') : null;
+                const overrideDiscounted = it.discountedBelowCost ? getManualOverridePrice(it, 'discounted') : null;
+                return (
+                  <div key={it._id} className="bg-red-50 border-2 border-red-200 rounded-xl p-3 space-y-2">
+                    <div>
+                      <p className="text-xs font-bold text-gray-800 truncate">{it.name}</p>
+                      <p className="text-[10px] text-gray-500">Cost price: ₹{it.costPrice.toFixed(2)}</p>
+                    </div>
+                    {it.originalBelowCost && (
+                      <div className="flex items-center gap-2">
+                        <label className="text-[10px] font-black uppercase tracking-widest text-gray-500 w-28 shrink-0">Original %</label>
+                        <input
+                          type="number"
+                          placeholder={`batch: ${pricingPreview.originalPercent ?? ''}%`}
+                          value={manualOverrides[it._id]?.originalPct ?? ''}
+                          onChange={e => setManualOverrides(prev => ({ ...prev, [it._id]: { ...prev[it._id], originalPct: e.target.value } }))}
+                          className="flex-1 border-2 border-gray-200 rounded-lg px-2 py-1.5 text-xs font-bold focus:border-[#FA5600] outline-none"
+                        />
+                        <span className={`text-xs font-black w-20 text-right shrink-0 ${overrideOriginal !== null ? (overrideOriginal <= it.costPrice ? 'text-red-600' : 'text-green-600') : 'text-gray-300'}`}>
+                          {overrideOriginal !== null ? `₹${overrideOriginal.toFixed(2)}` : `₹${it.newOriginalPrice?.toFixed(2)} (as-is)`}
+                        </span>
+                      </div>
+                    )}
+                    {it.discountedBelowCost && (
+                      <div className="flex items-center gap-2">
+                        <label className="text-[10px] font-black uppercase tracking-widest text-gray-500 w-28 shrink-0">Discounted %</label>
+                        <input
+                          type="number"
+                          placeholder={`batch: ${pricingPreview.discountedPercent ?? ''}%`}
+                          value={manualOverrides[it._id]?.discountedPct ?? ''}
+                          onChange={e => setManualOverrides(prev => ({ ...prev, [it._id]: { ...prev[it._id], discountedPct: e.target.value } }))}
+                          className="flex-1 border-2 border-gray-200 rounded-lg px-2 py-1.5 text-xs font-bold focus:border-[#FA5600] outline-none"
+                        />
+                        <span className={`text-xs font-black w-20 text-right shrink-0 ${overrideDiscounted !== null ? (overrideDiscounted <= it.costPrice ? 'text-red-600' : 'text-green-600') : 'text-gray-300'}`}>
+                          {overrideDiscounted !== null ? `₹${overrideDiscounted.toFixed(2)}` : `₹${it.newDiscountedPrice?.toFixed(2)} (as-is)`}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="p-5 pt-0 flex gap-2">
+              <button onClick={() => setShowBelowCostModal(false)} className="px-4 bg-gray-100 text-gray-600 font-bold text-xs rounded-xl">Cancel</button>
+              <button onClick={applyBulkPricing} disabled={pricingApplying}
+                className="flex-1 bg-[#FA5600] text-white font-black text-xs uppercase tracking-widest py-2.5 rounded-xl hover:bg-[#E04A00] transition disabled:opacity-60">
+                {pricingApplying ? 'Applying...' : `Confirm & Apply All ${pricingPreview.items.length} Product(s)`}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
