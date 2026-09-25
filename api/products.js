@@ -330,6 +330,33 @@ export default async function handler(req, res) {
     // change into any purchase orders / sales that reference this product (see PUT)
     const purchaseOrders = db.collection('purchaseOrders');
     const salesCol = db.collection('sales');
+    const shareLog = db.collection('shareLog');
+
+    // ── Broadcast share history (WhatsApp / Telegram / Instagram / Facebook) ────
+    // GET  /api/products?shareLog=true  → { history: { [productId]: { lastAt, channel, count } } }
+    //      count = number of shares in the last 90 days, across all channels
+    // POST /api/products?shareLog=true  body: { productIds: string[], channel: string } → marks them shared now
+    if (req.query.shareLog === 'true') {
+      if (req.method === 'GET') {
+        const since90 = new Date(Date.now() - 90 * 86400000);
+        const docs = await shareLog.find({ sharedAt: { $gte: since90 } }).sort({ sharedAt: 1 }).toArray();
+        const history = {};
+        for (const d of docs) {
+          const id = String(d.productId);
+          const prev = history[id];
+          history[id] = { lastAt: d.sharedAt.toISOString(), channel: d.channel, count: (prev?.count || 0) + 1 };
+        }
+        return res.status(200).json({ history });
+      }
+      if (req.method === 'POST') {
+        const { productIds, channel } = req.body || {};
+        const ids = Array.isArray(productIds) ? productIds.map(String).filter(Boolean) : [];
+        if (ids.length === 0) return res.status(400).json({ error: 'productIds is required' });
+        const now = new Date();
+        await shareLog.insertMany(ids.map(id => ({ productId: id, channel: String(channel || 'unknown'), sharedAt: now })));
+        return res.status(200).json({ ok: true, recorded: ids.length });
+      }
+    }
 
     // ── Story setup check ────────────────────────────────────────────────────
     // GET /api/products?storyCheck=true  → read-only; shows what is configured / missing (no secrets returned)
