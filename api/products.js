@@ -803,6 +803,7 @@ export default async function handler(req, res) {
 
       const items = [];
       const skipped = [];
+      let belowCostCount = 0;
       for (const idStr of validIdStrs) {
         const product = productMap.get(idStr);
         if (!product) continue;
@@ -816,14 +817,21 @@ export default async function handler(req, res) {
         const currentDiscountedPrice = Number(product.discountedPrice || 0);
         const newOriginalPrice = origPct !== null ? Math.round(costPrice * (1 + origPct / 100)) : null;
         const newDiscountedPrice = discPct !== null ? Math.round(costPrice * (1 + discPct / 100)) : null;
+        // Flag if the NEW price we're about to set would sit at or below cost —
+        // a negative or near-zero margin % (or a manual typo) can do this
+        // silently otherwise, and the frontend needs to warn before Apply.
+        const originalBelowCost = newOriginalPrice !== null && newOriginalPrice <= costPrice;
+        const discountedBelowCost = newDiscountedPrice !== null && newDiscountedPrice <= costPrice;
+        if (originalBelowCost || discountedBelowCost) belowCostCount++;
         items.push({
           _id: idStr, name: product.name, category: product.category || '', costPrice,
           currentOriginalPrice, newOriginalPrice,
           currentDiscountedPrice, newDiscountedPrice,
+          originalBelowCost, discountedBelowCost,
         });
       }
 
-      return res.status(200).json({ success: true, dryRun: true, originalPercent: origPct, discountedPercent: discPct, items, skipped, totalToUpdate: items.length });
+      return res.status(200).json({ success: true, dryRun: true, originalPercent: origPct, discountedPercent: discPct, items, skipped, totalToUpdate: items.length, belowCostCount });
     }
 
     // ── Bulk Pricing: APPLY ────────────────────────────────────────────────
