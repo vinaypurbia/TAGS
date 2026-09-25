@@ -2204,6 +2204,84 @@ function CustomersSection() {
 
 
 
+// ── Share history (what was already broadcast, and when) ───────────────────
+type ShareInfo = { lastAt: string; channel: string; count: number };
+type ShareGuard = (ids: string[], action: () => void, opts?: { onlyNew?: (newIds: string[]) => void }) => void;
+type OnShared = (ids: string[], channel: string) => void;
+
+const RECENT_SHARE_DAYS = 30;
+const SHARE_CHANNEL_LABELS: Record<string, string> = {
+  whatsapp: 'WhatsApp', 'whatsapp-status': 'WhatsApp Status', telegram: 'Telegram', instagram: 'Instagram story', facebook: 'Facebook story',
+};
+
+// calendar-day difference (0 = today), in the viewer's local time
+const shareDaysAgo = (iso: string) => {
+  const a = new Date(); a.setHours(0, 0, 0, 0);
+  const b = new Date(iso); b.setHours(0, 0, 0, 0);
+  return Math.round((a.getTime() - b.getTime()) / 86400000);
+};
+const shareDateLabel = (iso: string) => new Date(iso).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+const shareAgoLabel = (iso: string) => {
+  const d = shareDaysAgo(iso);
+  return d <= 0 ? 'today' : d === 1 ? 'yesterday' : `${d} days ago`;
+};
+
+function ShareBadge({ info }: { info?: ShareInfo }) {
+  if (!info) return null;
+  const d = shareDaysAgo(info.lastAt);
+  const tone = d <= 0 ? 'bg-green-100 text-green-700' : d <= RECENT_SHARE_DAYS ? 'bg-orange-100 text-orange-600' : 'bg-gray-100 text-gray-400';
+  return (
+    <span title={`Last shared on ${SHARE_CHANNEL_LABELS[info.channel] || info.channel} · ${info.count}× in the last 90 days`}
+      className={`inline-flex items-center gap-1 text-[9px] font-black px-1.5 py-0.5 rounded-full ${tone}`}>
+      <Check className="w-2.5 h-2.5" />{d <= 0 ? 'Shared today' : `Shared ${shareDateLabel(info.lastAt)}`}
+    </span>
+  );
+}
+
+// Asks for confirmation when a product was already shared within the last month.
+// "Share anyway" runs the action from this button's own click, so phone share sheets still work.
+function ShareGuardModal({ hits, onConfirm, onOnlyNew, onCancel }: {
+  hits: { id: string; name: string; info: ShareInfo }[];
+  onConfirm: () => void; onOnlyNew?: () => void; onCancel: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-[60] bg-black/60 flex items-center justify-center p-4" onClick={onCancel}>
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center gap-3 p-4 bg-orange-50 border-b border-orange-100">
+          <div className="w-10 h-10 rounded-xl bg-orange-100 flex items-center justify-center shrink-0"><AlertTriangle className="w-5 h-5 text-[#FA5600]" /></div>
+          <div>
+            <h3 className="font-black text-sm uppercase tracking-widest text-gray-800">Already shared recently</h3>
+            <p className="text-[11px] text-gray-500 font-bold">
+              {hits.length === 1 ? 'This product was' : `${hits.length} of these products were`} shared within the last {RECENT_SHARE_DAYS} days.
+            </p>
+          </div>
+        </div>
+        <ul className="max-h-56 overflow-y-auto divide-y divide-gray-50">
+          {hits.map(h => (
+            <li key={h.id} className="px-4 py-2.5">
+              <p className="font-black text-xs text-gray-900 truncate">{h.name}</p>
+              <p className="text-[10px] text-gray-500 font-bold">
+                {SHARE_CHANNEL_LABELS[h.info.channel] || h.info.channel} · {shareDateLabel(h.info.lastAt)} ({shareAgoLabel(h.info.lastAt)})
+                {h.info.count > 1 ? ` · ${h.info.count}× in 90 days` : ''}
+              </p>
+            </li>
+          ))}
+        </ul>
+        <div className="p-3 border-t border-gray-100 flex flex-col gap-2">
+          <button onClick={onConfirm}
+            className="w-full bg-[#FA5600] text-white font-black py-2.5 rounded-xl hover:bg-[#e04d00] transition text-xs uppercase tracking-widest">Share anyway</button>
+          {onOnlyNew && (
+            <button onClick={onOnlyNew}
+              className="w-full bg-gray-800 text-white font-black py-2.5 rounded-xl hover:bg-gray-900 transition text-xs uppercase tracking-widest">Only the ones not shared recently</button>
+          )}
+          <button onClick={onCancel}
+            className="w-full border-2 border-gray-200 text-gray-600 font-black py-2 rounded-xl hover:bg-gray-50 transition text-xs uppercase tracking-widest">Cancel</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Story Composer (Instagram / Facebook / WhatsApp Status) ────────────────
 // Renders a 1080×1920 (9:16) story image on a canvas, then either:
 //   • posts it to Instagram + Facebook Page stories via /api/products (Meta Graph API), or
@@ -2472,8 +2550,9 @@ function ConnectedAccountsStatus() {
   );
 }
 
-function StoryComposer({ product, imageUrl, price, origPrice, caption, description }: {
+function StoryComposer({ product, imageUrl, price, origPrice, caption, description, guard, onShared }: {
   product: any; imageUrl: string; price: number; origPrice: number; caption: string; description: string;
+  guard: ShareGuard; onShared: OnShared;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [img, setImg]                   = useState<HTMLImageElement | null>(null);
@@ -2552,16 +2631,18 @@ function StoryComposer({ product, imageUrl, price, origPrice, caption, descripti
   // (no Status option). So:
   //   • phone/tablet → native share sheet → choose WhatsApp → "My status"
   //   • desktop      → download the image + copy the caption, then add it from the Status tab
-  const handleWhatsAppStatus = async () => {
+  const doWhatsAppStatus = async () => {
     setNotice('');
     try {
       const blob = await getBlob();
       const file = new File([blob], fileName, { type: 'image/jpeg' });
       if (isMobile && navigator.canShare && navigator.canShare({ files: [file] })) {
         await navigator.share({ files: [file], text: caption });
+        onShared([String(product._id)], 'whatsapp-status');
         return;
       }
       downloadBlob(blob);
+      onShared([String(product._id)], 'whatsapp-status');
       let captionCopied = false;
       try { await navigator.clipboard.writeText(caption); captionCopied = true; } catch { /* clipboard blocked */ }
       setNotice(
@@ -2572,7 +2653,9 @@ function StoryComposer({ product, imageUrl, price, origPrice, caption, descripti
     }
   };
 
-  const handlePostStories = async () => {
+  const handleWhatsAppStatus = () => guard([String(product._id)], () => { doWhatsAppStatus(); });
+
+  const doPostStories = async () => {
     const selected = (Object.keys(platforms) as Array<'instagram' | 'facebook'>).filter(k => platforms[k]);
     if (selected.length === 0) { setNotice('Select Instagram and/or Facebook first.'); return; }
     setPosting(true); setResults(null); setNotice('');
@@ -2591,12 +2674,15 @@ function StoryComposer({ product, imageUrl, price, origPrice, caption, descripti
       const data = await res.json();
       if (!res.ok && !data.results) throw new Error(data.error || 'Failed to post story');
       setResults(data.results || {});
+      Object.entries(data.results || {}).forEach(([k, r]: [string, any]) => { if (r?.ok) onShared([String(product._id)], k); });
     } catch (e: any) {
       setNotice('❌ ' + e.message);
     } finally {
       setPosting(false);
     }
   };
+
+  const handlePostStories = () => guard([String(product._id)], () => { doPostStories(); });
 
   const pill = (active: boolean) =>
     `text-[10px] font-black uppercase tracking-widest px-3 py-1.5 rounded-lg border-2 transition-all ${
@@ -2821,7 +2907,7 @@ function renderStatusCard(im: HTMLImageElement, it: BulkItem): HTMLCanvasElement
   return c;
 }
 
-function BulkWhatsAppModal({ items, onClose }: { items: BulkItem[]; onClose: () => void }) {
+function BulkWhatsAppModal({ items, onClose, guard, onShared }: { items: BulkItem[]; onClose: () => void; guard: ShareGuard; onShared: OnShared }) {
   const [mode, setMode]           = useState<'cards' | 'status' | 'captions'>('cards');
   const [perPart, setPerPart]     = useState(5);
   const [intro, setIntro]         = useState('🔥 *New at TAGS!*');
@@ -2899,8 +2985,12 @@ function BulkWhatsAppModal({ items, onClose }: { items: BulkItem[]; onClose: () 
     navigator.clipboard.writeText(parts[i]).then(() => { setCopiedIdx(i); setTimeout(() => setCopiedIdx(null), 2000); });
   };
   const openTextOnly = (i: number) => {
-    window.open(`https://wa.me/?text=${encodeURIComponent(waLinkText(parts[i]))}`, '_blank');
-    markSent(`p${i}`);
+    const ids = chunks[i].map(it => it.id);
+    guard(ids, () => {
+      window.open(`https://wa.me/?text=${encodeURIComponent(waLinkText(parts[i]))}`, '_blank');
+      markSent(`p${i}`);
+      onShared(ids, 'whatsapp');
+    });
   };
 
   const downloadFiles = (fs: File[]) => fs.forEach((f, k) => setTimeout(() => {
@@ -2908,58 +2998,66 @@ function BulkWhatsAppModal({ items, onClose }: { items: BulkItem[]; onClose: () 
     setTimeout(() => URL.revokeObjectURL(a.href), 3000);
   }, k * 300));
 
-  const shareOrSave = (fs: File[], text: string, key: string, shareMsg: string, saveMsg: string) => {
+  const shareOrSave = (fs: File[], text: string, key: string, ids: string[], shareMsg: string, saveMsg: string) => {
     if (navigator.canShare && navigator.canShare({ files: fs })) {
       setNotice(shareMsg);
       navigator.share(text ? { files: fs, text } : { files: fs })
-        .then(() => markSent(key))
+        .then(() => { markSent(key); onShared(ids, 'whatsapp'); })
         .catch((e: any) => { if (e?.name === 'AbortError') setNotice(''); else setNotice('❌ ' + (e?.message || 'Share failed')); });
     } else {
-      downloadFiles(fs); markSent(key); setNotice(saveMsg);
+      downloadFiles(fs); markSent(key); onShared(ids, 'whatsapp'); setNotice(saveMsg);
     }
   };
 
   // Mode 1 — picture cards: every picture already has its own text underneath, one share for all
-  const sendCards = (i: number) => {
+  const doSendCards = (i: number) => {
     const fs = chunks[i].map(it => files[it.id]?.card).filter((f): f is File => !!f);
     const missing = chunks[i].length - fs.length;
     if (fs.length === 0) { setNotice('❌ None of these products has a picture that could be loaded. Use "Text only" instead.'); return; }
     const tail = missing > 0 ? ` (${missing} without a loadable picture skipped.)` : '';
-    shareOrSave(fs, '', `p${i}`,
+    shareOrSave(fs, '', `p${i}`, chunks[i].filter(it => files[it.id]?.card).map(it => it.id),
       `✓ Pick the chat(s) in WhatsApp and send — each picture already has its name, price and contact underneath.${tail}`,
       `✓ Pictures saved. Attach them to a chat in WhatsApp — each one has its text underneath.${tail}`);
   };
 
+  const sendCards = (i: number) => guard(chunks[i].map(it => it.id), () => doSendCards(i));
+
   // Mode "status" — attractive full-screen (9:16) images, sized for WhatsApp Status.
   // Nothing here posts automatically: this either opens the native share sheet
   // (where you pick "My Status" yourself) or downloads the files for manual posting.
-  const sendStatus = (i: number) => {
+  const doSendStatus = (i: number) => {
     const fs = chunks[i].map(it => files[it.id]?.status).filter((f): f is File => !!f);
     const missing = chunks[i].length - fs.length;
     if (fs.length === 0) { setNotice('❌ None of these products has a picture that could be loaded.'); return; }
     const tail = missing > 0 ? ` (${missing} without a loadable picture skipped.)` : '';
-    shareOrSave(fs, '', `s${i}`,
+    shareOrSave(fs, '', `s${i}`, chunks[i].filter(it => files[it.id]?.status).map(it => it.id),
       `✓ Pick "My Status" (or a community) in the share window and post — you're always the one who taps post.${tail}`,
       `✓ Status images saved. Open WhatsApp, go to Status, and add them from your gallery.${tail}`);
   };
 
-  const downloadAllStatus = () => {
+  const sendStatus = (i: number) => guard(chunks[i].map(it => it.id), () => doSendStatus(i));
+
+  const doDownloadAllStatus = () => {
     const fs = items.map(it => files[it.id]?.status).filter((f): f is File => !!f);
     if (fs.length === 0) { setNotice('❌ No Status images are ready yet.'); return; }
     downloadFiles(fs);
+    onShared(items.filter(it => files[it.id]?.status).map(it => it.id), 'whatsapp-status');
     setNotice(`✓ Downloading ${fs.length} Status image${fs.length > 1 ? 's' : ''} — post them from your gallery whenever you like.`);
   };
+  const downloadAllStatus = () => guard(items.map(it => it.id), doDownloadAllStatus);
 
   // Mode 2 — real WhatsApp caption: one product at a time; caption is copied, paste it in the message box
-  const sendWithCaption = (it: BulkItem) => {
+  const doSendWithCaption = (it: BulkItem) => {
     const f = files[it.id]?.photo;
     if (!f) { setNotice('❌ This product has no picture that could be loaded.'); return; }
     const cap = captionFor(it);
     navigator.clipboard.writeText(cap).catch(() => {});
-    shareOrSave([f], cap, `c${it.id}`,
+    shareOrSave([f], cap, `c${it.id}`, [it.id],
       '✓ Caption copied. In WhatsApp pick the chat(s), click the message box, paste (Ctrl+V) and send. Then come back for the next product.',
       '✓ Picture saved and caption copied. Attach the picture in WhatsApp and paste the caption.');
   };
+
+  const sendWithCaption = (it: BulkItem) => guard([it.id], () => doSendWithCaption(it));
 
   const tabCls = (on: boolean) =>
     `flex-1 text-[10px] font-black uppercase tracking-widest py-2 px-2 rounded-xl border-2 transition-all ${on ? 'bg-[#FA5600] text-white border-[#FA5600]' : 'border-gray-200 text-gray-400 bg-white hover:border-[#FA5600]/50'}`;
@@ -3084,7 +3182,11 @@ function BulkWhatsAppModal({ items, onClose }: { items: BulkItem[]; onClose: () 
                     className="w-full flex items-center justify-center gap-2 bg-[#25D366] text-white font-black py-2.5 rounded-xl hover:bg-[#20bd5a] transition-all text-xs uppercase tracking-widest disabled:opacity-50">
                     {ready ? `Share ${chunk.length} image${chunk.length > 1 ? 's' : ''} (pick "My Status")` : 'Preparing images…'}
                   </button>
-                  <button onClick={() => { downloadFiles(chunk.map(it => files[it.id]?.status).filter((f): f is File => !!f)); markSent(`s${i}`); }}
+                  <button onClick={() => guard(chunk.map(it => it.id), () => {
+                      downloadFiles(chunk.map(it => files[it.id]?.status).filter((f): f is File => !!f));
+                      markSent(`s${i}`);
+                      onShared(chunk.filter(it => files[it.id]?.status).map(it => it.id), 'whatsapp-status');
+                    })}
                     disabled={!ready}
                     className="w-full border-2 border-gray-200 text-gray-600 font-black py-2 rounded-xl hover:border-[#FA5600] hover:text-[#FA5600] transition-all text-[10px] uppercase tracking-widest disabled:opacity-50">
                     Download this group
@@ -3149,8 +3251,54 @@ function BroadcastSection() {
   const [rightTab, setRightTab]           = useState<'message' | 'story'>('message');
   const [showBulkWA, setShowBulkWA]         = useState(false);
 
-  const categories = ['All', ...Array.from(new Set(products.map((p:any) => p.category || '').filter(Boolean))).sort()];
+  // Share history: which products were broadcast, when, and where (stored on the server so it's the same on every device)
+  const [shareHistory, setShareHistory]     = useState<Record<string, ShareInfo>>({});
+  const [shareFilter, setShareFilter]       = useState<'all' | 'fresh'>('all');
+  const [pendingShare, setPendingShare]     = useState<null | {
+    hits: { id: string; name: string; info: ShareInfo }[]; action: () => void; onlyNew?: () => void;
+  }>(null);
+  const shareLogOk = useRef(false);   // only true once the server confirms it supports the share log
 
+  useEffect(() => {
+    fetch('/api/products?shareLog=true')
+      .then(r => r.json())
+      .then(d => { if (d && typeof d.history === 'object') { shareLogOk.current = true; setShareHistory(d.history); } })
+      .catch(() => {});
+  }, []);
+
+  const recordShare: OnShared = (ids, channel) => {
+    const clean = Array.from(new Set(ids.map(String)));
+    if (clean.length === 0) return;
+    const now = new Date().toISOString();
+    setShareHistory(prev => {
+      const next = { ...prev };
+      clean.forEach(id => { next[id] = { lastAt: now, channel, count: (prev[id]?.count || 0) + 1 }; });
+      return next;
+    });
+    if (shareLogOk.current) {
+      fetch('/api/products?shareLog=true', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ productIds: clean, channel }),
+      }).catch(() => {});
+    }
+  };
+
+  // Runs `action` straight away, unless one of the products was shared within the last month —
+  // then it asks first. Nothing is sent until the person confirms.
+  const guard: ShareGuard = (ids, action, opts) => {
+    const uniq = Array.from(new Set(ids.map(String)));
+    const hits = uniq
+      .filter(id => shareHistory[id] && shareDaysAgo(shareHistory[id].lastAt) <= RECENT_SHARE_DAYS)
+      .map(id => ({ id, name: products.find(p => String(p._id) === id)?.name || 'Product', info: shareHistory[id] }));
+    if (hits.length === 0) { action(); return; }
+    const hitIds = new Set(hits.map(h => h.id));
+    setPendingShare({
+      hits, action,
+      onlyNew: opts?.onlyNew && hits.length < uniq.length ? () => opts.onlyNew!(uniq.filter(id => !hitIds.has(id))) : undefined,
+    });
+  };
+
+  const categories = ['All', ...Array.from(new Set(products.map((p:any) => p.category || '').filter(Boolean))).sort()];
   useEffect(() => {
     // NOTE: the API caps `limit` at 100 per request, so a single fetch
     // silently drops anything past product #100 (sorted newest-first).
@@ -3210,6 +3358,10 @@ function BroadcastSection() {
     if (priceMax && price > parseFloat(priceMax)) return false;
     if (stockFilter === 'instock'    && stock !== null && stock <= 0) return false;
     if (stockFilter === 'outofstock' && stock !== null && stock > 0)  return false;
+    if (shareFilter === 'fresh') {
+      const h = shareHistory[String(p._id)];
+      if (h && shareDaysAgo(h.lastAt) <= RECENT_SHARE_DAYS) return false;
+    }
     return true;
   });
 
@@ -3252,10 +3404,14 @@ function BroadcastSection() {
 
   const handleWhatsApp = () => {
     if (!preview) return;
-    window.open(`https://wa.me/?text=${encodeURIComponent(waLinkText(customMsg))}`, '_blank');
+    const id = String(preview._id);
+    guard([id], () => {
+      window.open(`https://wa.me/?text=${encodeURIComponent(waLinkText(customMsg))}`, '_blank');
+      recordShare([id], 'whatsapp');
+    });
   };
 
-  const handleTelegramSingle = async () => {
+  const sendTelegramSingle = async () => {
     if (!preview) return;
     setSending(true);
     setTelegramSuccess(false);
@@ -3269,6 +3425,7 @@ function BroadcastSection() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to send');
+      recordShare([String(preview._id)], 'telegram');
       setTelegramSuccess(true);
       setTimeout(() => setTelegramSuccess(false), 3000);
     } catch (err: any) {
@@ -3276,6 +3433,11 @@ function BroadcastSection() {
     } finally {
       setSending(false);
     }
+  };
+
+  const handleTelegramSingle = () => {
+    if (!preview) return;
+    guard([String(preview._id)], () => { sendTelegramSingle(); });
   };
 
   // ── Multi-select batch Telegram ────────────────────────────────────────
@@ -3289,29 +3451,39 @@ function BroadcastSection() {
   const selectAll = () => setSelectedIds(new Set(filtered.map((p:any) => p._id)));
   const clearAll  = () => setSelectedIds(new Set());
 
-  const handleTelegramBatch = async () => {
-    if (selectedIds.size === 0) return;
-    const toSend = products.filter(p => selectedIds.has(p._id));
+  const runTelegramBatch = async (ids: string[]) => {
+    if (ids.length === 0) return;
+    const wanted = new Set(ids);
+    const toSend = products.filter(p => wanted.has(String(p._id)));
     setSending(true);
     setProgress({ current: 0, total: toSend.length });
     setDoneCount(0);
     let done = 0;
+    const okIds: string[] = [];
     for (const p of toSend) {
       const imgs = getProductImages(p);
       try {
-        await fetch('/api/products', {
+        const r = await fetch('/api/products', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ broadcast: true, imageUrl: imgs[0] || '', message: generateMessage(p) }),
         });
+        if (r.ok) okIds.push(String(p._id));
       } catch { /* continue */ }
       done++;
       setProgress({ current: done, total: toSend.length });
       if (done < toSend.length) await new Promise(r => setTimeout(r, 1500));
     }
+    recordShare(okIds, 'telegram');
     setDoneCount(done);
     setSending(false);
     setTimeout(() => { setProgress(null); setDoneCount(0); setSelectedIds(new Set()); }, 4000);
+  };
+
+  const handleTelegramBatch = () => {
+    if (selectedIds.size === 0) return;
+    const ids = Array.from(selectedIds).map(String);
+    guard(ids, () => { runTelegramBatch(ids); }, { onlyNew: fresh => { runTelegramBatch(fresh); } });
   };
 
   const selectedCount = selectedIds.size;
@@ -3416,6 +3588,11 @@ function BroadcastSection() {
                   </button>
                 ))}
               </div>
+              <button onClick={() => setShareFilter(v => v === 'fresh' ? 'all' : 'fresh')}
+                title={`Hide products shared in the last ${RECENT_SHARE_DAYS} days`}
+                className={`text-[10px] font-black uppercase px-2 py-1.5 rounded-lg border-2 transition-all ${
+                  shareFilter === 'fresh' ? 'bg-[#FA5600] text-white border-[#FA5600]' : 'border-gray-200 text-gray-400 bg-white hover:border-[#FA5600]/50'
+                }`}>Not shared in {RECENT_SHARE_DAYS}d</button>
               <span className="text-[10px] font-black text-gray-400 ml-auto">{filtered.length} products</span>
             </div>
           </div>
@@ -3454,6 +3631,7 @@ function BroadcastSection() {
                   <button onClick={() => selectPreview(p)} className="flex-1 min-w-0 text-left">
                     <p className="font-black text-sm text-gray-900 truncate">{p.name}</p>
                     <p className="text-[10px] text-gray-400 uppercase tracking-widest">{p.category}</p>
+                    {shareHistory[String(p._id)] && <span className="block mt-0.5"><ShareBadge info={shareHistory[String(p._id)]} /></span>}
                   </button>
                   {/* Price + Stock */}
                   <div className="text-right shrink-0 space-y-0.5">
@@ -3494,6 +3672,7 @@ function BroadcastSection() {
                     <p className="font-black text-sm text-gray-900">{preview.name}</p>
                     <p className="text-[10px] text-gray-400">{preview.category}</p>
                     <p className="font-black text-[#FA5600]">₹{resolvePrice(preview).toFixed(0)}</p>
+                    {shareHistory[String(preview._id)] && <div className="mt-1"><ShareBadge info={shareHistory[String(preview._id)]} /></div>}
                   </div>
                 </div>
 
@@ -3534,6 +3713,8 @@ function BroadcastSection() {
                     origPrice={resolveOrigPrice(preview)}
                     caption={customMsg}
                     description={preview.description || ''}
+                    guard={guard}
+                    onShared={recordShare}
                   />
                 )}
 
@@ -3604,6 +3785,16 @@ function BroadcastSection() {
             image: getProductImages(p)[0] || '',
           }))}
           onClose={() => setShowBulkWA(false)}
+          guard={guard}
+          onShared={recordShare}
+        />
+      )}
+      {pendingShare && (
+        <ShareGuardModal
+          hits={pendingShare.hits}
+          onCancel={() => setPendingShare(null)}
+          onConfirm={() => { const run = pendingShare.action; setPendingShare(null); run(); }}
+          onOnlyNew={pendingShare.onlyNew ? () => { const run = pendingShare.onlyNew!; setPendingShare(null); run(); } : undefined}
         />
       )}
     </div>
