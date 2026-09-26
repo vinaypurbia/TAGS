@@ -2788,6 +2788,10 @@ const isMobileDevice = () => typeof navigator !== 'undefined' && (
 const waLinkText = (t: string) =>
   isMobileDevice() ? t : t.replace(/[\u{10000}-\u{10FFFF}\u2728]\uFE0F?[ \t]?/gu, '').trim();
 
+// The broadcast message uses WhatsApp/Telegram-style markdown (*bold*, ~~strike~~), which
+// Instagram captions don't render — so strip those markers, keeping the emoji, line breaks and text.
+const igCaptionText = (t: string) => t.replace(/\*/g, '').replace(/~~/g, '');
+
 type BulkItem = { id: string; name: string; description: string; price: number; origPrice: number; image: string };
 type BulkFiles = { photo: File; card: File; cardUrl: string; status: File; statusUrl: string };
 
@@ -3248,6 +3252,18 @@ function BroadcastSection() {
   const [copied, setCopied]                 = useState(false);
   const [selectedImageIndex, setSelectedImageIndex] = useState(0);
   const [telegramSuccess, setTelegramSuccess] = useState(false);
+  const [igPostSending, setIgPostSending]     = useState(false);
+  const [igPostSuccess, setIgPostSuccess]     = useState(false);
+  const [fbPostSending, setFbPostSending]     = useState(false);
+  const [fbPostSuccess, setFbPostSuccess]     = useState(false);
+
+  // Facebook feed video (uploaded straight to Cloudinary from the browser, then posted as the feed item)
+  const [fbVideoFile, setFbVideoFile]         = useState<File | null>(null);
+  const [fbVideoPreviewUrl, setFbVideoPreviewUrl] = useState('');
+  const [fbVideoUploadPct, setFbVideoUploadPct]   = useState<number | null>(null);
+  const [fbVideoPosting, setFbVideoPosting]       = useState(false);
+  const [fbVideoSuccess, setFbVideoSuccess]       = useState(false);
+  const [fbVideoError, setFbVideoError]           = useState('');
   const [rightTab, setRightTab]           = useState<'message' | 'story'>('message');
   const [showBulkWA, setShowBulkWA]         = useState(false);
 
@@ -3438,6 +3454,148 @@ function BroadcastSection() {
   const handleTelegramSingle = () => {
     if (!preview) return;
     guard([String(preview._id)], () => { sendTelegramSingle(); });
+  };
+
+  const sendInstagramPost = async () => {
+    if (!preview) return;
+    setIgPostSending(true);
+    setIgPostSuccess(false);
+    const allImages = getProductImages(preview);
+    const imageUrl  = allImages[selectedImageIndex] || allImages[0] || '';
+    if (!imageUrl) { alert('❌ This product has no image to post.'); setIgPostSending(false); return; }
+    try {
+      const res  = await fetch('/api/products', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ instagramPost: true, imageUrl, caption: igCaptionText(customMsg) }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to post');
+      recordShare([String(preview._id)], 'instagram');
+      setIgPostSuccess(true);
+      setTimeout(() => setIgPostSuccess(false), 3000);
+    } catch (err: any) {
+      alert('❌ Instagram Error: ' + err.message);
+    } finally {
+      setIgPostSending(false);
+    }
+  };
+
+  const handleInstagramPost = () => {
+    if (!preview) return;
+    guard([String(preview._id)], () => { sendInstagramPost(); });
+  };
+
+  const sendFacebookPost = async () => {
+    if (!preview) return;
+    setFbPostSending(true);
+    setFbPostSuccess(false);
+    const allImages = getProductImages(preview);
+    const imageUrl  = allImages[selectedImageIndex] || allImages[0] || '';
+    if (!imageUrl) { alert('❌ This product has no image to post.'); setFbPostSending(false); return; }
+    try {
+      const res  = await fetch('/api/products', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ facebookPost: true, imageUrl, caption: igCaptionText(customMsg) }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to post');
+      recordShare([String(preview._id)], 'facebook');
+      setFbPostSuccess(true);
+      setTimeout(() => setFbPostSuccess(false), 3000);
+    } catch (err: any) {
+      alert('❌ Facebook Error: ' + err.message);
+    } finally {
+      setFbPostSending(false);
+    }
+  };
+
+  const handleFacebookPost = () => {
+    if (!preview) return;
+    guard([String(preview._id)], () => { sendFacebookPost(); });
+  };
+
+  // ── Facebook feed video: pick a file, upload it straight to Cloudinary, then post it ──
+  const handleVideoFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';   // lets the same file be picked again later
+    if (!file) return;
+    if (!file.type.startsWith('video/')) { setFbVideoError('That file is not a video.'); return; }
+    if (fbVideoPreviewUrl) URL.revokeObjectURL(fbVideoPreviewUrl);
+    setFbVideoFile(file);
+    setFbVideoPreviewUrl(URL.createObjectURL(file));
+    setFbVideoError('');
+    setFbVideoSuccess(false);
+  };
+
+  const clearVideo = () => {
+    if (fbVideoPreviewUrl) URL.revokeObjectURL(fbVideoPreviewUrl);
+    setFbVideoFile(null);
+    setFbVideoPreviewUrl('');
+    setFbVideoUploadPct(null);
+    setFbVideoError('');
+  };
+
+  // XMLHttpRequest (not fetch) so upload progress can be shown — the file goes straight to
+  // Cloudinary, never through the Vercel function, so its ~4.5MB body limit doesn't apply.
+  const uploadVideoToCloudinary = (file: File): Promise<string> => new Promise(async (resolve, reject) => {
+    try {
+      const sigRes = await fetch('/api/products?cloudinarySign=true&resourceType=video');
+      const sig = await sigRes.json();
+      if (!sig.signature) throw new Error('Could not get an upload permission from the server.');
+      const form = new FormData();
+      form.append('file', file);
+      form.append('api_key', sig.apiKey);
+      form.append('timestamp', String(sig.timestamp));
+      form.append('signature', sig.signature);
+      form.append('folder', sig.folder);
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', `https://api.cloudinary.com/v1_1/${sig.cloudName}/video/upload`);
+      xhr.upload.onprogress = (ev) => { if (ev.lengthComputable) setFbVideoUploadPct(Math.round((ev.loaded / ev.total) * 100)); };
+      xhr.onload = () => {
+        try {
+          const data = JSON.parse(xhr.responseText);
+          if (xhr.status >= 200 && xhr.status < 300 && data.secure_url) resolve(data.secure_url);
+          else reject(new Error(data.error?.message || 'Cloudinary upload failed.'));
+        } catch { reject(new Error('Cloudinary returned an unexpected response.')); }
+      };
+      xhr.onerror = () => reject(new Error('Upload failed — check your connection.'));
+      xhr.send(form);
+    } catch (e: any) { reject(e); }
+  });
+
+  const doPostFacebookVideo = async () => {
+    if (!preview || !fbVideoFile) return;
+    setFbVideoPosting(true);
+    setFbVideoError('');
+    setFbVideoSuccess(false);
+    setFbVideoUploadPct(0);
+    try {
+      const videoUrl = await uploadVideoToCloudinary(fbVideoFile);
+      const allImages = getProductImages(preview);
+      const thumbUrl  = allImages[selectedImageIndex] || allImages[0] || '';
+      const res = await fetch('/api/products', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ facebookVideoPost: true, videoUrl, caption: igCaptionText(customMsg), thumbUrl }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to post video');
+      recordShare([String(preview._id)], 'facebook');
+      setFbVideoSuccess(true);
+      setTimeout(() => { setFbVideoSuccess(false); clearVideo(); }, 4000);
+    } catch (err: any) {
+      setFbVideoError(err.message || 'Something went wrong.');
+    } finally {
+      setFbVideoPosting(false);
+      setFbVideoUploadPct(null);
+    }
+  };
+
+  const handlePostFacebookVideo = () => {
+    if (!preview || !fbVideoFile) return;
+    guard([String(preview._id)], () => { doPostFacebookVideo(); });
   };
 
   // ── Multi-select batch Telegram ────────────────────────────────────────
@@ -3761,6 +3919,80 @@ function BroadcastSection() {
                     Post to Telegram Channel</>
                   )}
                 </button>
+
+                {/* Instagram feed post (a real post, not a story) */}
+                <button onClick={handleInstagramPost} disabled={igPostSending}
+                  className={`w-full flex items-center justify-center gap-3 font-black py-3.5 rounded-xl transition-all shadow-md text-sm uppercase tracking-widest disabled:opacity-60 ${
+                    igPostSuccess ? 'bg-green-500 text-white' : 'bg-gradient-to-r from-[#F58529] via-[#DD2A7B] to-[#8134AF] hover:opacity-90 text-white'
+                  }`}>
+                  {igPostSending ? (
+                    <><svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>Posting...</>
+                  ) : igPostSuccess ? (
+                    <><Check className="w-5 h-5"/> Posted to Instagram!</>
+                  ) : (
+                    <><Send className="w-5 h-5" /> Post to Instagram Feed</>
+                  )}
+                </button>
+
+                {/* Facebook feed post (a real post, not a story) */}
+                <button onClick={handleFacebookPost} disabled={fbPostSending}
+                  className={`w-full flex items-center justify-center gap-3 font-black py-3.5 rounded-xl transition-all shadow-md text-sm uppercase tracking-widest disabled:opacity-60 ${
+                    fbPostSuccess ? 'bg-green-500 text-white' : 'bg-[#1877F2] hover:bg-[#1568d6] text-white'
+                  }`}>
+                  {fbPostSending ? (
+                    <><svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/></svg>Posting...</>
+                  ) : fbPostSuccess ? (
+                    <><Check className="w-5 h-5"/> Posted to Facebook!</>
+                  ) : (
+                    <><svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/></svg>
+                    Post to Facebook Feed</>
+                  )}
+                </button>
+
+                {/* Facebook feed video — pick a video, upload it, post it with the product caption */}
+                <div className="border-2 border-dashed border-gray-200 rounded-xl p-3 space-y-2">
+                  <p className="text-[10px] font-black uppercase tracking-widest text-gray-500">Or post a video to Facebook</p>
+                  {!fbVideoFile ? (
+                    <label className="flex items-center justify-center gap-2 border-2 border-gray-200 text-gray-600 font-black py-2.5 rounded-xl hover:border-[#1877F2] hover:text-[#1877F2] transition-all text-xs uppercase tracking-widest cursor-pointer">
+                      <Upload className="w-4 h-4" /> Choose a video from your device
+                      <input type="file" accept="video/*" onChange={handleVideoFileSelect} className="hidden" />
+                    </label>
+                  ) : (
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-2">
+                        <video src={fbVideoPreviewUrl} className="w-20 h-20 rounded-lg object-cover bg-black shrink-0" muted />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-xs font-black text-gray-800 truncate">{fbVideoFile.name}</p>
+                          <p className="text-[10px] text-gray-400 font-bold">{(fbVideoFile.size / (1024 * 1024)).toFixed(1)} MB</p>
+                        </div>
+                        {!fbVideoPosting && (
+                          <button onClick={clearVideo} className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-400 shrink-0"><X className="w-4 h-4" /></button>
+                        )}
+                      </div>
+                      {fbVideoUploadPct !== null && (
+                        <div className="w-full h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                          <div className="h-full bg-[#1877F2] transition-all" style={{ width: `${fbVideoUploadPct}%` }} />
+                        </div>
+                      )}
+                      {fbVideoError && <p className="text-[11px] font-bold text-red-500">{fbVideoError}</p>}
+                      <button onClick={handlePostFacebookVideo} disabled={fbVideoPosting}
+                        className={`w-full flex items-center justify-center gap-2 font-black py-2.5 rounded-xl transition-all text-xs uppercase tracking-widest disabled:opacity-60 ${
+                          fbVideoSuccess ? 'bg-green-500 text-white' : 'bg-[#1877F2] hover:bg-[#1568d6] text-white'
+                        }`}>
+                        {fbVideoPosting ? (
+                          <>{fbVideoUploadPct !== null && fbVideoUploadPct < 100 ? `Uploading ${fbVideoUploadPct}%...` : 'Posting...'}</>
+                        ) : fbVideoSuccess ? (
+                          <><Check className="w-4 h-4" /> Posted!</>
+                        ) : (
+                          <>Post this video to Facebook</>
+                        )}
+                      </button>
+                      <p className="text-[9px] text-gray-400 font-semibold">
+                        The video becomes the Facebook post itself, with the product's name, price and link as the caption underneath — Facebook doesn't support a separate photo attached to a video post.
+                      </p>
+                    </div>
+                  )}
+                </div>
 
                 {/* Copy */}
                 <button onClick={handleCopy}
