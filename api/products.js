@@ -89,6 +89,43 @@ async function postFacebookStory(imageUrl, { pageId, pageToken }) {
   return story.post_id;
 }
 
+// Normal Instagram feed post (not a story). Instagram only accepts JPEG, in an aspect ratio
+// between 4:5 (portrait) and 1.91:1 (landscape) — so before converting to JPEG, Cloudinary is
+// asked to pad (never crop) anything outside that range onto a white background until it fits,
+// so nothing about the photo is lost and Instagram can never reject it for its shape.
+async function postInstagramFeed(imageUrl, caption, { igId, pageToken }) {
+  if (!igId) throw new Error('No Instagram Business/Creator account is linked to this Page (or set IG_USER_ID)');
+  const jpegUrl = imageUrl.replace('/upload/',
+    '/upload/if_ar_lt_0.8/c_pad,ar_0.8,b_white/if_end/if_ar_gt_1.91/c_pad,ar_1.91,b_white/if_end/f_jpg,q_auto:good,c_limit,w_1440/');
+  const container = await metaCall(`${igId}/media`, { image_url: jpegUrl, caption: caption || '', access_token: pageToken });
+  for (let i = 0; i < 6; i++) {
+    const st = await metaCall(container.id, { fields: 'status_code', access_token: pageToken }, 'GET');
+    if (st.status_code === 'FINISHED') break;
+    if (st.status_code === 'ERROR' || st.status_code === 'EXPIRED') {
+      throw new Error(`Instagram rejected the image (${st.status_code})`);
+    }
+    await new Promise(r => setTimeout(r, 1000));
+  }
+  const pub = await metaCall(`${igId}/media_publish`, { creation_id: container.id, access_token: pageToken });
+  return pub.id;
+}
+
+// A normal Facebook Page feed photo post (published:true — not the draft+story combo used for stories).
+async function postFacebookFeed(imageUrl, caption, { pageId, pageToken }) {
+  const photo = await metaCall(`${pageId}/photos`, { url: imageUrl, caption: caption || '', published: 'true', access_token: pageToken });
+  return photo.post_id || photo.id;
+}
+
+// A Facebook Page feed video post. `videoUrl` must already be public (Cloudinary), since Facebook
+// fetches it server-side rather than accepting an upload here. `thumbUrl` (optional) sets the cover
+// image shown before playback, since a video post can't carry a separate attached photo.
+async function postFacebookVideo(videoUrl, caption, thumbUrl, { pageId, pageToken }) {
+  const params = { file_url: videoUrl, description: caption || '', access_token: pageToken };
+  if (thumbUrl) params.thumb = thumbUrl;
+  const vid = await metaCall(`${pageId}/videos`, params);
+  return vid.id;
+}
+
 let client;
 
 async function getClient() {
@@ -356,6 +393,22 @@ export default async function handler(req, res) {
         await shareLog.insertMany(ids.map(id => ({ productId: id, channel: String(channel || 'unknown'), sharedAt: now })));
         return res.status(200).json({ ok: true, recorded: ids.length });
       }
+    }
+
+    // ── Cloudinary direct-upload signature (for videos too large for this function's body limit) ──
+    // GET /api/products?cloudinarySign=true&resourceType=video
+    // The browser uploads the file straight to Cloudinary with this signature — the file itself
+    // never passes through this server, so Vercel's ~4.5MB request-body limit never applies to it.
+    if (req.method === 'GET' && req.query.cloudinarySign === 'true') {
+      const resourceType = req.query.resourceType === 'video' ? 'video' : 'image';
+      const timestamp = Math.round(Date.now() / 1000);
+      const folder = 'tags-broadcast-videos';
+      const signature = cloudinary.utils.api_sign_request({ timestamp, folder }, process.env.CLOUDINARY_API_SECRET);
+      return res.status(200).json({
+        signature, timestamp, folder, resourceType,
+        apiKey: process.env.CLOUDINARY_API_KEY,
+        cloudName: process.env.CLOUDINARY_CLOUD_NAME,
+      });
     }
 
     // ── Story setup check ────────────────────────────────────────────────────
@@ -676,7 +729,62 @@ export default async function handler(req, res) {
       }
     }
 
-    // ── Telegram Broadcast ───────────────────────────────────────────────────
+    // ── Instagram Feed Post (a real post on the Instagram page, not a story) ──
+    // POST /api/products  body: { instagramPost: true, imageUrl, caption }
+    if (req.method === 'POST' && req.body?.instagramPost === true) {
+      const { imageUrl, caption } = req.body;
+      const clean = String(imageUrl || '').replace(/\?.*$/, '');
+      if (!clean.startsWith(`https://res.cloudinary.com/${process.env.CLOUDINARY_CLOUD_NAME}/`)) {
+        return res.status(400).json({ error: 'imageUrl must be one of your Cloudinary images' });
+      }
+      try {
+        const acct = await resolveStoryAccounts();
+        const id = await postInstagramFeed(clean, caption, acct);
+        return res.status(200).json({ ok: true, id });
+      } catch (err) {
+        console.error('[InstagramPost] error:', err.message);
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── Facebook Feed Post (a real photo post on the Page, not a story) ────────
+    // POST /api/products  body: { facebookPost: true, imageUrl, caption }
+    if (req.method === 'POST' && req.body?.facebookPost === true) {
+      const { imageUrl, caption } = req.body;
+      const clean = String(imageUrl || '').replace(/\?.*$/, '');
+      if (!clean.startsWith(`https://res.cloudinary.com/${process.env.CLOUDINARY_CLOUD_NAME}/`)) {
+        return res.status(400).json({ error: 'imageUrl must be one of your Cloudinary images' });
+      }
+      try {
+        const acct = await resolveStoryAccounts();
+        const id = await postFacebookFeed(clean, caption, acct);
+        return res.status(200).json({ ok: true, id });
+      } catch (err) {
+        console.error('[FacebookPost] error:', err.message);
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── Facebook Feed Video Post ─────────────────────────────────────────────
+    // POST /api/products  body: { facebookVideoPost: true, videoUrl, caption, thumbUrl? }
+    // videoUrl must already be a public Cloudinary URL (uploaded via the signature route above).
+    if (req.method === 'POST' && req.body?.facebookVideoPost === true) {
+      const { videoUrl, caption, thumbUrl } = req.body;
+      const cleanVideo = String(videoUrl || '').replace(/\?.*$/, '');
+      if (!cleanVideo.startsWith(`https://res.cloudinary.com/${process.env.CLOUDINARY_CLOUD_NAME}/`)) {
+        return res.status(400).json({ error: 'videoUrl must be one of your Cloudinary videos' });
+      }
+      const cleanThumb = thumbUrl ? String(thumbUrl).replace(/\?.*$/, '') : '';
+      try {
+        const acct = await resolveStoryAccounts();
+        const id = await postFacebookVideo(cleanVideo, caption, cleanThumb, acct);
+        return res.status(200).json({ ok: true, id });
+      } catch (err) {
+        console.error('[FacebookVideoPost] error:', err.message);
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
     if (req.method === 'POST' && (req.query.broadcast === 'true' || req.body.broadcast === true)) {
       const { imageUrl, message } = req.body;
       const TOKEN   = process.env.TELEGRAM_BOT_TOKEN;
