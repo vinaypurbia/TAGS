@@ -2326,10 +2326,124 @@ function storyWrap(ctx: CanvasRenderingContext2D, text: string, maxWidth: number
   return kept;
 }
 
+// Tiny deterministic PRNG (not Math.random) so the sparkle/confetti layout stays put while the
+// person is still typing the tag or CTA text — a fresh random layout on every keystroke would look broken.
+function seededRandom(seed: number) {
+  return function () {
+    seed = (seed + 0x6D2B79F5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function drawSparkleStar(ctx: CanvasRenderingContext2D, cx: number, cy: number, r: number, color: string, alpha: number) {
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(cx, cy - r); ctx.quadraticCurveTo(cx + r * 0.18, cy - r * 0.18, cx + r, cy);
+  ctx.quadraticCurveTo(cx + r * 0.18, cy + r * 0.18, cx, cy + r);
+  ctx.quadraticCurveTo(cx - r * 0.18, cy + r * 0.18, cx - r, cy);
+  ctx.quadraticCurveTo(cx - r * 0.18, cy - r * 0.18, cx, cy - r);
+  ctx.closePath(); ctx.fill();
+  ctx.restore();
+}
+
+// Sparkle stars placed in the empty side margins beside the photo card and along the top/bottom
+// strips, so they read clearly without landing on the product photo or the text.
+function drawSparkleEffect(ctx: CanvasRenderingContext2D, W: number, H: number) {
+  const rnd = seededRandom(7);
+  for (let i = 0; i < 30; i++) {
+    const zone = rnd();
+    let x: number, y: number;
+    if (zone < 0.55) {            // side margins, full height of the content area
+      x = rnd() < 0.5 ? 18 + rnd() * 84 : W - 102 + rnd() * 84;
+      y = 300 + rnd() * (H - 620);
+    } else if (zone < 0.8) {      // top strip
+      x = rnd() * W; y = 20 + rnd() * 220;
+    } else {                      // bottom strip
+      x = rnd() * W; y = H - 240 + rnd() * 220;
+    }
+    const r = 11 + rnd() * 24;
+    drawSparkleStar(ctx, x, y, r, rnd() < 0.55 ? '#FFFFFF' : '#FFD447', 0.6 + rnd() * 0.4);
+  }
+}
+
+function drawFireEffect(ctx: CanvasRenderingContext2D, x: number, y: number, scale: number) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(scale, scale);
+  const grad = ctx.createLinearGradient(0, -70, 0, 20);
+  grad.addColorStop(0, '#FFD447'); grad.addColorStop(0.55, '#FF7A00'); grad.addColorStop(1, '#E11D48');
+  ctx.beginPath();
+  ctx.moveTo(0, 20);
+  ctx.bezierCurveTo(-32, -2, -22, -42, 0, -68);
+  ctx.bezierCurveTo(12, -38, 27, -26, 16, -6);
+  ctx.bezierCurveTo(27, -10, 21, 12, 0, 20);
+  ctx.closePath();
+  ctx.lineJoin = 'round'; ctx.lineWidth = 7; ctx.strokeStyle = '#FFFFFF'; ctx.stroke();   // sticker outline
+  ctx.fillStyle = grad; ctx.fill();
+  ctx.restore();
+}
+
+// Confetti pieces "falling" from the top of the frame, in brand + festive colours. Pieces that would
+// land on the top label pill or the discount badge/flame are skipped, so that text always stays clean.
+function drawConfettiEffect(ctx: CanvasRenderingContext2D, W: number, H: number) {
+  const colors = ['#FA5600', '#FFD447', '#25D366', '#2AABEE', '#E11D48', '#FFFFFF'];
+  const rnd = seededRandom(31);
+  for (let i = 0; i < 52; i++) {
+    const x = rnd() * W;
+    const y = rnd() * H * 0.42;
+    const size = 13 + rnd() * 15;
+    const rot = rnd() * Math.PI * 2;
+    const color = colors[Math.floor(rnd() * colors.length)];
+    const isBar = rnd() > 0.5;
+    const blocked =
+      (x > 300 && x < 780 && y > 235 && y < 335) ||   // top label pill
+      Math.hypot(x - 920, y - 390) < 120 ||            // discount badge
+      Math.hypot(x - 780, y - 410) < 95;               // flame beside the badge
+    if (blocked) continue;
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(rot);
+    ctx.globalAlpha = 0.85;
+    ctx.fillStyle = color;
+    if (isBar) ctx.fillRect(-size / 2, -size / 4, size, size / 2);
+    else { ctx.beginPath(); ctx.arc(0, 0, size / 3, 0, Math.PI * 2); ctx.fill(); }
+    ctx.restore();
+  }
+}
+
+// A bold hand-drawn style arrow: starts at (fromX, fromY), swoops through the control point and
+// ends with an arrowhead at (toX, toY). Yellow with a dark outline so it reads on every theme.
+function drawArrowEffect(ctx: CanvasRenderingContext2D, fromX: number, fromY: number, ctrlX: number, ctrlY: number, toX: number, toY: number) {
+  ctx.save();
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  const angle = Math.atan2(toY - ctrlY, toX - ctrlX);
+  const headLen = 44;
+  const head = () => {
+    ctx.beginPath();
+    ctx.moveTo(toX, toY);
+    ctx.lineTo(toX - headLen * Math.cos(angle - Math.PI / 6), toY - headLen * Math.sin(angle - Math.PI / 6));
+    ctx.lineTo(toX - headLen * Math.cos(angle + Math.PI / 6), toY - headLen * Math.sin(angle + Math.PI / 6));
+    ctx.closePath();
+  };
+  // outline pass, then colour pass
+  ctx.strokeStyle = 'rgba(0,0,0,0.5)'; ctx.lineWidth = 20;
+  ctx.beginPath(); ctx.moveTo(fromX, fromY); ctx.quadraticCurveTo(ctrlX, ctrlY, toX, toY); ctx.stroke();
+  head(); ctx.stroke();
+  ctx.strokeStyle = '#FFD447'; ctx.lineWidth = 11;
+  ctx.beginPath(); ctx.moveTo(fromX, fromY); ctx.quadraticCurveTo(ctrlX, ctrlY, toX, toY); ctx.stroke();
+  ctx.fillStyle = '#FFD447'; head(); ctx.fill();
+  ctx.restore();
+}
+
 function drawStory(
   canvas: HTMLCanvasElement,
   img: HTMLImageElement | null,
-  o: { theme: StoryTheme; name: string; description: string; price: number; origPrice: number; tag: string; cta: string; showPrice: boolean; showDiscount: boolean },
+  o: { theme: StoryTheme; name: string; description: string; price: number; origPrice: number; tag: string; cta: string; showPrice: boolean; showDiscount: boolean;
+       effects?: { sparkle: boolean; fire: boolean; confetti: boolean; arrow: boolean } },
 ) {
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
@@ -2338,6 +2452,7 @@ function drawStory(
   const t = STORY_THEMES[o.theme];
   const font = (weight: number, size: number) => `${weight} ${size}px Inter, "Segoe UI", Arial, sans-serif`;
   const discount = o.origPrice > o.price && o.price > 0 ? Math.round(((o.origPrice - o.price) / o.origPrice) * 100) : 0;
+  const fx = o.effects || { sparkle: false, fire: false, confetti: false, arrow: false };
 
   // Background
   const bg = ctx.createLinearGradient(0, 0, 0, STORY_H);
@@ -2394,6 +2509,9 @@ function drawStory(
     ctx.fillStyle = '#FFFFFF';
     ctx.font = font(900, 62); ctx.fillText(`${discount}%`, bx, by - 14);
     ctx.font = font(900, 34); ctx.fillText('OFF', bx, by + 40);
+    if (fx.fire) drawFireEffect(ctx, bx - 140, by + 38, 1.9);
+  } else if (fx.fire) {
+    drawFireEffect(ctx, cx + cs - 90, cy + 130, 1.9);
   }
 
   // Product name (max 2 lines)
@@ -2436,6 +2554,14 @@ function drawStory(
     }
     ctx.textAlign = 'center';
     cursorY = baseY;
+    if (fx.arrow) {
+      const rowEnd = x0 + pw + gap + ow;
+      if (x0 >= 190) {                       // room on the left → arrow swoops down and points right at the price
+        drawArrowEffect(ctx, 70, baseY - 190, 70, baseY - 48, x0 - 26, baseY - 48);
+      } else if (STORY_W - rowEnd >= 190) {  // otherwise the right margin → points left at the price
+        drawArrowEffect(ctx, STORY_W - 70, baseY - 190, STORY_W - 70, baseY - 48, rowEnd + 26, baseY - 48);
+      }                                      // (no room either side → skip rather than cross the text)
+    }
   }
 
   // Call-to-action pill (optional short marketing line, e.g. "Limited Stock!")
@@ -2484,6 +2610,10 @@ function drawStory(
   // Brand line
   ctx.font = font(800, 26); ctx.fillStyle = t.sub;
   ctx.fillText('TAGS  ·  TOYS · ADVENTURE · GADGETS · SPORTS', STORY_W / 2, Math.min(contactTop + contactH + 46, STORY_H - 30));
+
+  // Decorative overlay — drawn last so it sits on top, kept subtle enough not to hide the product or text
+  if (fx.confetti) drawConfettiEffect(ctx, STORY_W, STORY_H);
+  if (fx.sparkle) drawSparkleEffect(ctx, STORY_W, STORY_H);
 }
 
 type StoryResult = { ok: boolean; error?: string };
@@ -2562,6 +2692,7 @@ function StoryComposer({ product, imageUrl, price, origPrice, caption, descripti
   const [cta, setCta]                   = useState('Limited Stock — Order Now!');
   const [showPrice, setShowPrice]       = useState(true);
   const [showDiscount, setShowDiscount] = useState(true);
+  const [effects, setEffects]           = useState({ sparkle: false, fire: false, confetti: false, arrow: false });
   const [platforms, setPlatforms]       = useState({ instagram: true, facebook: true });
   const [posting, setPosting]           = useState(false);
   const [results, setResults]           = useState<Record<string, StoryResult> | null>(null);
@@ -2592,9 +2723,9 @@ function StoryComposer({ product, imageUrl, price, origPrice, caption, descripti
   // Redraw whenever anything changes
   useEffect(() => {
     if (canvasRef.current) {
-      drawStory(canvasRef.current, img, { theme, name: product?.name || '', description: description || '', price, origPrice, tag, cta, showPrice, showDiscount });
+      drawStory(canvasRef.current, img, { theme, name: product?.name || '', description: description || '', price, origPrice, tag, cta, showPrice, showDiscount, effects });
     }
-  }, [img, theme, tag, cta, showPrice, showDiscount, product?.name, description, price, origPrice]);
+  }, [img, theme, tag, cta, showPrice, showDiscount, effects, product?.name, description, price, origPrice]);
 
   const fileName = `story-${String(product?.name || 'product').toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40)}.jpg`;
 
@@ -2720,6 +2851,15 @@ function StoryComposer({ product, imageUrl, price, origPrice, caption, descripti
           <div className="flex gap-2 flex-wrap">
             <button onClick={() => setShowPrice(v => !v)} className={pill(showPrice)}>Price {showPrice ? 'On' : 'Off'}</button>
             <button onClick={() => setShowDiscount(v => !v)} className={pill(showDiscount)}>Discount Badge {showDiscount ? 'On' : 'Off'}</button>
+          </div>
+          <div>
+            <p className="text-[10px] font-black uppercase tracking-widest text-gray-500 mb-1.5">Effects</p>
+            <div className="flex gap-2 flex-wrap">
+              {([['sparkle', '✨ Sparkle'], ['fire', '🔥 Fire'], ['confetti', '🎉 Confetti'], ['arrow', '➜ Arrow']] as const).map(([k, label]) => (
+                <button key={k} onClick={() => setEffects(e => ({ ...e, [k]: !e[k] }))} className={pill(effects[k])}>{label}</button>
+              ))}
+            </div>
+            <p className="text-[9px] text-gray-400 mt-1">Decorations are drawn into the image itself. Instagram and Facebook stories/posts are still pictures, so these don't move.</p>
           </div>
         </div>
       </div>
