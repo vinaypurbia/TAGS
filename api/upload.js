@@ -49,6 +49,19 @@ const UPLOAD_OPTIONS = {
   resource_type: 'image',
 };
 
+// ── Story options — used only for ?mode=story ─────────────────────────────
+// Instagram/Facebook stories need a JPEG at full 1080x1920 resolution, so:
+//   format: 'jpg'   → stored as JPEG (URL ends in .jpg)
+//   no transformation → no resize, no extra compression, full quality kept
+const STORY_OPTIONS = {
+  folder: 'tags-stories',
+  format: 'jpg',
+  resource_type: 'image',
+  overwrite: false,
+  unique_filename: true,
+  invalidate: true,
+};
+
 // ── Helper: is this a Cloudinary URL already? ─────────────────────────────
 function isCloudinaryUrl(url) {
   return url && (url.includes('res.cloudinary.com') || url.includes('cloudinary.com'));
@@ -132,11 +145,13 @@ export default async function handler(req, res) {
     // stored twice even if uploaded by different users or at different times.
     const hash = bufferHash(buffer);
 
-    const result = await cloudinary.uploader.upload(dataUri, {
-      ...UPLOAD_OPTIONS,
-      public_id: `tags-products/img_${hash}`,
-      overwrite: false,
-    });
+    // ?mode=story → full-resolution JPEG for Instagram/Facebook stories.
+    // Everything else (products, banners, categories) keeps the normal optimised WebP settings.
+    const isStory = req.query.mode === 'story';
+
+    const result = await cloudinary.uploader.upload(dataUri, isStory
+      ? { ...STORY_OPTIONS, public_id: `story_${hash}` }
+      : { ...UPLOAD_OPTIONS, public_id: `tags-products/img_${hash}`, overwrite: false });
 
     return res.status(200).json({
       success: true,
