@@ -10,6 +10,7 @@
   "dependencies": {
     "mongodb": "^6.0.0",
     "cloudinary": "^1.41.0",
+    "jimp": "^1.6.0",
     "bcryptjs": "^2.4.3",
     "jsonwebtoken": "^9.0.2",
     "react": "^18.0.0",
