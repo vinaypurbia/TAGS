@@ -2203,7 +2203,7 @@ type InvoiceRow = {
   name: string; description: string; quantity: number | null; unitCost: number | null;
   category: string; subcategory: string; originalPrice: string; discountedPrice: string;
   imagePrompt: string;
-  matchedTitle: string;
+  matchedTitle: string; descStatus: 'idle' | 'loading' | 'done' | 'error';
   imageUrl: string; imageSource: 'invoice' | 'supplier' | 'ai' | ''; imageStatus: 'pending' | 'loading' | 'done' | 'error';
   include: boolean;
 };
@@ -2274,6 +2274,36 @@ function InvoiceImportSection() {
     await Promise.all(Array.from({ length: 3 }, worker));
   };
 
+  // Writes a shop-ready description from the item's name + its final picture (editable afterwards)
+  const fetchDescriptionFor = async (row: InvoiceRow) => {
+    setRows(rs => rs.map(r => r.id === row.id ? { ...r, descStatus: 'loading' } : r));
+    try {
+      const res = await fetch('/api/products?invoiceDescription=true', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: row.name, hint: row.description, imageUrl: row.imageUrl }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.description) throw new Error(data.error || 'failed');
+      setRows(rs => rs.map(r => r.id === row.id ? { ...r, description: data.description, descStatus: 'done' } : r));
+    } catch {
+      setRows(rs => rs.map(r => r.id === row.id ? { ...r, descStatus: 'error' } : r)); // keeps whatever description it had
+    }
+  };
+
+  // Automatically write descriptions once each picture is ready (2 at a time, to stay within free-tier limits)
+  const descBusy = useRef(0);
+  useEffect(() => {
+    if (stage !== 'review') return;
+    for (const r of rows) {
+      if (descBusy.current >= 2) break;
+      const pictureReady = (r.imageStatus === 'done' && !!r.imageUrl) || r.imageStatus === 'error';
+      if (r.descStatus === 'idle' && pictureReady && r.name.trim()) {
+        descBusy.current++;
+        fetchDescriptionFor(r).finally(() => { descBusy.current--; });
+      }
+    }
+  }, [rows, stage]);
+
   // Looks each item up on the supplier's website. Found → that photo replaces the invoice crop.
   // Not found → keep the invoice crop if there is one, otherwise the AI picture.
   const fetchSupplierImages = async (list: InvoiceRow[], site: string) => {
@@ -2328,7 +2358,7 @@ function InvoiceImportSection() {
         category: '', subcategory: '',
         originalPrice: it.unitCost ? String(Math.round(it.unitCost * (1 + INVOICE_ORIGINAL_MARKUP))) : '',
         discountedPrice: it.unitCost ? String(Math.round(it.unitCost * (1 + INVOICE_DISCOUNTED_MARKUP))) : '',
-        matchedTitle: '',
+        matchedTitle: '', descStatus: 'idle',
         imageUrl: it.imageUrl || '', imageSource: it.imageSource || '',
         imageStatus: it.imageUrl ? 'done' : 'pending', include: true,
       }));
@@ -2458,6 +2488,19 @@ function InvoiceImportSection() {
                     Prices are cost + 60% (original) and cost + 35% (discounted) — edit as needed.
                   </p>
                   {row.matchedTitle && <p className="col-span-2 text-[10px] text-blue-600">Supplier match: {row.matchedTitle}</p>}
+                  <div className="col-span-2">
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-[10px] font-black uppercase tracking-widest text-gray-400">
+                        Description{row.descStatus === 'loading' ? ' — writing…' : row.descStatus === 'error' ? ' — could not write, edit manually' : ''}
+                      </span>
+                      {stage === 'review' && (
+                        <button type="button" disabled={row.descStatus === 'loading'} onClick={() => fetchDescriptionFor(row)}
+                          className="text-[10px] font-black uppercase tracking-widest text-gray-400 hover:text-[#FA5600] disabled:opacity-50">Rewrite</button>
+                      )}
+                    </div>
+                    <textarea value={row.description} onChange={e => updateRow(row.id, { description: e.target.value })} disabled={stage !== 'review'} rows={3}
+                      placeholder="Product description" className="w-full text-[11px] border border-gray-200 rounded-lg px-2 py-1.5 disabled:bg-gray-50 resize-y" />
+                  </div>
                 </div>
 
                 {stage === 'review' && (
