@@ -4,7 +4,7 @@ import { waitUntil } from '@vercel/functions';
 import crypto from 'crypto';
 
 // Default body-size limit is too small for a base64-encoded invoice photo/PDF.
-export const config = { api: { bodyParser: { sizeLimit: '20mb' } } };
+export const config = { api: { bodyParser: { sizeLimit: '20mb' } }, maxDuration: 60 };
 
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -469,6 +469,36 @@ function cleanCloudinaryUrl(url) {
 }
 
 export default async function handler(req, res) {
+
+    // ── Full database backup — POST /api/products?backup=true  (header: x-backup-key) ──────────
+    // Downloads every collection in the database as one JSON file.
+    if (req.method === 'POST' && req.query.backup === 'true') {
+      try {
+        const dbClient = await getClient();
+        const db = dbClient.db('tagsdb');
+        const collInfos = await db.listCollections().toArray();
+        const dump = {};
+        for (const info of collInfos) {
+          if (info.type && info.type !== 'collection') continue; // skip views/system entries
+          dump[info.name] = await db.collection(info.name).find({}).toArray();
+        }
+        const payload = {
+          _backupMeta: {
+            dbName: 'tagsdb',
+            takenAt: new Date().toISOString(),
+            documentCounts: Object.fromEntries(Object.entries(dump).map(([k, v]) => [k, v.length])),
+          },
+          ...dump,
+        };
+        const filename = `tags-backup-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+        res.setHeader('Content-Type', 'application/json');
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        return res.status(200).send(JSON.stringify(payload, null, 2));
+      } catch (error) {
+        console.error('Backup error:', error);
+        return res.status(500).json({ error: error.message || 'Backup failed' });
+      }
+    }
 
     // ── Invoice Import (AI) — POST /api/products?invoiceExtract=true  { fileBase64, mimeType } ──
     if (req.method === 'POST' && req.query.invoiceExtract === 'true') {
