@@ -278,6 +278,36 @@ async function findSupplierProduct(siteUrl, name) {
   return null;
 }
 
+// ── Product description (from the item name + its final picture) ────────────
+// The picture is fetched from our own Cloudinary storage only, then shown to Gemini together with the name.
+async function generateProductDescription({ name, hint, imageUrl }) {
+  const parts = [];
+  if (imageUrl) {
+    const u = new URL(imageUrl);
+    if (u.protocol !== 'https:' || !u.hostname.endsWith('cloudinary.com')) throw new Error('Unsupported image address');
+    const r = await fetch(imageUrl, { signal: AbortSignal.timeout(12000) });
+    if (!r.ok) throw new Error(`Could not load the picture (${r.status})`);
+    const mime = (r.headers.get('content-type') || 'image/jpeg').split(';')[0];
+    const buf = Buffer.from(await r.arrayBuffer());
+    if (buf.length > 8 * 1024 * 1024) throw new Error('Picture is too large');
+    parts.push({ inline_data: { mime_type: mime.startsWith('image/') ? mime : 'image/jpeg', data: buf.toString('base64') } });
+  }
+  parts.push({ text:
+    `You write product descriptions for an Indian toy & gadget shop's online catalogue.\n` +
+    `Product name: "${name}"\n` +
+    (hint ? `Note from the supplier invoice (may be rough or inaccurate): "${hint}"\n` : '') +
+    (imageUrl ? `Look closely at the attached product picture and describe THIS product.\n` : '') +
+    `Write 2-3 short sentences (about 40-60 words) for shoppers: what the product is, how a child plays with it or what it does, and its visible features ` +
+    `(colours, lights, remote control, number of pieces, etc.) only when they are visible in the picture or clearly implied by the name.\n` +
+    `Rules: do NOT invent specifications such as battery type, size, material, age range, safety certificates or brand claims that are not visible. ` +
+    `Simple, warm English. No emojis, no markdown, no price, no hashtags, do not repeat the product name at the start.\n` +
+    `Return ONLY JSON: {"description": string}` });
+  const out = await callGemini(parts);
+  const d = typeof out?.description === 'string' ? out.description.trim() : '';
+  if (!d) throw new Error('No description was returned');
+  return d;
+}
+
 async function downloadImage(url) {
   const r = await fetch(url, { headers: { 'User-Agent': SUPPLIER_UA, 'Accept': 'image/*,*/*' }, redirect: 'follow', signal: AbortSignal.timeout(12000) });
   if (!r.ok) throw new Error(`Image download failed (${r.status})`);
@@ -768,6 +798,19 @@ export default async function handler(req, res) {
       } catch (error) {
         console.warn('Supplier image lookup failed:', error.message);
         return res.status(200).json({ found: false, error: error.message });
+      }
+    }
+
+    // ── Invoice Import (AI) — POST /api/products?invoiceDescription=true  { name, hint?, imageUrl? } ──
+    if (req.method === 'POST' && req.query.invoiceDescription === 'true') {
+      const { name, hint, imageUrl } = req.body || {};
+      if (!name) return res.status(400).json({ error: 'name is required' });
+      try {
+        const description = await generateProductDescription({ name: String(name), hint: hint ? String(hint).slice(0, 300) : '', imageUrl: imageUrl ? String(imageUrl) : '' });
+        return res.status(200).json({ success: true, description });
+      } catch (error) {
+        console.error('Invoice description error:', error);
+        return res.status(500).json({ error: error.message || 'Could not write a description' });
       }
     }
 
