@@ -146,8 +146,149 @@ async function pollinationsImage(prompt) {
   return Buffer.from(await r.arrayBuffer());
 }
 
+// ── Supplier website image lookup ───────────────────────────────────────────
+// Given the supplier's website and an item name, search the site and return the product's own
+// (usually high-resolution) photo. Tries Shopify and WooCommerce built-in search first, then falls
+// back to reading the site's normal search page + product page (og:image / JSON-LD).
+const SUPPLIER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
+const NAME_STOPWORDS = new Set(['the', 'a', 'an', 'and', 'of', 'for', 'with', 'pcs', 'pc', 'set', 'pack', 'new']);
+
+// Only public http(s) sites — this server fetches whatever address is typed in, so refuse internal/private ones
+function assertPublicUrl(raw) {
+  let u;
+  try { u = new URL(/^https?:\/\//i.test(raw) ? raw : `https://${raw}`); } catch { throw new Error('That does not look like a valid website address'); }
+  if (!/^https?:$/.test(u.protocol)) throw new Error('Only http/https websites are supported');
+  const h = u.hostname.toLowerCase();
+  const privateHost = h === 'localhost' || h.endsWith('.local') || h.endsWith('.internal') ||
+    /^(127\.|10\.|0\.|169\.254\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(h) || h === '::1' || h.startsWith('[');
+  if (privateHost && process.env.SUPPLIER_ALLOW_PRIVATE !== '1') throw new Error('That website address is not allowed');
+  return u;
+}
+
+async function supplierFetch(url, { json = false, timeout = 8000 } = {}) {
+  const r = await fetch(url, {
+    headers: { 'User-Agent': SUPPLIER_UA, 'Accept': json ? 'application/json' : 'text/html,application/xhtml+xml,*/*', 'Accept-Language': 'en-US,en;q=0.9' },
+    redirect: 'follow', signal: AbortSignal.timeout(timeout),
+  });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return json ? r.json() : r.text();
+}
+
+function nameTokens(s) {
+  return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').split(' ').filter(t => t.length > 1 && !NAME_STOPWORDS.has(t));
+}
+function editDistance(a, b) { // Levenshtein distance (covers spelling variants like walky/walkie)
+  const d = Array.from({ length: a.length + 1 }, (_, x) => [x, ...Array(b.length).fill(0)]);
+  for (let y = 1; y <= b.length; y++) d[0][y] = y;
+  for (let x = 1; x <= a.length; x++) for (let y = 1; y <= b.length; y++)
+    d[x][y] = Math.min(d[x - 1][y] + 1, d[x][y - 1] + 1, d[x - 1][y - 1] + (a[x - 1] === b[y - 1] ? 0 : 1));
+  return d[a.length][b.length];
+}
+function tokenMatches(t, cand) {
+  return cand.some(c => c === t || (t.length >= 4 && c.length >= 4 && (c.startsWith(t) || t.startsWith(c))) || (t.length >= 5 && c.length >= 5 && editDistance(t, c) <= 2));
+}
+// 0..1: how much of the invoice item name is found in the supplier's product title
+function matchScore(invoiceName, candidateTitle) {
+  const want = nameTokens(invoiceName), have = nameTokens(candidateTitle);
+  if (!want.length || !have.length) return 0;
+  return want.filter(t => tokenMatches(t, have)).length / want.length;
+}
+const MATCH_THRESHOLD = 0.6;
+
+function absUrl(src, base) { try { return new URL(String(src).replace(/&amp;/g, '&'), base).toString(); } catch { return ''; } }
+
+function bestCandidate(name, cands) {
+  let best = null;
+  for (const c of cands) {
+    if (!c.title || !c.image) continue;
+    const score = matchScore(name, c.title);
+    if (score >= MATCH_THRESHOLD && (!best || score > best.score)) best = { ...c, score };
+  }
+  return best;
+}
+
+// og:image / JSON-LD image from a product page — normally the full-size photo
+async function productPageImage(pageUrl) {
+  const html = await supplierFetch(pageUrl);
+  const og = html.match(/<meta[^>]+property=["']og:image(?::secure_url)?["'][^>]*content=["']([^"']+)["']/i) ||
+             html.match(/<meta[^>]+content=["']([^"']+)["'][^>]*property=["']og:image["']/i);
+  if (og) return absUrl(og[1], pageUrl);
+  for (const m of html.matchAll(/<script[^>]+application\/ld\+json[^>]*>([\s\S]*?)<\/script>/gi)) {
+    try {
+      const walk = (n) => Array.isArray(n) ? n.flatMap(walk) : (n && typeof n === 'object') ? [n, ...walk(Object.values(n))] : [];
+      const prod = walk(JSON.parse(m[1])).find(n => String(n['@type'] || '').includes('Product') && n.image);
+      if (prod) { const im = Array.isArray(prod.image) ? prod.image[0] : prod.image; return absUrl(typeof im === 'string' ? im : im?.url, pageUrl); }
+    } catch { /* ignore bad JSON-LD */ }
+  }
+  return '';
+}
+
+async function findSupplierProduct(siteUrl, name) {
+  const origin = assertPublicUrl(siteUrl).origin;
+  const q = encodeURIComponent(name);
+  const deadline = Date.now() + 40000;
+  const left = () => deadline - Date.now() > 3000;
+
+  // 1) Shopify predictive search
+  try {
+    const d = await supplierFetch(`${origin}/search/suggest.json?q=${q}&resources[type]=product&resources[limit]=8`, { json: true });
+    const prods = d?.resources?.results?.products || [];
+    const best = bestCandidate(name, prods.map(p => ({ title: p.title, image: p.featured_image?.url || p.image, page: absUrl(p.url, origin) })));
+    if (best) {
+      let image = '';
+      if (left()) { try { image = await productPageImage(best.page); } catch { /* use search thumbnail */ } }
+      return { image: image || absUrl(best.image, origin), title: best.title, page: best.page };
+    }
+  } catch { /* not Shopify */ }
+
+  // 2) WooCommerce Store API
+  if (left()) {
+    try {
+      const d = await supplierFetch(`${origin}/wp-json/wc/store/v1/products?search=${q}&per_page=8`, { json: true });
+      const best = bestCandidate(name, (Array.isArray(d) ? d : []).map(p => ({ title: String(p.name || '').replace(/&amp;/g, '&'), image: p.images?.[0]?.src, page: p.permalink })));
+      if (best) return { image: absUrl(best.image, origin), title: best.title, page: best.page };
+    } catch { /* not WooCommerce */ }
+  }
+
+  // 3) Generic: the site's normal search results page → best matching product link → its page image
+  const searchUrls = [`${origin}/search?q=${q}`, `${origin}/?s=${q}&post_type=product`, `${origin}/catalogsearch/result/?q=${q}`, `${origin}/search?search=${q}`, `${origin}/?s=${q}`];
+  for (const su of searchUrls) {
+    if (!left()) break;
+    let html;
+    try { html = await supplierFetch(su); } catch { continue; }
+    const cands = [];
+    for (const m of html.matchAll(/<a\b[^>]*href=["']([^"'#]+)["'][^>]*>([\s\S]*?)<\/a>/gi)) {
+      const href = absUrl(m[1], su);
+      if (!href || !href.startsWith(origin) || href === su) continue;
+      const inner = m[2];
+      const imgTag = inner.match(/<img\b[^>]*>/i)?.[0] || '';
+      const alt = imgTag.match(/\balt=["']([^"']*)["']/i)?.[1] || '';
+      const src = imgTag.match(/\b(?:data-src|data-lazy-src|src)=["']([^"']+)["']/i)?.[1] || '';
+      const title = (m[0].match(/\btitle=["']([^"']+)["']/i)?.[1] || inner.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() || alt).slice(0, 200);
+      cands.push({ title, image: src ? absUrl(src, su) : 'x', page: href, thumb: src ? absUrl(src, su) : '' });
+    }
+    const best = bestCandidate(name, cands);
+    if (best) {
+      let image = '';
+      if (left()) { try { image = await productPageImage(best.page); } catch { /* fall back to thumbnail */ } }
+      image = image || best.thumb;
+      if (image) return { image, title: best.title, page: best.page };
+    }
+  }
+  return null;
+}
+
+async function downloadImage(url) {
+  const r = await fetch(url, { headers: { 'User-Agent': SUPPLIER_UA, 'Accept': 'image/*,*/*' }, redirect: 'follow', signal: AbortSignal.timeout(12000) });
+  if (!r.ok) throw new Error(`Image download failed (${r.status})`);
+  const buf = Buffer.from(await r.arrayBuffer());
+  if (buf.length < 2000 || buf.length > 12 * 1024 * 1024) throw new Error('Image size looks wrong');
+  return buf;
+}
+
 async function uploadInvoiceItemImage(buffer) {
-  const mime = buffer[0] === 0x89 && buffer[1] === 0x50 ? 'image/png' : 'image/jpeg'; // Gemini returns PNG, others JPEG
+  const isWebp = buffer.slice(0, 4).toString() === 'RIFF' && buffer.slice(8, 12).toString() === 'WEBP';
+  const mime = buffer[0] === 0x89 && buffer[1] === 0x50 ? 'image/png' : isWebp ? 'image/webp' : buffer.slice(0, 3).toString() === 'GIF' ? 'image/gif' : 'image/jpeg';
   const dataUri = `data:${mime};base64,${buffer.toString('base64')}`;
   const hash = invoiceBufferHash(buffer);
   const result = await cloudinary.uploader.upload(dataUri, {
@@ -611,6 +752,22 @@ export default async function handler(req, res) {
       } catch (error) {
         console.error('Invoice extract error:', error);
         return res.status(500).json({ error: error.message || 'Invoice import failed' });
+      }
+    }
+
+    // ── Invoice Import (AI) — POST /api/products?supplierImage=true  { name, siteUrl } ─────────
+    // Looks the item up on the supplier's own website and returns its product photo (uploaded to Cloudinary).
+    if (req.method === 'POST' && req.query.supplierImage === 'true') {
+      const { name, siteUrl } = req.body || {};
+      if (!name || !siteUrl) return res.status(400).json({ error: 'name and siteUrl are required' });
+      try {
+        const hit = await findSupplierProduct(String(siteUrl), String(name));
+        if (!hit) return res.status(200).json({ found: false });
+        const imageUrl = await uploadInvoiceItemImage(await downloadImage(hit.image));
+        return res.status(200).json({ found: true, imageUrl, matchedTitle: hit.title, productUrl: hit.page });
+      } catch (error) {
+        console.warn('Supplier image lookup failed:', error.message);
+        return res.status(200).json({ found: false, error: error.message });
       }
     }
 
