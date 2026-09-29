@@ -32,24 +32,35 @@ async function callGemini(parts) {
     generationConfig: { responseMimeType: 'application/json', temperature: 0.1 },
   });
 
+  // Total time budget for Gemini. The function is limited to 60s (maxDuration), and cropping +
+  // uploading item photos happens afterwards, so stop retrying well before that and fail cleanly
+  // (a Vercel timeout returns a plain-text page, which the admin panel cannot read as JSON).
+  const deadline = Date.now() + 40000;
+
   let lastErr;
   for (const model of GEMINI_MODELS) {
     for (let attempt = 0; attempt < 3; attempt++) {
+      const remaining = deadline - Date.now();
+      if (remaining < 4000) throw lastErr || new Error('Google is taking too long to respond. Please try again in a minute.');
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
-      const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
-      const data = await r.json();
+      let r, data;
+      try {
+        r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, signal: AbortSignal.timeout(remaining) });
+        data = await r.json();
+      } catch (e) {
+        throw new Error('Google is taking too long to respond. Please try again in a minute.');
+      }
       if (r.ok) {
         const text = (data.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('');
         try { return JSON.parse(text); }
         catch { throw new Error('Could not read structured items from this invoice — try a clearer photo or scan'); }
       }
       lastErr = new Error(data.error?.message || `Gemini error (${r.status})`);
-      // Overloaded / rate-limited / server error: wait and retry, then fall back to the next model
       if (![429, 500, 503].includes(r.status)) {
         if (r.status === 404) break; // model not available for this key: try the next model
         throw lastErr;
       }
-      await new Promise(res => setTimeout(res, 1500 * (attempt + 1)));
+      await new Promise(res => setTimeout(res, 1000 * (attempt + 1)));
     }
   }
   throw lastErr;
