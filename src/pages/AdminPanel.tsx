@@ -2290,18 +2290,35 @@ function InvoiceImportSection() {
     }
   };
 
-  // Automatically write descriptions once each picture is ready (2 at a time, to stay within free-tier limits)
-  const descBusy = useRef(0);
+  // Writes all descriptions in ONE request per 8 items, once every picture has finished (saves free-tier quota)
+  const descBatchRunning = useRef(false);
   useEffect(() => {
-    if (stage !== 'review') return;
-    for (const r of rows) {
-      if (descBusy.current >= 2) break;
-      const pictureReady = (r.imageStatus === 'done' && !!r.imageUrl) || r.imageStatus === 'error';
-      if (r.descStatus === 'idle' && pictureReady && r.name.trim()) {
-        descBusy.current++;
-        fetchDescriptionFor(r).finally(() => { descBusy.current--; });
+    if (stage !== 'review' || descBatchRunning.current) return;
+    if (rows.length === 0 || !rows.every(r => r.imageStatus === 'done' || r.imageStatus === 'error')) return;
+    const todo = rows.filter(r => r.descStatus === 'idle' && r.name.trim());
+    if (todo.length === 0) return;
+    descBatchRunning.current = true;
+    const ids = new Set(todo.map(r => r.id));
+    setRows(rs => rs.map(r => ids.has(r.id) ? { ...r, descStatus: 'loading' } : r));
+    (async () => {
+      for (let i = 0; i < todo.length; i += 8) {
+        const chunk = todo.slice(i, i + 8);
+        try {
+          const res = await fetch('/api/products?invoiceDescriptions=true', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ items: chunk.map(r => ({ id: r.id, name: r.name, hint: r.description, imageUrl: r.imageUrl })) }),
+          });
+          const data = await res.json().catch(() => ({}));
+          const map: Record<string, string> = res.ok ? (data.descriptions || {}) : {};
+          setRows(rs => rs.map(r => chunk.some(c => c.id === r.id)
+            ? (map[r.id] ? { ...r, description: map[r.id], descStatus: 'done' } : { ...r, descStatus: 'error' })
+            : r));
+        } catch {
+          setRows(rs => rs.map(r => chunk.some(c => c.id === r.id) ? { ...r, descStatus: 'error' } : r));
+        }
       }
-    }
+      descBatchRunning.current = false;
+    })();
   }, [rows, stage]);
 
   // Looks each item up on the supplier's website. Found → that photo replaces the invoice crop.
