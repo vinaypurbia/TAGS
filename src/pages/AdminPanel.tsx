@@ -2203,7 +2203,8 @@ type InvoiceRow = {
   name: string; description: string; quantity: number | null; unitCost: number | null;
   category: string; subcategory: string; originalPrice: string; discountedPrice: string;
   imagePrompt: string;
-  imageUrl: string; imageSource: 'invoice' | 'ai' | ''; imageStatus: 'pending' | 'loading' | 'done' | 'error';
+  referenceImage: string;
+  imageUrl: string; imageSource: 'invoice' | 'ref' | 'ref-desc' | 'ai' | ''; imageStatus: 'pending' | 'loading' | 'done' | 'error';
   include: boolean;
 };
 
@@ -2235,15 +2236,15 @@ function InvoiceImportSection() {
   };
 
   // Free AI-generated picture (used when the invoice had no real photo for this item, or on "try a different picture")
-  const fetchImageFor = async (id: string, name: string, prompt: string) => {
+  const fetchImageFor = async (id: string, name: string, prompt: string, referenceImage = '') => {
     setRows(rs => rs.map(r => r.id === id ? { ...r, imageStatus: 'loading' } : r));
     try {
       const r = await fetch('/api/products?invoiceImage=true', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, prompt }),
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, prompt, referenceImage }),
       });
       const data = await r.json();
       if (!r.ok || !data.imageUrl) throw new Error(data.error || 'Image generation failed');
-      setRows(rs => rs.map(row => row.id === id ? { ...row, imageUrl: data.imageUrl, imageSource: 'ai', imageStatus: 'done' } : row));
+      setRows(rs => rs.map(row => row.id === id ? { ...row, imageUrl: data.imageUrl, imageSource: data.source || 'ai', imageStatus: 'done' } : row));
     } catch {
       setRows(rs => rs.map(row => row.id === id ? { ...row, imageStatus: 'error' } : row));
     }
@@ -2254,7 +2255,7 @@ function InvoiceImportSection() {
     const queue = [...list];
     const worker = async () => {
       let item;
-      while ((item = queue.shift())) await fetchImageFor(item.id, item.name, item.imagePrompt);
+      while ((item = queue.shift())) await fetchImageFor(item.id, item.name, item.imagePrompt, item.referenceImage);
     };
     await Promise.all(Array.from({ length: 3 }, worker));
   };
@@ -2287,13 +2288,14 @@ function InvoiceImportSection() {
         category: '', subcategory: '',
         originalPrice: it.unitCost ? String(Math.round(it.unitCost * (1 + INVOICE_ORIGINAL_MARKUP))) : '',
         discountedPrice: it.unitCost ? String(Math.round(it.unitCost * (1 + INVOICE_DISCOUNTED_MARKUP))) : '',
-        imageUrl: it.imageUrl || '', imageSource: it.imageSource || '',
-        imageStatus: it.imageUrl ? 'done' : 'pending', include: true,
+        referenceImage: it.referenceImage || '',
+        imageUrl: '', imageSource: '',
+        imageStatus: 'pending', include: true,
       }));
       setRows(newRows);
       setStage('review');
-      // Only items with no real invoice photo need the (free, AI-generated) fallback picture
-      fetchAllImages(newRows.filter(r => !r.imageUrl));
+      // Every item gets a NEW AI-generated picture (using its small invoice photo as a reference when there is one)
+      fetchAllImages(newRows);
     } catch (e: any) {
       setError(e.message || 'Could not read this invoice'); setStage('idle');
     } finally {
@@ -2339,7 +2341,7 @@ function InvoiceImportSection() {
         <div className="w-10 h-10 bg-purple-100 rounded-xl flex items-center justify-center shrink-0"><Wand2 className="w-5 h-5 text-purple-600" /></div>
         <div className="flex-1">
           <p className="text-sm font-black text-gray-800">Import from a Supplier Invoice</p>
-          <p className="text-xs text-gray-500 mt-0.5">Upload the invoice (PDF or photo). If the invoice shows a photo per item, we crop that exact photo out — otherwise a free AI image is generated instead. You verify everything below before importing.</p>
+          <p className="text-xs text-gray-500 mt-0.5">Upload the invoice (PDF or photo). The AI generates a new, clean product picture for every item, using the small invoice photo as a reference when there is one. You verify everything below before importing.</p>
         </div>
       </div>
 
@@ -2380,8 +2382,8 @@ function InvoiceImportSection() {
                   {row.imageStatus === 'error' && <div className="w-full h-full flex items-center justify-center text-red-400 text-[9px] font-bold text-center px-1">No image</div>}
                   {row.imageUrl && <img src={row.imageUrl} alt={row.name} className="w-full h-full object-cover" />}
                   {row.imageSource && (
-                    <span className={`absolute bottom-0 left-0 right-0 text-[7px] font-black uppercase tracking-wider text-center py-0.5 ${row.imageSource === 'invoice' ? 'bg-green-600/90 text-white' : 'bg-purple-500/90 text-white'}`}>
-                      {row.imageSource === 'invoice' ? 'From invoice' : 'AI approx.'}
+                    <span className={`absolute bottom-0 left-0 right-0 text-[7px] font-black uppercase tracking-wider text-center py-0.5 ${row.imageSource === 'ref' ? 'bg-green-600/90 text-white' : 'bg-purple-500/90 text-white'}`}>
+                      {row.imageSource === 'ref' ? 'AI from invoice' : row.imageSource === 'ref-desc' ? 'AI (invoice-based)' : 'AI approx.'}
                     </span>
                   )}
                 </div>
@@ -2406,7 +2408,7 @@ function InvoiceImportSection() {
 
                 {stage === 'review' && (
                   <div className="flex flex-col gap-1.5 shrink-0">
-                    <button onClick={() => fetchImageFor(row.id, row.name, row.imagePrompt)} title="Generate a different picture" className="w-7 h-7 flex items-center justify-center bg-gray-100 hover:bg-gray-200 text-gray-500 rounded-lg transition">
+                    <button onClick={() => fetchImageFor(row.id, row.name, row.imagePrompt, row.referenceImage)} title="Generate a different picture" className="w-7 h-7 flex items-center justify-center bg-gray-100 hover:bg-gray-200 text-gray-500 rounded-lg transition">
                       <RefreshCw className="w-3.5 h-3.5" />
                     </button>
                     <button onClick={() => removeRow(row.id)} title="Remove this item" className="w-7 h-7 flex items-center justify-center bg-gray-100 hover:bg-red-500 hover:text-white text-gray-500 rounded-lg transition">
