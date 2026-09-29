@@ -1,12 +1,128 @@
 import { MongoClient, ObjectId } from 'mongodb';
 import { v2 as cloudinary } from 'cloudinary';
 import { waitUntil } from '@vercel/functions';
+import crypto from 'crypto';
+
+// Default body-size limit is too small for a base64-encoded invoice photo/PDF.
+export const config = { api: { bodyParser: { sizeLimit: '20mb' } } };
 
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
   api_key: process.env.CLOUDINARY_API_KEY,
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
+
+// ── Invoice Import (AI) — fully free: Gemini (free tier) + Jimp crop + Pollinations ────────
+// Free tier: Google AI Studio, no credit card. Get a key at https://aistudio.google.com
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const GEMINI_MODEL = 'gemini-2.5-flash';
+
+function invoiceBufferHash(buffer) {
+  return crypto.createHash('md5').update(buffer).digest('hex').slice(0, 16);
+}
+
+async function callGemini(parts) {
+  if (!GEMINI_API_KEY) throw new Error('GEMINI_API_KEY is not configured on the server');
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents: [{ parts }],
+      generationConfig: { responseMimeType: 'application/json', temperature: 0.1 },
+    }),
+  });
+  const data = await r.json();
+  if (!r.ok) throw new Error(data.error?.message || `Gemini error (${r.status})`);
+  const text = (data.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('');
+  try { return JSON.parse(text); }
+  catch { throw new Error('Could not read structured items from this invoice — try a clearer photo or scan'); }
+}
+
+// For a photo/scan, also asks Gemini to locate each item's own product photo on the page (a tight
+// bounding box, 0–1000 normalized) so we can crop the REAL photo out — an exact match, not a guess.
+// PDFs have no pixels to crop from, so that part is skipped there.
+async function extractInvoiceItems(buffer, mimeType) {
+  const isImage = mimeType.startsWith('image/');
+  const prompt = `This is a supplier invoice for a toy/gadget shop. Read every line item and return ONLY a JSON array ` +
+    `(no markdown, no code fences, no prose) where each element looks like:\n` +
+    `{\n` +
+    `  "name": string,\n` +
+    `  "quantity": number | null,\n` +
+    `  "unitCost": number | null,\n` +
+    `  "description": string,\n` +
+    (isImage ?
+      `  "hasPhoto": boolean,        // true ONLY if this invoice page actually shows a real photo/picture of this exact item next to its row\n` +
+      `  "photoBox": {"ymin":0,"xmin":0,"ymax":0,"xmax":0} | null,  // ONLY when hasPhoto is true: the TIGHT bounding box around just that one photo, each value 0-1000 normalized to the full page. Do not include neighboring photos, text or table borders.\n`
+      : '') +
+    `  "imagePrompt": string        // a detailed visual description of the item for generating a matching product photo if no real photo is available: colors, shape, material, packaging, visible text/branding\n` +
+    `}\n\n` +
+    `Rules:\n` +
+    `- name: the product name as written, cleaned up (title case, no SKU/item codes)\n` +
+    `- quantity: the ordered quantity as a plain number\n` +
+    `- unitCost: the per-unit cost in the invoice's currency, as a plain number (no symbol, no commas)\n` +
+    `- Skip subtotal, tax, discount, shipping and total lines — only real product line items\n` +
+    `- If a field is illegible or missing, use null for that field rather than guessing\n` +
+    `Return only the JSON array, nothing else.`;
+
+  const items = await callGemini([
+    { inline_data: { mime_type: mimeType, data: buffer.toString('base64') } },
+    { text: prompt },
+  ]);
+  if (!Array.isArray(items)) throw new Error('Unexpected response while reading the invoice');
+
+  return items
+    .filter(it => it && typeof it.name === 'string' && it.name.trim())
+    .map(it => ({
+      name: it.name.trim(),
+      quantity: Number.isFinite(it.quantity) ? it.quantity : null,
+      unitCost: Number.isFinite(it.unitCost) ? it.unitCost : null,
+      description: typeof it.description === 'string' ? it.description.trim() : '',
+      hasPhoto: isImage && !!it.hasPhoto && it.photoBox && [it.photoBox.ymin, it.photoBox.xmin, it.photoBox.ymax, it.photoBox.xmax].every(Number.isFinite),
+      photoBox: it.photoBox || null,
+      imagePrompt: typeof it.imagePrompt === 'string' ? it.imagePrompt.trim() : '',
+    }));
+}
+
+// Crop the item's real photo straight out of the invoice image (pure JS, no native deps)
+async function cropInvoicePhoto(sourceBuffer, box) {
+  const { Jimp } = await import('jimp');
+  const image = await Jimp.read(sourceBuffer);
+  const W = image.bitmap.width, H = image.bitmap.height;
+  const pad = 0.015; // a little breathing room around Gemini's box
+  const x0 = Math.max(0, Math.round((box.xmin / 1000 - pad) * W));
+  const y0 = Math.max(0, Math.round((box.ymin / 1000 - pad) * H));
+  const x1 = Math.min(W, Math.round((box.xmax / 1000 + pad) * W));
+  const y1 = Math.min(H, Math.round((box.ymax / 1000 + pad) * H));
+  const w = Math.max(1, x1 - x0), h = Math.max(1, y1 - y0);
+  image.crop({ x: x0, y: y0, w, h });
+  return await image.getBuffer('image/jpeg');
+}
+
+// Fallback: a free AI-generated image, guided by Gemini's description of the invoice item
+async function pollinationsImage(prompt) {
+  const encoded = encodeURIComponent(`${prompt}, plain white background, studio lighting, e-commerce catalog photo`);
+  const url = `https://image.pollinations.ai/prompt/${encoded}?width=1000&height=1000&nologo=true&seed=${Date.now() % 100000}`;
+  const r = await fetch(url);
+  if (!r.ok) throw new Error('Image generation failed');
+  return Buffer.from(await r.arrayBuffer());
+}
+
+async function uploadInvoiceItemImage(buffer) {
+  const dataUri = `data:image/jpeg;base64,${buffer.toString('base64')}`;
+  const hash = invoiceBufferHash(buffer);
+  const result = await cloudinary.uploader.upload(dataUri, {
+    folder: 'tags-invoice-items',
+    public_id: `item_${hash}`,
+    format: 'webp',
+    transformation: [{ width: 1000, height: 1000, crop: 'limit', quality: 'auto:good' }],
+    overwrite: false,
+    unique_filename: true,
+    invalidate: true,
+    resource_type: 'image',
+  });
+  return result.secure_url;
+}
 
 // ── Helper: re-host any external image URL on Cloudinary ────────────────────
 // Facebook CDN, Google Images, WhatsApp media etc. expire or block hotlinking.
@@ -87,62 +203,6 @@ async function postFacebookStory(imageUrl, { pageId, pageToken }) {
   const photo = await metaCall(`${pageId}/photos`, { url: imageUrl, published: 'false', access_token: pageToken });
   const story = await metaCall(`${pageId}/photo_stories`, { photo_id: photo.id, access_token: pageToken });
   return story.post_id;
-}
-
-// ── Video stories (used when the admin panel sends an animated story) ──────
-// Cloudinary delivers the uploaded clip as plain H.264 MP4, which is what Instagram/Facebook accept.
-function toStoryMp4(url) {
-  return url
-    .replace('/video/upload/', '/video/upload/f_mp4,vc_h264,ac_none,fps_30,c_limit,w_1080,h_1920,q_auto:best/')
-    .replace(/\.[a-z0-9]+$/i, '.mp4');
-}
-
-// The MP4 is created on first request; request it once here so Instagram/Facebook find it ready.
-async function warmStoryVideo(url) {
-  for (let i = 0; i < 6; i++) {
-    try {
-      const r = await fetch(url);
-      await r.arrayBuffer();
-      if (r.ok) return;
-    } catch { /* retry */ }
-    await new Promise(r => setTimeout(r, 2000));
-  }
-}
-
-async function postInstagramVideoStory(videoUrl, { igId, pageToken }) {
-  if (!igId) throw new Error('No Instagram Business/Creator account is linked to this Page (or set IG_USER_ID)');
-  const container = await metaCall(`${igId}/media`, { video_url: videoUrl, media_type: 'STORIES', access_token: pageToken });
-  let ready = false;
-  for (let i = 0; i < 20; i++) {
-    const st = await metaCall(container.id, { fields: 'status_code,status', access_token: pageToken }, 'GET');
-    if (st.status_code === 'FINISHED') { ready = true; break; }
-    if (st.status_code === 'ERROR' || st.status_code === 'EXPIRED') {
-      throw new Error(`Instagram rejected the video (${st.status_code}${st.status ? ': ' + st.status : ''})`);
-    }
-    await new Promise(r => setTimeout(r, 2000));
-  }
-  if (!ready) throw new Error('Instagram is still processing the video — check the Instagram app in a minute');
-  const pub = await metaCall(`${igId}/media_publish`, { creation_id: container.id, access_token: pageToken });
-  return pub.id;
-}
-
-// Facebook Page video story: start session → tell Facebook to fetch our hosted file → finish (publish).
-async function postFacebookVideoStory(videoUrl, { pageId, pageToken }) {
-  const start = await metaCall(`${pageId}/video_stories`, { upload_phase: 'start', access_token: pageToken });
-  if (!start.video_id || !start.upload_url) throw new Error('Facebook did not start the video upload');
-  const up = await fetch(start.upload_url, { method: 'POST', headers: { Authorization: `OAuth ${pageToken}`, file_url: videoUrl } });
-  const upJson = await up.json().catch(() => ({}));
-  if (!up.ok || upJson.error || upJson.success === false) {
-    throw new Error(upJson.error?.message || `Facebook could not fetch the video (${up.status})`);
-  }
-  let lastErr;
-  for (let i = 0; i < 10; i++) {          // Facebook may still be processing the video → retry finish
-    try {
-      const fin = await metaCall(`${pageId}/video_stories`, { upload_phase: 'finish', video_id: start.video_id, access_token: pageToken });
-      return fin.post_id || start.video_id;
-    } catch (e) { lastErr = e; await new Promise(r => setTimeout(r, 3000)); }
-  }
-  throw lastErr || new Error('Facebook could not publish the video story');
 }
 
 // Normal Instagram feed post (not a story). Instagram only accepts JPEG, in an aspect ratio
@@ -408,10 +468,54 @@ function cleanCloudinaryUrl(url) {
   }
 }
 
-// Video stories wait on Meta's video processing, so allow this function up to 60s.
-export const config = { maxDuration: 60 };
-
 export default async function handler(req, res) {
+
+    // ── Invoice Import (AI) — POST /api/products?invoiceExtract=true  { fileBase64, mimeType } ──
+    if (req.method === 'POST' && req.query.invoiceExtract === 'true') {
+      const { fileBase64, mimeType } = req.body || {};
+      if (!fileBase64) return res.status(400).json({ error: 'fileBase64 is required' });
+      const buffer = Buffer.from(fileBase64, 'base64');
+      if (buffer.length === 0) return res.status(400).json({ error: 'No file received' });
+      if (buffer.length > 15 * 1024 * 1024) return res.status(413).json({ error: 'File too large. Maximum size is 15 MB.' });
+      const mt = mimeType || 'application/pdf';
+      if (mt !== 'application/pdf' && !mt.startsWith('image/')) {
+        return res.status(400).json({ error: 'Upload a PDF or a photo/scan (JPEG, PNG) of the invoice' });
+      }
+      try {
+        const items = await extractInvoiceItems(buffer, mt);
+        if (items.length === 0) return res.status(422).json({ error: 'No line items found in this invoice. Try a clearer scan.' });
+        // Crop each item's real photo now, while we still have the original bytes in memory.
+        const withPhotos = await Promise.all(items.map(async (it) => {
+          if (!it.hasPhoto) return { ...it, imageUrl: '', imageSource: '' };
+          try {
+            const cropped = await cropInvoicePhoto(buffer, it.photoBox);
+            return { ...it, imageUrl: await uploadInvoiceItemImage(cropped), imageSource: 'invoice' };
+          } catch {
+            return { ...it, imageUrl: '', imageSource: '' }; // crop failed → frontend falls back to the AI image
+          }
+        }));
+        return res.status(200).json({ success: true, items: withPhotos });
+      } catch (error) {
+        console.error('Invoice extract error:', error);
+        return res.status(500).json({ error: error.message || 'Invoice import failed' });
+      }
+    }
+
+    // ── Invoice Import (AI) — POST /api/products?invoiceImage=true  { name, prompt? } ──────────
+    // Free AI-generated fallback picture: used when the invoice had no real photo for the item,
+    // and for the "try a different picture" button.
+    if (req.method === 'POST' && req.query.invoiceImage === 'true') {
+      const { name, prompt } = req.body || {};
+      if (!name) return res.status(400).json({ error: 'name is required' });
+      try {
+        const buf = await pollinationsImage((prompt || name).trim());
+        const imageUrl = await uploadInvoiceItemImage(buf);
+        return res.status(200).json({ success: true, imageUrl, source: 'ai' });
+      } catch (error) {
+        console.error('Invoice image error:', error);
+        return res.status(500).json({ error: error.message || 'Image generation failed' });
+      }
+    }
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -759,18 +863,13 @@ export default async function handler(req, res) {
     // ── Story Broadcast (Instagram + Facebook Page stories) ──────────────────
     // POST /api/products  body: { storyBroadcast: true, imageUrl, platforms: ['instagram','facebook'] }
     if (req.method === 'POST' && req.body?.storyBroadcast === true) {
-      const { imageUrl, videoUrl, platforms } = req.body;
-      const isVideo = !!videoUrl;
-      const clean = String((isVideo ? videoUrl : imageUrl) || '').replace(/\?.*$/, '');   // keep the exact upload URL (incl. version segment)
-      // Only our own Cloudinary media. Photos must be JPEG (Instagram rejects other formats for stories);
-      // videos are re-delivered as H.264 MP4 below, whatever format the browser recorded.
+      const { imageUrl, platforms } = req.body;
+      const clean = String(imageUrl || '').replace(/\?.*$/, '');   // keep the exact upload URL (incl. version segment)
+      // Only our own Cloudinary images, and JPEG only (Instagram rejects other formats for stories)
       if (!clean.startsWith(`https://res.cloudinary.com/${process.env.CLOUDINARY_CLOUD_NAME}/`)) {
         return res.status(400).json({ error: 'imageUrl must be one of your Cloudinary images' });
       }
-      if (isVideo && !clean.includes('/video/upload/')) {
-        return res.status(400).json({ error: 'videoUrl must be one of your Cloudinary videos' });
-      }
-      if (!isVideo && !/\.jpe?g$/i.test(clean)) {
+      if (!/\.jpe?g$/i.test(clean)) {
         return res.status(400).json({ error: 'Story image must be a JPEG — /api/upload returned a different format' });
       }
       const wanted = Array.isArray(platforms) ? platforms.filter(p => p === 'instagram' || p === 'facebook') : [];
@@ -778,12 +877,8 @@ export default async function handler(req, res) {
 
       try {
         const acct = await resolveStoryAccounts();
-        const mediaUrl = isVideo ? toStoryMp4(clean) : clean;
-        if (isVideo) await warmStoryVideo(mediaUrl);
-        const jobs = isVideo
-          ? { instagram: postInstagramVideoStory, facebook: postFacebookVideoStory }
-          : { instagram: postInstagramStory, facebook: postFacebookStory };
-        const settled = await Promise.allSettled(wanted.map(p => jobs[p](mediaUrl, acct)));
+        const jobs = { instagram: postInstagramStory, facebook: postFacebookStory };
+        const settled = await Promise.allSettled(wanted.map(p => jobs[p](clean, acct)));
         const results = {};
         wanted.forEach((p, i) => {
           const r = settled[i];
