@@ -123,7 +123,62 @@ async function cropInvoicePhoto(sourceBuffer, box) {
   const y1 = Math.min(H, Math.round((box.ymax / 1000 + pad) * H));
   const w = Math.max(1, x1 - x0), h = Math.max(1, y1 - y0);
   image.crop({ x: x0, y: y0, w, h });
-  return await image.getBuffer('image/jpeg');
+  // This crop is only a REFERENCE for the AI (never the product image), so keep it small
+  image.scaleToFit({ w: 640, h: 640 });
+  return await image.getBuffer('image/jpeg', { quality: 80 });
+}
+
+// Generate a brand-new, clean product photo using the small invoice photo as a reference.
+// Needs an image-capable Gemini model on this key (some are paid-only) — returns null when unavailable
+// so the caller can fall back to the free text-to-image path.
+const GEMINI_IMAGE_MODELS = [
+  process.env.GEMINI_IMAGE_MODEL || 'gemini-3.1-flash-image-preview',
+  'gemini-2.5-flash-image',
+];
+
+async function geminiImageFromReference(refBuffer, name, prompt) {
+  if (!GEMINI_API_KEY) return null;
+  const instruction =
+    `Using the attached small reference photo of this product ("${name}"), create a NEW high-resolution, clean e-commerce product photo of the same product. ` +
+    `Keep the exact same product design, shape, colours, characters, packaging and any visible text/branding. ` +
+    `Plain white background, soft studio lighting, product centred and fully visible, square 1:1 image. ` +
+    `Do not copy the reference's low quality, glare, cropping or neighbouring items.` +
+    (prompt ? ` Extra detail about the product: ${prompt}` : '');
+  const body = JSON.stringify({
+    contents: [{ parts: [
+      { inline_data: { mime_type: 'image/jpeg', data: refBuffer.toString('base64') } },
+      { text: instruction },
+    ] }],
+    generationConfig: { responseModalities: ['IMAGE'] },
+  });
+  for (const model of GEMINI_IMAGE_MODELS) {
+    try {
+      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body, signal: AbortSignal.timeout(45000),
+      });
+      const data = await r.json();
+      if (!r.ok) { console.warn(`Image model ${model} unavailable (${r.status}):`, data.error?.message); continue; }
+      const part = (data.candidates?.[0]?.content?.parts || []).find(p => (p.inlineData || p.inline_data)?.data);
+      const inline = part && (part.inlineData || part.inline_data);
+      if (inline) return Buffer.from(inline.data, 'base64');
+    } catch (e) {
+      console.warn(`Image model ${model} failed:`, e.message);
+    }
+  }
+  return null;
+}
+
+// Free path: have Gemini (text/vision) study the reference photo and write a precise description,
+// which then drives the free text-to-image generator.
+async function describeReference(refBuffer, name) {
+  try {
+    const out = await callGemini([
+      { inline_data: { mime_type: 'image/jpeg', data: refBuffer.toString('base64') } },
+      { text: `This is a small reference photo of a product called "${name}". Return ONLY JSON: {"description": string} where description is a precise visual description ` +
+              `for recreating this exact product in a new studio photo: shape, colours, material, characters/graphics, packaging, visible text/branding. No mention of the photo quality.` },
+    ]);
+    return typeof out?.description === 'string' ? out.description.trim() : '';
+  } catch { return ''; }
 }
 
 // Fallback: a free AI-generated image, guided by Gemini's description of the invoice item
@@ -136,7 +191,8 @@ async function pollinationsImage(prompt) {
 }
 
 async function uploadInvoiceItemImage(buffer) {
-  const dataUri = `data:image/jpeg;base64,${buffer.toString('base64')}`;
+  const mime = buffer[0] === 0x89 && buffer[1] === 0x50 ? 'image/png' : 'image/jpeg'; // Gemini returns PNG, others JPEG
+  const dataUri = `data:${mime};base64,${buffer.toString('base64')}`;
   const hash = invoiceBufferHash(buffer);
   const result = await cloudinary.uploader.upload(dataUri, {
     folder: 'tags-invoice-items',
@@ -585,14 +641,16 @@ export default async function handler(req, res) {
       try {
         const items = await extractInvoiceItems(buffer, mt);
         if (items.length === 0) return res.status(422).json({ error: 'No line items found in this invoice. Try a clearer scan.' });
-        // Crop each item's real photo now, while we still have the original bytes in memory.
+        // Crop each item's small invoice photo now (while we still have the original bytes) and hand it
+        // back as a compact REFERENCE only. It is never used as the product image: the AI generates a new one from it.
         const withPhotos = await Promise.all(items.map(async (it) => {
-          if (!it.hasPhoto) return { ...it, imageUrl: '', imageSource: '' };
+          const { hasPhoto, photoBox, ...rest } = it;
+          if (!hasPhoto) return { ...rest, imageUrl: '', imageSource: '', referenceImage: '' };
           try {
-            const cropped = await cropInvoicePhoto(buffer, it.photoBox);
-            return { ...it, imageUrl: await uploadInvoiceItemImage(cropped), imageSource: 'invoice' };
+            const cropped = await cropInvoicePhoto(buffer, photoBox);
+            return { ...rest, imageUrl: '', imageSource: '', referenceImage: `data:image/jpeg;base64,${cropped.toString('base64')}` };
           } catch {
-            return { ...it, imageUrl: '', imageSource: '' }; // crop failed → frontend falls back to the AI image
+            return { ...rest, imageUrl: '', imageSource: '', referenceImage: '' };
           }
         }));
         return res.status(200).json({ success: true, items: withPhotos });
@@ -606,12 +664,32 @@ export default async function handler(req, res) {
     // Free AI-generated fallback picture: used when the invoice had no real photo for the item,
     // and for the "try a different picture" button.
     if (req.method === 'POST' && req.query.invoiceImage === 'true') {
-      const { name, prompt } = req.body || {};
+      const { name, prompt, referenceImage } = req.body || {};
       if (!name) return res.status(400).json({ error: 'name is required' });
       try {
-        const buf = await pollinationsImage((prompt || name).trim());
+        let refBuf = null;
+        if (typeof referenceImage === 'string' && referenceImage.includes('base64,')) {
+          refBuf = Buffer.from(referenceImage.split('base64,')[1], 'base64');
+          if (refBuf.length === 0) refBuf = null;
+        }
+        let buf = null, source = 'ai';
+        // 1) Best: true image-to-image — a new clean photo generated from the invoice reference
+        if (refBuf) {
+          buf = await geminiImageFromReference(refBuf, name, (prompt || '').trim());
+          if (buf) source = 'ref';
+        }
+        // 2) Free fallback: Gemini describes the reference photo, then text-to-image draws it
+        if (!buf) {
+          let desc = (prompt || name).trim();
+          if (refBuf) {
+            const d = await describeReference(refBuf, name);
+            if (d) desc = `${name}. ${d}`;
+          }
+          buf = await pollinationsImage(desc);
+          if (refBuf) source = 'ref-desc';
+        }
         const imageUrl = await uploadInvoiceItemImage(buf);
-        return res.status(200).json({ success: true, imageUrl, source: 'ai' });
+        return res.status(200).json({ success: true, imageUrl, source });
       } catch (error) {
         console.error('Invoice image error:', error);
         return res.status(500).json({ error: error.message || 'Image generation failed' });
