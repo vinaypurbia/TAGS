@@ -89,6 +89,62 @@ async function postFacebookStory(imageUrl, { pageId, pageToken }) {
   return story.post_id;
 }
 
+// ── Video stories (used when the admin panel sends an animated story) ──────
+// Cloudinary delivers the uploaded clip as plain H.264 MP4, which is what Instagram/Facebook accept.
+function toStoryMp4(url) {
+  return url
+    .replace('/video/upload/', '/video/upload/f_mp4,vc_h264,ac_none,fps_30,c_limit,w_1080,h_1920,q_auto:best/')
+    .replace(/\.[a-z0-9]+$/i, '.mp4');
+}
+
+// The MP4 is created on first request; request it once here so Instagram/Facebook find it ready.
+async function warmStoryVideo(url) {
+  for (let i = 0; i < 6; i++) {
+    try {
+      const r = await fetch(url);
+      await r.arrayBuffer();
+      if (r.ok) return;
+    } catch { /* retry */ }
+    await new Promise(r => setTimeout(r, 2000));
+  }
+}
+
+async function postInstagramVideoStory(videoUrl, { igId, pageToken }) {
+  if (!igId) throw new Error('No Instagram Business/Creator account is linked to this Page (or set IG_USER_ID)');
+  const container = await metaCall(`${igId}/media`, { video_url: videoUrl, media_type: 'STORIES', access_token: pageToken });
+  let ready = false;
+  for (let i = 0; i < 20; i++) {
+    const st = await metaCall(container.id, { fields: 'status_code,status', access_token: pageToken }, 'GET');
+    if (st.status_code === 'FINISHED') { ready = true; break; }
+    if (st.status_code === 'ERROR' || st.status_code === 'EXPIRED') {
+      throw new Error(`Instagram rejected the video (${st.status_code}${st.status ? ': ' + st.status : ''})`);
+    }
+    await new Promise(r => setTimeout(r, 2000));
+  }
+  if (!ready) throw new Error('Instagram is still processing the video — check the Instagram app in a minute');
+  const pub = await metaCall(`${igId}/media_publish`, { creation_id: container.id, access_token: pageToken });
+  return pub.id;
+}
+
+// Facebook Page video story: start session → tell Facebook to fetch our hosted file → finish (publish).
+async function postFacebookVideoStory(videoUrl, { pageId, pageToken }) {
+  const start = await metaCall(`${pageId}/video_stories`, { upload_phase: 'start', access_token: pageToken });
+  if (!start.video_id || !start.upload_url) throw new Error('Facebook did not start the video upload');
+  const up = await fetch(start.upload_url, { method: 'POST', headers: { Authorization: `OAuth ${pageToken}`, file_url: videoUrl } });
+  const upJson = await up.json().catch(() => ({}));
+  if (!up.ok || upJson.error || upJson.success === false) {
+    throw new Error(upJson.error?.message || `Facebook could not fetch the video (${up.status})`);
+  }
+  let lastErr;
+  for (let i = 0; i < 10; i++) {          // Facebook may still be processing the video → retry finish
+    try {
+      const fin = await metaCall(`${pageId}/video_stories`, { upload_phase: 'finish', video_id: start.video_id, access_token: pageToken });
+      return fin.post_id || start.video_id;
+    } catch (e) { lastErr = e; await new Promise(r => setTimeout(r, 3000)); }
+  }
+  throw lastErr || new Error('Facebook could not publish the video story');
+}
+
 // Normal Instagram feed post (not a story). Instagram only accepts JPEG, in an aspect ratio
 // between 4:5 (portrait) and 1.91:1 (landscape) — so before converting to JPEG, Cloudinary is
 // asked to pad (never crop) anything outside that range onto a white background until it fits,
@@ -351,6 +407,9 @@ function cleanCloudinaryUrl(url) {
     return url;
   }
 }
+
+// Video stories wait on Meta's video processing, so allow this function up to 60s.
+export const config = { maxDuration: 60 };
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -700,13 +759,18 @@ export default async function handler(req, res) {
     // ── Story Broadcast (Instagram + Facebook Page stories) ──────────────────
     // POST /api/products  body: { storyBroadcast: true, imageUrl, platforms: ['instagram','facebook'] }
     if (req.method === 'POST' && req.body?.storyBroadcast === true) {
-      const { imageUrl, platforms } = req.body;
-      const clean = String(imageUrl || '').replace(/\?.*$/, '');   // keep the exact upload URL (incl. version segment)
-      // Only our own Cloudinary images, and JPEG only (Instagram rejects other formats for stories)
+      const { imageUrl, videoUrl, platforms } = req.body;
+      const isVideo = !!videoUrl;
+      const clean = String((isVideo ? videoUrl : imageUrl) || '').replace(/\?.*$/, '');   // keep the exact upload URL (incl. version segment)
+      // Only our own Cloudinary media. Photos must be JPEG (Instagram rejects other formats for stories);
+      // videos are re-delivered as H.264 MP4 below, whatever format the browser recorded.
       if (!clean.startsWith(`https://res.cloudinary.com/${process.env.CLOUDINARY_CLOUD_NAME}/`)) {
         return res.status(400).json({ error: 'imageUrl must be one of your Cloudinary images' });
       }
-      if (!/\.jpe?g$/i.test(clean)) {
+      if (isVideo && !clean.includes('/video/upload/')) {
+        return res.status(400).json({ error: 'videoUrl must be one of your Cloudinary videos' });
+      }
+      if (!isVideo && !/\.jpe?g$/i.test(clean)) {
         return res.status(400).json({ error: 'Story image must be a JPEG — /api/upload returned a different format' });
       }
       const wanted = Array.isArray(platforms) ? platforms.filter(p => p === 'instagram' || p === 'facebook') : [];
@@ -714,8 +778,12 @@ export default async function handler(req, res) {
 
       try {
         const acct = await resolveStoryAccounts();
-        const jobs = { instagram: postInstagramStory, facebook: postFacebookStory };
-        const settled = await Promise.allSettled(wanted.map(p => jobs[p](clean, acct)));
+        const mediaUrl = isVideo ? toStoryMp4(clean) : clean;
+        if (isVideo) await warmStoryVideo(mediaUrl);
+        const jobs = isVideo
+          ? { instagram: postInstagramVideoStory, facebook: postFacebookVideoStory }
+          : { instagram: postInstagramStory, facebook: postFacebookStory };
+        const settled = await Promise.allSettled(wanted.map(p => jobs[p](mediaUrl, acct)));
         const results = {};
         wanted.forEach((p, i) => {
           const r = settled[i];
