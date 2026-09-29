@@ -2370,9 +2370,15 @@ function drawSparkleEffect(ctx: CanvasRenderingContext2D, W: number, H: number) 
   }
 }
 
-function drawFireEffect(ctx: CanvasRenderingContext2D, x: number, y: number, scale: number) {
+function drawFireEffect(ctx: CanvasRenderingContext2D, x: number, y: number, scale: number, t?: number) {
   ctx.save();
   ctx.translate(x, y);
+  if (t !== undefined) {   // animated: sway + stretch, pivoting on the base of the flame
+    ctx.translate(0, 20 * scale);
+    ctx.rotate(0.07 * Math.sin(TAU * 1.5 * t) + 0.03 * Math.sin(TAU * 3.5 * t + 1));
+    ctx.scale(1 + 0.05 * Math.sin(TAU * 2 * t + 2), 1 + 0.10 * Math.sin(TAU * 2.5 * t));
+    ctx.translate(0, -20 * scale);
+  }
   ctx.scale(scale, scale);
   const grad = ctx.createLinearGradient(0, -70, 0, 20);
   grad.addColorStop(0, '#FFD447'); grad.addColorStop(0.55, '#FF7A00'); grad.addColorStop(1, '#E11D48');
@@ -2437,6 +2443,97 @@ function drawArrowEffect(ctx: CanvasRenderingContext2D, fromX: number, fromY: nu
   ctx.beginPath(); ctx.moveTo(fromX, fromY); ctx.quadraticCurveTo(ctrlX, ctrlY, toX, toY); ctx.stroke();
   ctx.fillStyle = '#FFD447'; head(); ctx.fill();
   ctx.restore();
+}
+
+// ── Animated effects ────────────────────────────────────────────────────────
+// Sparkle / Fire / Confetti move. Instagram & Facebook can't show a moving picture, so when any of
+// them is on, the story is recorded as a short video (STORY_LOOP_S seconds) and posted as a video story.
+// Every motion below repeats a whole number of times per loop, so the video loops without a jump.
+const STORY_LOOP_S = 6;
+const TAU = Math.PI * 2;
+
+// Cloudinary delivers any uploaded video as a plain H.264 MP4 (what Instagram / Facebook / WhatsApp accept)
+const storyMp4Url = (u: string) =>
+  u.replace('/video/upload/', '/video/upload/f_mp4,vc_h264,ac_none,fps_30,c_limit,w_1080,h_1920,q_auto:best/').replace(/\.[a-z0-9]+$/i, '.mp4');
+
+// Where the flame sits (mirrors the layout in drawStory: image card at 120,350 size 840)
+const storyFireSpot = (hasBadge: boolean) => hasBadge ? { x: 780, y: 428 } : { x: 870, y: 480 };
+
+function drawSparkleAnimated(ctx: CanvasRenderingContext2D, W: number, H: number, t: number) {
+  const rnd = seededRandom(7);
+  for (let i = 0; i < 30; i++) {
+    const zone = rnd();
+    let x: number, y: number;
+    if (zone < 0.55) { x = rnd() < 0.5 ? 18 + rnd() * 84 : W - 102 + rnd() * 84; y = 300 + rnd() * (H - 620); }
+    else if (zone < 0.8) { x = rnd() * W; y = 20 + rnd() * 220; }
+    else { x = rnd() * W; y = H - 240 + rnd() * 220; }
+    const r = 11 + rnd() * 24;
+    const color = rnd() < 0.55 ? '#FFFFFF' : '#FFD447';
+    const baseAlpha = 0.6 + rnd() * 0.4;
+    const phase = rnd();
+    const k = 3 + (i % 4);                                              // 3–6 twinkles per loop
+    const s = 0.5 + 0.5 * Math.sin(TAU * (k * t / STORY_LOOP_S + phase)); // 0..1
+    drawSparkleStar(ctx, x, y, r * (0.35 + 0.75 * s), color, baseAlpha * (0.25 + 0.75 * s));
+  }
+}
+
+function drawEmbersAnimated(ctx: CanvasRenderingContext2D, x: number, y: number, scale: number, t: number) {
+  for (let i = 0; i < 7; i++) {
+    const p = (t / 2 + i / 7) % 1;                                      // one rise every 2s
+    const px = x + (i - 3) * 7 * scale * 0.5 + Math.sin(TAU * (p * 1.5 + i * 0.29)) * 14 * scale;
+    const py = y - 30 * scale - p * 120 * scale;
+    if (py < 322) continue;                                             // keep clear of the top label pill
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, 1 - p) * 0.95;
+    ctx.fillStyle = i % 2 ? '#FFD447' : '#FF7A00';
+    ctx.beginPath(); ctx.arc(px, py, 3 + 6 * (1 - p), 0, TAU); ctx.fill();
+    ctx.restore();
+  }
+}
+
+function drawConfettiAnimated(ctx: CanvasRenderingContext2D, W: number, H: number, t: number) {
+  const colors = ['#FA5600', '#FFD447', '#25D366', '#2AABEE', '#E11D48', '#FFFFFF'];
+  const rnd = seededRandom(31);
+  const zoneH = H * 0.42 + 60;
+  for (let i = 0; i < 52; i++) {
+    const x0 = rnd() * W;
+    const y0 = rnd() * zoneH;
+    const size = 13 + rnd() * 15;
+    const rot = rnd() * TAU;
+    const color = colors[Math.floor(rnd() * colors.length)];
+    const isBar = rnd() > 0.5;
+    const y = ((y0 + (2 + (i % 2)) * zoneH * t / STORY_LOOP_S) % zoneH) - 30;   // falls 2–3 laps per loop
+    const x = x0 + Math.sin(TAU * (2 * t / STORY_LOOP_S + i * 0.13)) * 22;
+    const u = (y + 30) / zoneH;
+    const fade = Math.min(1, u * 8, (1 - u) * 8);                              // fade in at the top, out at the bottom
+    const blocked =
+      (x > 300 && x < 780 && y > 235 && y < 335) ||   // top label pill
+      Math.hypot(x - 920, y - 390) < 120 ||            // discount badge
+      Math.hypot(x - 780, y - 410) < 95;               // flame beside the badge
+    if (blocked) continue;
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(rot + TAU * (1 + (i % 3)) * t / STORY_LOOP_S);
+    ctx.globalAlpha = 0.85 * fade;
+    ctx.fillStyle = color;
+    if (isBar) ctx.fillRect(-size / 2, -size / 4, size, size / 2);
+    else { ctx.beginPath(); ctx.arc(0, 0, size / 3, 0, TAU); ctx.fill(); }
+    ctx.restore();
+  }
+}
+
+function drawAnimatedEffects(
+  ctx: CanvasRenderingContext2D,
+  fx: { sparkle: boolean; fire: boolean; confetti: boolean; arrow: boolean },
+  hasBadge: boolean, t: number,
+) {
+  if (fx.confetti) drawConfettiAnimated(ctx, STORY_W, STORY_H, t);
+  if (fx.fire) {
+    const f = storyFireSpot(hasBadge);
+    drawFireEffect(ctx, f.x, f.y, 1.9, t);
+    drawEmbersAnimated(ctx, f.x, f.y, 1.9, t);
+  }
+  if (fx.sparkle) drawSparkleAnimated(ctx, STORY_W, STORY_H, t);
 }
 
 function drawStory(
@@ -2693,6 +2790,9 @@ function StoryComposer({ product, imageUrl, price, origPrice, caption, descripti
   const [showPrice, setShowPrice]       = useState(true);
   const [showDiscount, setShowDiscount] = useState(true);
   const [effects, setEffects]           = useState({ sparkle: false, fire: false, confetti: false, arrow: false });
+  const baseRef = useRef<HTMLCanvasElement | null>(null);   // static layer, cached while the overlays animate
+  const animated = effects.sparkle || effects.fire || effects.confetti;
+  const hasBadge = showDiscount && origPrice > price && price > 0;
   const [platforms, setPlatforms]       = useState({ instagram: true, facebook: true });
   const [posting, setPosting]           = useState(false);
   const [results, setResults]           = useState<Record<string, StoryResult> | null>(null);
@@ -2720,14 +2820,32 @@ function StoryComposer({ product, imageUrl, price, origPrice, caption, descripti
     return () => { cancelled = true; if (objUrl) URL.revokeObjectURL(objUrl); };
   }, [imageUrl]);
 
-  // Redraw whenever anything changes
+  // Redraw whenever anything changes. With Sparkle / Fire / Confetti on, the static layer is drawn once
+  // into an offscreen canvas and only the moving overlays are redrawn every frame (keeps it smooth).
   useEffect(() => {
-    if (canvasRef.current) {
-      drawStory(canvasRef.current, img, { theme, name: product?.name || '', description: description || '', price, origPrice, tag, cta, showPrice, showDiscount, effects });
-    }
-  }, [img, theme, tag, cta, showPrice, showDiscount, effects, product?.name, description, price, origPrice]);
+    const cv = canvasRef.current;
+    if (!cv) return;
+    const opts = { theme, name: product?.name || '', description: description || '', price, origPrice, tag, cta, showPrice, showDiscount };
+    if (!animated) { drawStory(cv, img, { ...opts, effects }); return; }
+    const base = baseRef.current || (baseRef.current = document.createElement('canvas'));
+    drawStory(base, img, { ...opts, effects: { ...effects, sparkle: false, fire: false, confetti: false } });
+    cv.width = STORY_W; cv.height = STORY_H;
+    const ctx = cv.getContext('2d');
+    if (!ctx) return;
+    let raf = 0;
+    const t0 = performance.now();
+    const frame = (now: number) => {
+      ctx.clearRect(0, 0, STORY_W, STORY_H);
+      ctx.drawImage(base, 0, 0);
+      drawAnimatedEffects(ctx, effects, hasBadge, (now - t0) / 1000);
+      raf = requestAnimationFrame(frame);
+    };
+    raf = requestAnimationFrame(frame);
+    return () => cancelAnimationFrame(raf);
+  }, [img, theme, tag, cta, showPrice, showDiscount, effects, animated, hasBadge, product?.name, description, price, origPrice]);
 
-  const fileName = `story-${String(product?.name || 'product').toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40)}.jpg`;
+  const baseName = `story-${String(product?.name || 'product').toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40)}`;
+  const fileNameFor = (b: Blob) => `${baseName}.${b.type.includes('mp4') ? 'mp4' : b.type.includes('webm') ? 'webm' : 'jpg'}`;
 
   // Instagram only accepts JPEG for stories, so always export JPEG.
   const getBlob = (): Promise<Blob> => new Promise((resolve, reject) => {
@@ -2738,17 +2856,72 @@ function StoryComposer({ product, imageUrl, price, origPrice, caption, descripti
     }
   });
 
+  // Records the animated canvas for STORY_LOOP_S seconds (MP4 if the browser can, otherwise WebM)
+  const recordVideo = (): Promise<Blob> => new Promise((resolve, reject) => {
+    const cv = canvasRef.current as any;
+    if (!cv?.captureStream || typeof MediaRecorder === 'undefined') { reject(new Error('This browser cannot record video — use Chrome or Edge.')); return; }
+    if (document.hidden) { reject(new Error('Keep this tab visible while the video records.')); return; }
+    const mime = ['video/mp4;codecs=avc1.42E01E', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm']
+      .find(m => MediaRecorder.isTypeSupported(m)) || '';
+    try {
+      const rec = new MediaRecorder(cv.captureStream(30), { ...(mime ? { mimeType: mime } : {}), videoBitsPerSecond: 8_000_000 });
+      const parts: Blob[] = [];
+      rec.ondataavailable = e => { if (e.data && e.data.size) parts.push(e.data); };
+      rec.onerror = () => reject(new Error('Video recording failed.'));
+      rec.onstop = () => resolve(new Blob(parts, { type: rec.mimeType || mime || 'video/webm' }));
+      rec.start(250);
+      setTimeout(() => { if (rec.state !== 'inactive') rec.stop(); }, STORY_LOOP_S * 1000);
+    } catch (e: any) { reject(new Error(e?.message || 'Video recording failed.')); }
+  });
+
+  // Straight from the browser to Cloudinary (same signed-upload route the Facebook video post uses)
+  const uploadStoryVideo = async (blob: Blob): Promise<string> => {
+    const sig = await (await fetch('/api/products?cloudinarySign=true&resourceType=video')).json();
+    if (!sig.signature) throw new Error('Could not get an upload permission from the server.');
+    const form = new FormData();
+    form.append('file', blob, `${baseName}.${blob.type.includes('mp4') ? 'mp4' : 'webm'}`);
+    form.append('api_key', sig.apiKey);
+    form.append('timestamp', String(sig.timestamp));
+    form.append('signature', sig.signature);
+    form.append('folder', sig.folder);
+    const r = await fetch(`https://api.cloudinary.com/v1_1/${sig.cloudName}/video/upload`, { method: 'POST', body: form });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || !d.secure_url) throw new Error(d.error?.message || 'Video upload failed.');
+    return d.secure_url;
+  };
+
+  // Still JPEG normally; a recorded video when Sparkle / Fire / Confetti is on
+  const getMedia = async (): Promise<Blob> => {
+    if (!animated) return getBlob();
+    setNotice(`🎬 Recording a ${STORY_LOOP_S}-second animation — keep this tab open…`);
+    const b = await recordVideo();
+    setNotice('');
+    return b;
+  };
+
+  // For saving / WhatsApp: must be a real MP4 (WebM is converted through Cloudinary)
+  const getFileMedia = async (): Promise<Blob> => {
+    const b = await getMedia();
+    if (!b.type.includes('video') || b.type.includes('mp4')) return b;
+    setNotice('Converting to MP4…');
+    const r = await fetch(storyMp4Url(await uploadStoryVideo(b)), { cache: 'reload' });
+    if (!r.ok) throw new Error('MP4 conversion failed — try again in a moment.');
+    const out = await r.blob();
+    setNotice('');
+    return out.type.includes('mp4') ? out : new Blob([out], { type: 'video/mp4' });
+  };
+
   const downloadBlob = (blob: Blob) => {
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = fileName;
+    a.download = fileNameFor(blob);
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 3000);
   };
 
   const handleDownload = async () => {
     setNotice('');
-    try { downloadBlob(await getBlob()); }
+    try { downloadBlob(await getFileMedia()); }
     catch (e: any) { setNotice('❌ ' + e.message); }
   };
 
@@ -2765,8 +2938,8 @@ function StoryComposer({ product, imageUrl, price, origPrice, caption, descripti
   const doWhatsAppStatus = async () => {
     setNotice('');
     try {
-      const blob = await getBlob();
-      const file = new File([blob], fileName, { type: 'image/jpeg' });
+      const blob = await getFileMedia();
+      const file = new File([blob], fileNameFor(blob), { type: blob.type.split(';')[0] });
       if (isMobile && navigator.canShare && navigator.canShare({ files: [file] })) {
         await navigator.share({ files: [file], text: caption });
         onShared([String(product._id)], 'whatsapp-status');
@@ -2777,7 +2950,7 @@ function StoryComposer({ product, imageUrl, price, origPrice, caption, descripti
       let captionCopied = false;
       try { await navigator.clipboard.writeText(caption); captionCopied = true; } catch { /* clipboard blocked */ }
       setNotice(
-        `✓ Image saved${captionCopied ? ' and caption copied' : ''}. In WhatsApp Desktop: Status tab → “+” → Photos → pick "${fileName}"${captionCopied ? ' → paste the caption (Ctrl+V)' : ''} → Send.`
+        `✓ ${blob.type.includes('video') ? 'Video' : 'Image'} saved${captionCopied ? ' and caption copied' : ''}. In WhatsApp Desktop: Status tab → “+” → Photos → pick "${fileNameFor(blob)}"${captionCopied ? ' → paste the caption (Ctrl+V)' : ''} → Send.`
       );
     } catch (e: any) {
       if (e?.name !== 'AbortError') setNotice('❌ ' + (e.message || 'Share failed'));
@@ -2791,20 +2964,30 @@ function StoryComposer({ product, imageUrl, price, origPrice, caption, descripti
     if (selected.length === 0) { setNotice('Select Instagram and/or Facebook first.'); return; }
     setPosting(true); setResults(null); setNotice('');
     try {
-      // 1) Meta needs a public URL, so host the rendered JPEG on Cloudinary via the existing upload endpoint
-      const blob = await getBlob();
-      const up = await fetch('/api/upload?mode=story', { method: 'POST', body: blob, headers: { 'Content-Type': 'image/jpeg' } });
-      const upData = await up.json();
-      if (!upData.url) throw new Error('Image upload failed');
+      // 1) Meta needs a public URL, so host the story on Cloudinary first
+      const media = await getMedia();
+      let payload: Record<string, unknown>;
+      if (media.type.includes('video')) {
+        setNotice('⬆ Uploading the video…');
+        const videoUrl = await uploadStoryVideo(media);
+        setNotice('📤 Posting the video story — this can take up to a minute…');
+        payload = { storyBroadcast: true, videoUrl, platforms: selected };
+      } else {
+        const up = await fetch('/api/upload?mode=story', { method: 'POST', body: media, headers: { 'Content-Type': 'image/jpeg' } });
+        const upData = await up.json();
+        if (!upData.url) throw new Error('Image upload failed');
+        payload = { storyBroadcast: true, imageUrl: upData.url, platforms: selected };
+      }
       // 2) Ask the server to publish it as a story
       const res = await fetch('/api/products', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ storyBroadcast: true, imageUrl: upData.url, platforms: selected }),
+        body: JSON.stringify(payload),
       });
       const data = await res.json();
       if (!res.ok && !data.results) throw new Error(data.error || 'Failed to post story');
       setResults(data.results || {});
+      setNotice('');
       Object.entries(data.results || {}).forEach(([k, r]: [string, any]) => { if (r?.ok) onShared([String(product._id)], k); });
     } catch (e: any) {
       setNotice('❌ ' + e.message);
@@ -2859,7 +3042,7 @@ function StoryComposer({ product, imageUrl, price, origPrice, caption, descripti
                 <button key={k} onClick={() => setEffects(e => ({ ...e, [k]: !e[k] }))} className={pill(effects[k])}>{label}</button>
               ))}
             </div>
-            <p className="text-[9px] text-gray-400 mt-1">Decorations are drawn into the image itself. Instagram and Facebook stories/posts are still pictures, so these don't move.</p>
+            <p className="text-[9px] text-gray-400 mt-1">Sparkle, Fire and Confetti move — the story is then recorded as a 6-second video (Arrow is drawn into a still picture).</p>
           </div>
         </div>
       </div>
@@ -2896,7 +3079,7 @@ function StoryComposer({ product, imageUrl, price, origPrice, caption, descripti
 
         <button onClick={handleDownload} disabled={!img}
           className="w-full flex items-center justify-center gap-2 border-2 border-gray-200 text-gray-600 font-black py-2.5 rounded-xl hover:border-[#FA5600] hover:text-[#FA5600] transition-all text-xs uppercase tracking-widest disabled:opacity-50">
-          <Download className="w-4 h-4" /> Download Story Image
+          <Download className="w-4 h-4" /> {animated ? 'Download Story Video' : 'Download Story Image'}
         </button>
 
         {results && (
