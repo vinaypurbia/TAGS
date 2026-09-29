@@ -15,7 +15,11 @@ cloudinary.config({
 // ── Invoice Import (AI) — fully free: Gemini (free tier) + Jimp crop + Pollinations ────────
 // Free tier: Google AI Studio, no credit card. Get a key at https://aistudio.google.com
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
+// Primary model first, then fallback(s) if the primary is overloaded. Override the primary via env var.
+const GEMINI_MODELS = [
+  process.env.GEMINI_MODEL || 'gemini-3.8-flash',
+  'gemini-3-flash-preview',
+];
 
 function invoiceBufferHash(buffer) {
   return crypto.createHash('md5').update(buffer).digest('hex').slice(0, 16);
@@ -23,20 +27,32 @@ function invoiceBufferHash(buffer) {
 
 async function callGemini(parts) {
   if (!GEMINI_API_KEY) throw new Error('GEMINI_API_KEY is not configured on the server');
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
-  const r = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contents: [{ parts }],
-      generationConfig: { responseMimeType: 'application/json', temperature: 0.1 },
-    }),
+  const body = JSON.stringify({
+    contents: [{ parts }],
+    generationConfig: { responseMimeType: 'application/json', temperature: 0.1 },
   });
-  const data = await r.json();
-  if (!r.ok) throw new Error(data.error?.message || `Gemini error (${r.status})`);
-  const text = (data.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('');
-  try { return JSON.parse(text); }
-  catch { throw new Error('Could not read structured items from this invoice — try a clearer photo or scan'); }
+
+  let lastErr;
+  for (const model of GEMINI_MODELS) {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
+      const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
+      const data = await r.json();
+      if (r.ok) {
+        const text = (data.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('');
+        try { return JSON.parse(text); }
+        catch { throw new Error('Could not read structured items from this invoice — try a clearer photo or scan'); }
+      }
+      lastErr = new Error(data.error?.message || `Gemini error (${r.status})`);
+      // Overloaded / rate-limited / server error: wait and retry, then fall back to the next model
+      if (![429, 500, 503].includes(r.status)) {
+        if (r.status === 404) break; // model not available for this key: try the next model
+        throw lastErr;
+      }
+      await new Promise(res => setTimeout(res, 1500 * (attempt + 1)));
+    }
+  }
+  throw lastErr;
 }
 
 // For a photo/scan, also asks Gemini to locate each item's own product photo on the page (a tight
@@ -497,6 +513,50 @@ export default async function handler(req, res) {
       } catch (error) {
         console.error('Backup error:', error);
         return res.status(500).json({ error: error.message || 'Backup failed' });
+      }
+    }
+
+    // ── Restore from a backup — POST /api/products?restore=true  { backup, collections?, confirm } ──
+    // Destructive: for each selected collection, existing documents are replaced with the backup's.
+    // Requires confirm === 'RESTORE' (typed by the admin in the UI) as a deliberate "are you sure",
+    // not a security check — this endpoint has the same protection level as the rest of this file.
+    if (req.method === 'POST' && req.query.restore === 'true') {
+      const { backup, collections, confirm } = req.body || {};
+      if (confirm !== 'RESTORE') return res.status(400).json({ error: 'Type RESTORE to confirm' });
+      if (!backup || typeof backup !== 'object') return res.status(400).json({ error: 'No backup data received' });
+
+      const available = Object.keys(backup).filter(k => k !== '_backupMeta' && Array.isArray(backup[k]));
+      const wanted = Array.isArray(collections) && collections.length ? collections.filter(c => available.includes(c)) : available;
+      if (wanted.length === 0) return res.status(400).json({ error: 'No matching collections to restore' });
+
+      // Turn each document's exported "_id" hex string back into a real ObjectId so identity
+      // (and anything elsewhere that references these ids) is preserved. Other fields are restored
+      // as plain JSON — any Date fields will come back as ISO strings rather than native Dates.
+      const reviveId = (doc) => {
+        if (doc && typeof doc._id === 'string' && /^[0-9a-fA-F]{24}$/.test(doc._id)) {
+          try { return { ...doc, _id: new ObjectId(doc._id) }; } catch { return doc; }
+        }
+        return doc;
+      };
+
+      try {
+        const dbClient = await getClient();
+        const db = dbClient.db('tagsdb');
+        const results = {};
+        for (const name of wanted) {
+          const docs = (backup[name] || []).map(reviveId);
+          try {
+            await db.collection(name).deleteMany({});
+            if (docs.length > 0) await db.collection(name).insertMany(docs, { ordered: false });
+            results[name] = { ok: true, restored: docs.length };
+          } catch (err) {
+            results[name] = { ok: false, error: err.message };
+          }
+        }
+        return res.status(200).json({ success: true, results });
+      } catch (error) {
+        console.error('Restore error:', error);
+        return res.status(500).json({ error: error.message || 'Restore failed' });
       }
     }
 
