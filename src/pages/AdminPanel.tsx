@@ -21,7 +21,7 @@ const VISIBILITY_KEY = 'tagsAdminVisibility';
 
 type Section =
   | 'dashboard' | 'promo' | 'banner' | 'category-images' | 'perks'
-  | 'products' | 'categories' | 'inventory' | 'business' | 'settings' | 'import' | 'reviews' | 'broadcast';
+  | 'products' | 'categories' | 'inventory' | 'business' | 'settings' | 'import' | 'reviews' | 'broadcast' | 'backup';
 
 interface BannerSlide { image: string; text: string; description: string; }
 interface Perk        { icon: string; text: string; }
@@ -41,6 +41,7 @@ const ALL_MODULES: { id: Section; label: string; icon: any; desc: string }[] = [
   { id: 'import',          label: 'Import Products',  icon: Upload,          desc: 'Bulk import via CSV' },
   { id: 'reviews',         label: 'Reviews',          icon: MessageSquare,   desc: 'Manage customer reviews' },
   { id: 'settings',        label: 'Settings',         icon: SettingsIcon,    desc: 'Module visibility' },
+  { id: 'backup',          label: 'Backup',           icon: Database,        desc: 'Download a full database backup' },
 ];
 
 // ── Change Password Form (shared between login screen and Settings) ──────────
@@ -1374,6 +1375,7 @@ export function AdminPanel() {
           )}
           {activeSection === 'business'   && <div className="max-w-5xl mx-auto"><SectionHeader icon={BarChart2}  title="Business"   desc="Sales, PO, Cash Flow, Reports" /><BusinessEmbed /></div>}
           {activeSection === 'import'     && <div className="max-w-2xl mx-auto"><ImportProductsSection /></div>}
+          {activeSection === 'backup'     && <div className="max-w-2xl mx-auto"><BackupSection /></div>}
 
           {/* ── REVIEWS ── */}
           {activeSection === 'reviews' && <div className="max-w-4xl mx-auto"><ReviewsSection /></div>}
@@ -1853,6 +1855,56 @@ function SettingsIcon({ className }: { className?: string }) {
       <path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
       <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
     </svg>
+  );
+}
+
+// ── Backup Section ──────────────────────────────────────────────────────
+function BackupSection() {
+  const [status, setStatus] = useState<'idle' | 'working' | 'done' | 'error'>('idle');
+  const [message, setMessage] = useState('');
+
+  const handleBackup = async () => {
+    setStatus('working'); setMessage('');
+    try {
+      const res = await fetch('/api/products?backup=true', { method: 'POST' });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || `Backup failed (${res.status})`);
+      }
+      const blob = await res.blob();
+      const disposition = res.headers.get('content-disposition') || '';
+      const match = disposition.match(/filename="([^"]+)"/);
+      const filename = match?.[1] || `tags-backup-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url; a.download = filename; a.click();
+      URL.revokeObjectURL(url);
+      setStatus('done'); setMessage(`✅ Backup downloaded as "${filename}". Keep it somewhere safe.`);
+    } catch (e: any) {
+      setStatus('error'); setMessage(e.message || 'Backup failed');
+    }
+  };
+
+  return (
+    <div className="max-w-2xl mx-auto space-y-4">
+      <SectionHeader icon={Database} title="Backup" desc="Download every collection in your database as one JSON file" />
+
+      <div className="bg-amber-50 border border-amber-200 rounded-2xl p-5 flex items-start gap-4">
+        <div className="w-10 h-10 bg-amber-100 rounded-xl flex items-center justify-center shrink-0"><Database className="w-5 h-5 text-amber-600" /></div>
+        <div className="flex-1">
+          <p className="text-sm font-black text-gray-800">Take a backup before doing anything risky</p>
+          <p className="text-xs text-gray-500 mt-0.5">This downloads a single JSON file with every product, order, customer and other record currently in the database — nothing is changed on the server. Do this before a bulk import, a bulk price change, or any other change you might need to undo.</p>
+        </div>
+      </div>
+
+      <div className="bg-white rounded-2xl border border-gray-200 p-6 shadow-sm space-y-4">
+        <button onClick={handleBackup} disabled={status === 'working'}
+          className="w-full py-3 bg-[#FA5600] text-white font-black uppercase tracking-widest text-sm rounded-xl hover:bg-[#E04A00] transition flex items-center justify-center gap-2 disabled:opacity-50">
+          {status === 'working' ? (<><RefreshCw className="w-4 h-4 animate-spin" /> Preparing backup...</>) : (<><Download className="w-4 h-4" /> Download Full Backup</>)}
+        </button>
+
+        {message && <div className={`rounded-xl p-3 text-sm font-bold text-center ${status === 'done' ? 'bg-green-50 text-green-700 border border-green-200' : status === 'error' ? 'bg-red-50 text-red-600 border border-red-200' : 'bg-blue-50 text-blue-700 border border-blue-200'}`}>{message}</div>}
+      </div>
+    </div>
   );
 }
 
