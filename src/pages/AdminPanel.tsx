@@ -1863,6 +1863,15 @@ function BackupSection() {
   const [status, setStatus] = useState<'idle' | 'working' | 'done' | 'error'>('idle');
   const [message, setMessage] = useState('');
 
+  const [restoreFile, setRestoreFile] = useState<any>(null);      // parsed backup JSON
+  const [restoreFileName, setRestoreFileName] = useState('');
+  const [selected, setSelected] = useState<Record<string, boolean>>({});
+  const [confirmText, setConfirmText] = useState('');
+  const [restoreStatus, setRestoreStatus] = useState<'idle' | 'working' | 'done' | 'error'>('idle');
+  const [restoreMessage, setRestoreMessage] = useState('');
+  const [restoreResults, setRestoreResults] = useState<Record<string, { ok: boolean; restored?: number; error?: string }> | null>(null);
+  const restoreFileRef = useRef<HTMLInputElement>(null);
+
   const handleBackup = async () => {
     setStatus('working'); setMessage('');
     try {
@@ -1884,10 +1893,57 @@ function BackupSection() {
     }
   };
 
+  const handleRestoreFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]; if (!file) return;
+    setRestoreResults(null); setRestoreStatus('idle'); setRestoreMessage(''); setConfirmText('');
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text);
+      const collections = Object.keys(data).filter(k => k !== '_backupMeta' && Array.isArray(data[k]));
+      if (collections.length === 0) throw new Error('This file has no recognizable collections — is it a Backup export from this panel?');
+      setRestoreFile(data);
+      setRestoreFileName(file.name);
+      setSelected(Object.fromEntries(collections.map(c => [c, true])));
+    } catch (err: any) {
+      setRestoreFile(null); setRestoreFileName('');
+      setRestoreStatus('error'); setRestoreMessage(err.message || 'Could not read this file — is it a valid backup JSON?');
+    } finally {
+      if (restoreFileRef.current) restoreFileRef.current.value = '';
+    }
+  };
+
+  const collectionsIn = (data: any) => Object.keys(data || {}).filter(k => k !== '_backupMeta' && Array.isArray(data[k]));
+  const selectedCollections = collectionsIn(restoreFile).filter(c => selected[c]);
+
+  const handleRestore = async () => {
+    if (!restoreFile || selectedCollections.length === 0 || confirmText !== 'RESTORE') return;
+    setRestoreStatus('working'); setRestoreMessage(''); setRestoreResults(null);
+    try {
+      const res = await fetch('/api/products?restore=true', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ backup: restoreFile, collections: selectedCollections, confirm: 'RESTORE' }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Restore failed (${res.status})`);
+      setRestoreResults(data.results || {});
+      const failed = Object.values(data.results || {}).filter((r: any) => !r.ok).length;
+      setRestoreStatus(failed === 0 ? 'done' : 'error');
+      setRestoreMessage(failed === 0 ? '✅ Restore complete.' : `⚠️ Some collections failed to restore — see details below.`);
+    } catch (e: any) {
+      setRestoreStatus('error'); setRestoreMessage(e.message || 'Restore failed');
+    }
+  };
+
+  const resetRestore = () => {
+    setRestoreFile(null); setRestoreFileName(''); setSelected({}); setConfirmText('');
+    setRestoreStatus('idle'); setRestoreMessage(''); setRestoreResults(null);
+  };
+
   return (
     <div className="max-w-2xl mx-auto space-y-4">
-      <SectionHeader icon={Database} title="Backup" desc="Download every collection in your database as one JSON file" />
+      <SectionHeader icon={Database} title="Backup" desc="Download or restore your database" />
 
+      {/* ── Backup ── */}
       <div className="bg-amber-50 border border-amber-200 rounded-2xl p-5 flex items-start gap-4">
         <div className="w-10 h-10 bg-amber-100 rounded-xl flex items-center justify-center shrink-0"><Database className="w-5 h-5 text-amber-600" /></div>
         <div className="flex-1">
@@ -1903,6 +1959,67 @@ function BackupSection() {
         </button>
 
         {message && <div className={`rounded-xl p-3 text-sm font-bold text-center ${status === 'done' ? 'bg-green-50 text-green-700 border border-green-200' : status === 'error' ? 'bg-red-50 text-red-600 border border-red-200' : 'bg-blue-50 text-blue-700 border border-blue-200'}`}>{message}</div>}
+      </div>
+
+      {/* ── Restore ── */}
+      <div className="bg-red-50 border border-red-200 rounded-2xl p-5 flex items-start gap-4">
+        <div className="w-10 h-10 bg-red-100 rounded-xl flex items-center justify-center shrink-0"><RefreshCw className="w-5 h-5 text-red-600" /></div>
+        <div className="flex-1">
+          <p className="text-sm font-black text-gray-800">Restore — replaces live data</p>
+          <p className="text-xs text-gray-500 mt-0.5">Restoring a collection deletes what's currently in it and replaces it with the backup's copy. This cannot be undone unless you take a fresh backup first. Only choose the collections you actually need to roll back.</p>
+        </div>
+      </div>
+
+      <div className="bg-white rounded-2xl border border-gray-200 p-6 shadow-sm space-y-4">
+        {!restoreFile ? (
+          <div onClick={() => restoreFileRef.current?.click()} className="border-2 border-dashed border-gray-200 hover:border-red-400 rounded-2xl p-8 text-center cursor-pointer transition group">
+            <Upload className="w-8 h-8 text-gray-300 group-hover:text-red-400 mx-auto mb-2 transition" />
+            <p className="font-black text-sm text-gray-700 uppercase tracking-widest">Click to Choose a Backup File</p>
+            <p className="text-xs text-gray-400 mt-1">A .json file downloaded from this Backup tab</p>
+            <input ref={restoreFileRef} type="file" accept=".json,application/json" onChange={handleRestoreFile} className="hidden" />
+          </div>
+        ) : (
+          <>
+            <div className="flex items-center justify-between">
+              <p className="text-xs font-black text-gray-700 truncate">{restoreFileName}</p>
+              <button onClick={resetRestore} className="text-[10px] font-black uppercase tracking-widest text-gray-400 hover:text-red-500 shrink-0 ml-2">Choose a different file</button>
+            </div>
+
+            <div className="space-y-1.5 max-h-56 overflow-y-auto border border-gray-100 rounded-xl p-3">
+              {collectionsIn(restoreFile).map(c => (
+                <label key={c} className="flex items-center gap-2 text-xs font-bold text-gray-700">
+                  <input type="checkbox" checked={!!selected[c]} onChange={e => setSelected(sel => ({ ...sel, [c]: e.target.checked }))}
+                    className="w-4 h-4 accent-red-500" disabled={restoreStatus === 'working'} />
+                  {c} <span className="text-gray-400 font-normal">({restoreFile[c].length} docs)</span>
+                </label>
+              ))}
+            </div>
+
+            <div>
+              <label className="text-xs font-black uppercase tracking-widest text-gray-500">Type RESTORE to confirm</label>
+              <input value={confirmText} onChange={e => setConfirmText(e.target.value)} disabled={restoreStatus === 'working'}
+                placeholder="RESTORE" className="mt-1 w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm" />
+            </div>
+
+            <button onClick={handleRestore} disabled={restoreStatus === 'working' || selectedCollections.length === 0 || confirmText !== 'RESTORE'}
+              className="w-full py-3 bg-red-600 text-white font-black uppercase tracking-widest text-sm rounded-xl hover:bg-red-700 transition flex items-center justify-center gap-2 disabled:opacity-50">
+              {restoreStatus === 'working' ? (<><RefreshCw className="w-4 h-4 animate-spin" /> Restoring...</>) : (<><RefreshCw className="w-4 h-4" /> Restore {selectedCollections.length} Collection{selectedCollections.length === 1 ? '' : 's'}</>)}
+            </button>
+          </>
+        )}
+
+        {restoreMessage && <div className={`rounded-xl p-3 text-sm font-bold text-center ${restoreStatus === 'done' ? 'bg-green-50 text-green-700 border border-green-200' : restoreStatus === 'error' ? 'bg-red-50 text-red-600 border border-red-200' : 'bg-blue-50 text-blue-700 border border-blue-200'}`}>{restoreMessage}</div>}
+
+        {restoreResults && (
+          <div className="space-y-1">
+            {Object.entries(restoreResults).map(([name, r]) => (
+              <div key={name} className={`flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-bold ${r.ok ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-600'}`}>
+                <span>{r.ok ? '✅' : '❌'}</span><span className="flex-1 truncate">{name}</span>
+                <span className="text-[10px] opacity-70">{r.ok ? `${r.restored} docs restored` : r.error}</span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -2146,7 +2263,10 @@ function InvoiceImportSection() {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ fileBase64, mimeType: file.type || 'application/pdf' }),
       });
-      const data = await res.json();
+      // The server can return a plain-text page (e.g. a Vercel timeout), so don't assume JSON
+      const raw = await res.text();
+      let data: any = {};
+      try { data = JSON.parse(raw); } catch { throw new Error(res.status === 504 || /TIMEOUT/i.test(raw) ? 'The server timed out while reading the invoice. Please try again.' : `Server error (${res.status}). Please try again.`); }
       if (!res.ok) throw new Error(data.error || 'Could not read this invoice');
       const newRows: InvoiceRow[] = (data.items || []).map((it: any, i: number) => ({
         id: `${Date.now()}-${i}`,
