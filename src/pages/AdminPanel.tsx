@@ -14,7 +14,7 @@ import {
   LayoutDashboard, ShoppingBag, Menu, X,
   TrendingUp, TrendingDown, Users, AlertTriangle, DollarSign, IndianRupee,
   KeyRound, EyeOff, MessageSquare, Pencil, Database, Send, Radio, Copy, Download,
-  CheckCircle, RefreshCw,
+  CheckCircle, RefreshCw, FileText, Sparkles, Wand2,
 } from 'lucide-react';
 
 const VISIBILITY_KEY = 'tagsAdminVisibility';
@@ -1857,6 +1857,7 @@ function SettingsIcon({ className }: { className?: string }) {
 }
 
 function ImportProductsSection() {
+  const [mode, setMode] = useState<'csv' | 'invoice'>('invoice');
   const [status,   setStatus]   = useState<'idle'|'loading'|'success'|'error'>('idle');
   const [progress, setProgress] = useState({ current: 0, total: 0 });
   const [results,  setResults]  = useState<{ name: string; ok: boolean; error?: string }[]>([]);
@@ -1941,7 +1942,20 @@ function ImportProductsSection() {
 
   return (
     <div className="max-w-2xl mx-auto space-y-4">
-      <SectionHeader icon={Upload} title="Import Products" desc="Bulk import via CSV — syncs to FB Shop & WhatsApp automatically" />
+      <SectionHeader icon={Upload} title="Import Products" desc="Bulk import via CSV, or auto-fill from a supplier invoice" />
+
+      <div className="flex gap-2 bg-gray-100 rounded-xl p-1">
+        <button onClick={() => setMode('invoice')} className={`flex-1 flex items-center justify-center gap-1.5 text-xs font-black uppercase tracking-widest py-2.5 rounded-lg transition ${mode === 'invoice' ? 'bg-white text-[#FA5600] shadow-sm' : 'text-gray-400 hover:text-gray-600'}`}>
+          <Sparkles className="w-3.5 h-3.5" /> Invoice (AI)
+        </button>
+        <button onClick={() => setMode('csv')} className={`flex-1 flex items-center justify-center gap-1.5 text-xs font-black uppercase tracking-widest py-2.5 rounded-lg transition ${mode === 'csv' ? 'bg-white text-[#FA5600] shadow-sm' : 'text-gray-400 hover:text-gray-600'}`}>
+          <Upload className="w-3.5 h-3.5" /> CSV File
+        </button>
+      </div>
+
+      {mode === 'invoice' && <InvoiceImportSection />}
+
+      {mode === 'csv' && <>
       <div className="bg-blue-50 border border-blue-200 rounded-2xl p-5 flex items-center gap-4">
         <div className="w-10 h-10 bg-blue-100 rounded-xl flex items-center justify-center shrink-0"><Upload className="w-5 h-5 text-blue-600" /></div>
         <div className="flex-1"><p className="text-sm font-black text-gray-800">Download CSV Template</p><p className="text-xs text-gray-500">Fill in this template and upload it below</p></div>
@@ -2006,6 +2020,257 @@ function ImportProductsSection() {
           </button>
         )}
       </div>
+      </>}
+    </div>
+  );
+}
+
+// ── Invoice Import (AI) ──────────────────────────────────────────────────
+// Upload a supplier invoice (PDF or photo). Claude reads the line items, then each
+// item gets a picture (a real web photo first, an AI-generated one if none is found).
+// Everything lands in an editable table for review before the actual import.
+type InvoiceRow = {
+  id: string;
+  name: string; description: string; quantity: number | null; unitCost: number | null;
+  category: string; subcategory: string; originalPrice: string; discountedPrice: string;
+  imagePrompt: string;
+  imageUrl: string; imageSource: 'invoice' | 'ai' | ''; imageStatus: 'pending' | 'loading' | 'done' | 'error';
+  include: boolean;
+};
+
+function InvoiceImportSection() {
+  const [stage, setStage] = useState<'idle' | 'reading' | 'review' | 'importing' | 'done'>('idle');
+  const [rows, setRows] = useState<InvoiceRow[]>([]);
+  const [error, setError] = useState('');
+  const [categories, setCategories] = useState<string[]>([]);
+  const [importResults, setImportResults] = useState<{ name: string; ok: boolean; error?: string }[]>([]);
+  const [importProgress, setImportProgress] = useState({ current: 0, total: 0 });
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    fetch('/api/categories').then(r => r.json()).then(data => {
+      const list = Array.isArray(data) ? data : (data.categories || []);
+      setCategories(list.map((c: any) => c.name || c).filter(Boolean));
+    }).catch(() => {});
+  }, []);
+
+  // Free AI-generated picture (used when the invoice had no real photo for this item, or on "try a different picture")
+  const fetchImageFor = async (id: string, name: string, prompt: string) => {
+    setRows(rs => rs.map(r => r.id === id ? { ...r, imageStatus: 'loading' } : r));
+    try {
+      const r = await fetch('/api/products?invoiceImage=true', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, prompt }),
+      });
+      const data = await r.json();
+      if (!r.ok || !data.imageUrl) throw new Error(data.error || 'Image generation failed');
+      setRows(rs => rs.map(row => row.id === id ? { ...row, imageUrl: data.imageUrl, imageSource: 'ai', imageStatus: 'done' } : row));
+    } catch {
+      setRows(rs => rs.map(row => row.id === id ? { ...row, imageStatus: 'error' } : row));
+    }
+  };
+
+  // Fetches images with a small concurrency cap so we don't fire many requests at once
+  const fetchAllImages = async (list: InvoiceRow[]) => {
+    const queue = [...list];
+    const worker = async () => {
+      let item;
+      while ((item = queue.shift())) await fetchImageFor(item.id, item.name, item.imagePrompt);
+    };
+    await Promise.all(Array.from({ length: 3 }, worker));
+  };
+
+  const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]; if (!file) return;
+    setError(''); setRows([]); setImportResults([]); setStage('reading');
+    try {
+      const buf = await file.arrayBuffer();
+      // window.btoa can't handle large binary strings in one go — build the base64 in chunks
+      const bytes = new Uint8Array(buf);
+      let binary = '';
+      const CHUNK = 0x8000;
+      for (let i = 0; i < bytes.length; i += CHUNK) binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+      const fileBase64 = btoa(binary);
+      const res = await fetch('/api/products?invoiceExtract=true', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fileBase64, mimeType: file.type || 'application/pdf' }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Could not read this invoice');
+      const newRows: InvoiceRow[] = (data.items || []).map((it: any, i: number) => ({
+        id: `${Date.now()}-${i}`,
+        name: it.name || '', description: it.description || '',
+        quantity: it.quantity, unitCost: it.unitCost,
+        imagePrompt: it.imagePrompt || it.name || '',
+        category: '', subcategory: '',
+        originalPrice: it.unitCost ? String(Math.round(it.unitCost * 1.6)) : '',
+        discountedPrice: '',
+        imageUrl: it.imageUrl || '', imageSource: it.imageSource || '',
+        imageStatus: it.imageUrl ? 'done' : 'pending', include: true,
+      }));
+      setRows(newRows);
+      setStage('review');
+      // Only items with no real invoice photo need the (free, AI-generated) fallback picture
+      fetchAllImages(newRows.filter(r => !r.imageUrl));
+    } catch (e: any) {
+      setError(e.message || 'Could not read this invoice'); setStage('idle');
+    } finally {
+      if (fileRef.current) fileRef.current.value = '';
+    }
+  };
+
+  const updateRow = (id: string, patch: Partial<InvoiceRow>) => setRows(rs => rs.map(r => r.id === id ? { ...r, ...patch } : r));
+  const removeRow = (id: string) => setRows(rs => rs.filter(r => r.id !== id));
+
+  const saveRow = async (row: InvoiceRow) => {
+    const payload = {
+      name: row.name, category: row.category, subcategory: row.subcategory,
+      originalPrice: row.originalPrice, discountedPrice: row.discountedPrice,
+      description: row.description, videoUrl: '',
+      imageUrl: row.imageUrl, image: row.imageUrl, imageUrls: row.imageUrl ? [row.imageUrl] : [],
+    };
+    const res = await fetch('/api/products', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.error || res.statusText); }
+    return res.json();
+  };
+
+  const handleImportAll = async () => {
+    const wanted = rows.filter(r => r.include);
+    const missingCategory = wanted.find(r => !r.category.trim());
+    if (missingCategory) { setError(`"${missingCategory.name}" needs a category before importing.`); return; }
+    setError(''); setStage('importing'); setImportProgress({ current: 0, total: wanted.length });
+    const results: { name: string; ok: boolean; error?: string }[] = [];
+    for (let i = 0; i < wanted.length; i++) {
+      try { await saveRow(wanted[i]); results.push({ name: wanted[i].name, ok: true }); }
+      catch (e: any) { results.push({ name: wanted[i].name, ok: false, error: e.message }); }
+      setImportProgress({ current: i + 1, total: wanted.length });
+      setImportResults([...results]);
+    }
+    setStage('done');
+  };
+
+  const reset = () => { setRows([]); setStage('idle'); setError(''); setImportResults([]); };
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-purple-50 border border-purple-200 rounded-2xl p-5 flex items-start gap-4">
+        <div className="w-10 h-10 bg-purple-100 rounded-xl flex items-center justify-center shrink-0"><Wand2 className="w-5 h-5 text-purple-600" /></div>
+        <div className="flex-1">
+          <p className="text-sm font-black text-gray-800">Import from a Supplier Invoice</p>
+          <p className="text-xs text-gray-500 mt-0.5">Upload the invoice (PDF or photo). If the invoice shows a photo per item, we crop that exact photo out — otherwise a free AI image is generated instead. You verify everything below before importing.</p>
+        </div>
+      </div>
+
+      {stage === 'idle' && (
+        <div className="bg-white rounded-2xl border border-gray-200 p-6 shadow-sm">
+          <div onClick={() => fileRef.current?.click()} className="border-2 border-dashed border-gray-200 hover:border-[#FA5600] rounded-2xl p-10 text-center cursor-pointer transition group">
+            <FileText className="w-10 h-10 text-gray-300 group-hover:text-[#FA5600] mx-auto mb-3 transition" />
+            <p className="font-black text-sm text-gray-700 uppercase tracking-widest">Click to Upload Invoice</p>
+            <p className="text-xs text-gray-400 mt-1">PDF, JPEG or PNG</p>
+            <input ref={fileRef} type="file" accept=".pdf,image/*" onChange={handleFile} className="hidden" />
+          </div>
+          {error && <div className="mt-3 rounded-xl p-3 text-sm font-bold text-center bg-red-50 text-red-600 border border-red-200">{error}</div>}
+        </div>
+      )}
+
+      {stage === 'reading' && (
+        <div className="bg-white rounded-2xl border border-gray-200 p-10 shadow-sm text-center">
+          <RefreshCw className="w-8 h-8 text-[#FA5600] mx-auto mb-3 animate-spin" />
+          <p className="font-black text-sm text-gray-700">Reading the invoice…</p>
+          <p className="text-xs text-gray-400 mt-1">This can take up to a minute for a long invoice.</p>
+        </div>
+      )}
+
+      {(stage === 'review' || stage === 'importing' || stage === 'done') && (
+        <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+          <div className="p-4 border-b border-gray-100 flex items-center justify-between">
+            <p className="text-xs font-black uppercase tracking-widest text-gray-500">{rows.length} item{rows.length === 1 ? '' : 's'} found — verify before importing</p>
+            {stage === 'review' && <button onClick={reset} className="text-[10px] font-black uppercase tracking-widest text-gray-400 hover:text-[#FA5600]">Start over</button>}
+          </div>
+
+          <div className="divide-y divide-gray-100 max-h-[32rem] overflow-y-auto">
+            {rows.map(row => (
+              <div key={row.id} className="p-4 flex gap-3">
+                <input type="checkbox" checked={row.include} onChange={e => updateRow(row.id, { include: e.target.checked })} className="mt-1.5 w-4 h-4 accent-[#FA5600] shrink-0" disabled={stage !== 'review'} />
+
+                <div className="w-16 h-16 rounded-xl bg-gray-50 border border-gray-100 shrink-0 relative overflow-hidden">
+                  {row.imageStatus === 'loading' && <div className="w-full h-full flex items-center justify-center"><RefreshCw className="w-4 h-4 text-gray-300 animate-spin" /></div>}
+                  {row.imageStatus === 'error' && <div className="w-full h-full flex items-center justify-center text-red-400 text-[9px] font-bold text-center px-1">No image</div>}
+                  {row.imageUrl && <img src={row.imageUrl} alt={row.name} className="w-full h-full object-cover" />}
+                  {row.imageSource && (
+                    <span className={`absolute bottom-0 left-0 right-0 text-[7px] font-black uppercase tracking-wider text-center py-0.5 ${row.imageSource === 'invoice' ? 'bg-green-600/90 text-white' : 'bg-purple-500/90 text-white'}`}>
+                      {row.imageSource === 'invoice' ? 'From invoice' : 'AI approx.'}
+                    </span>
+                  )}
+                </div>
+
+                <div className="flex-1 min-w-0 grid grid-cols-2 gap-2">
+                  <input value={row.name} onChange={e => updateRow(row.id, { name: e.target.value })} disabled={stage !== 'review'}
+                    placeholder="Product name" className="col-span-2 text-xs font-black text-gray-800 border border-gray-200 rounded-lg px-2 py-1.5 disabled:bg-gray-50" />
+                  <input value={row.category} onChange={e => updateRow(row.id, { category: e.target.value })} disabled={stage !== 'review'} list="invoice-cats"
+                    placeholder="Category *" className="text-[11px] border border-gray-200 rounded-lg px-2 py-1.5 disabled:bg-gray-50" />
+                  <input value={row.subcategory} onChange={e => updateRow(row.id, { subcategory: e.target.value })} disabled={stage !== 'review'}
+                    placeholder="Subcategory" className="text-[11px] border border-gray-200 rounded-lg px-2 py-1.5 disabled:bg-gray-50" />
+                  <input value={row.originalPrice} onChange={e => updateRow(row.id, { originalPrice: e.target.value })} disabled={stage !== 'review'}
+                    placeholder="Selling price *" className="text-[11px] border border-gray-200 rounded-lg px-2 py-1.5 disabled:bg-gray-50" />
+                  <input value={row.discountedPrice} onChange={e => updateRow(row.id, { discountedPrice: e.target.value })} disabled={stage !== 'review'}
+                    placeholder="Discounted price" className="text-[11px] border border-gray-200 rounded-lg px-2 py-1.5 disabled:bg-gray-50" />
+                  <p className="col-span-2 text-[10px] text-gray-400">
+                    {row.quantity != null && <>Qty {row.quantity} · </>}
+                    {row.unitCost != null && <>Cost ₹{row.unitCost} · </>}
+                    Suggested selling price is cost × 1.6 — edit as needed.
+                  </p>
+                </div>
+
+                {stage === 'review' && (
+                  <div className="flex flex-col gap-1.5 shrink-0">
+                    <button onClick={() => fetchImageFor(row.id, row.name, row.imagePrompt)} title="Generate a different picture" className="w-7 h-7 flex items-center justify-center bg-gray-100 hover:bg-gray-200 text-gray-500 rounded-lg transition">
+                      <RefreshCw className="w-3.5 h-3.5" />
+                    </button>
+                    <button onClick={() => removeRow(row.id)} title="Remove this item" className="w-7 h-7 flex items-center justify-center bg-gray-100 hover:bg-red-500 hover:text-white text-gray-500 rounded-lg transition">
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+          <datalist id="invoice-cats">{categories.map(c => <option key={c} value={c} />)}</datalist>
+
+          <div className="p-4 border-t border-gray-100 space-y-3">
+            {error && <div className="rounded-xl p-3 text-sm font-bold text-center bg-red-50 text-red-600 border border-red-200">{error}</div>}
+
+            {stage === 'importing' && (
+              <div>
+                <div className="flex justify-between text-xs font-black text-gray-500 mb-1"><span>Importing... {importProgress.current} / {importProgress.total}</span></div>
+                <div className="w-full bg-gray-100 rounded-full h-3"><div className="bg-[#FA5600] h-3 rounded-full transition-all" style={{ width: `${importProgress.total ? (importProgress.current / importProgress.total) * 100 : 0}%` }} /></div>
+              </div>
+            )}
+
+            {importResults.length > 0 && (
+              <div className="space-y-1 max-h-48 overflow-y-auto">
+                {importResults.map((r, i) => (
+                  <div key={i} className={`flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-bold ${r.ok ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-600'}`}>
+                    <span>{r.ok ? '✅' : '❌'}</span><span className="flex-1 truncate">{r.name}</span>
+                    {r.error && <span className="text-[10px] opacity-70">{r.error}</span>}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {stage === 'review' && (
+              <button onClick={handleImportAll} disabled={rows.filter(r => r.include).length === 0}
+                className="w-full py-3 bg-[#FA5600] text-white font-black uppercase tracking-widest text-sm rounded-xl hover:bg-[#E04A00] transition flex items-center justify-center gap-2 disabled:opacity-50">
+                <Upload className="w-4 h-4" /> Import {rows.filter(r => r.include).length} Product{rows.filter(r => r.include).length === 1 ? '' : 's'}
+              </button>
+            )}
+            {stage === 'done' && (
+              <button onClick={reset} className="w-full py-3 border-2 border-gray-200 text-gray-600 font-black uppercase tracking-widest text-sm rounded-xl hover:border-[#FA5600] hover:text-[#FA5600] transition">
+                Import Another Invoice
+              </button>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -2370,15 +2635,9 @@ function drawSparkleEffect(ctx: CanvasRenderingContext2D, W: number, H: number) 
   }
 }
 
-function drawFireEffect(ctx: CanvasRenderingContext2D, x: number, y: number, scale: number, t?: number) {
+function drawFireEffect(ctx: CanvasRenderingContext2D, x: number, y: number, scale: number) {
   ctx.save();
   ctx.translate(x, y);
-  if (t !== undefined) {   // animated: sway + stretch, pivoting on the base of the flame
-    ctx.translate(0, 20 * scale);
-    ctx.rotate(0.07 * Math.sin(TAU * 1.5 * t) + 0.03 * Math.sin(TAU * 3.5 * t + 1));
-    ctx.scale(1 + 0.05 * Math.sin(TAU * 2 * t + 2), 1 + 0.10 * Math.sin(TAU * 2.5 * t));
-    ctx.translate(0, -20 * scale);
-  }
   ctx.scale(scale, scale);
   const grad = ctx.createLinearGradient(0, -70, 0, 20);
   grad.addColorStop(0, '#FFD447'); grad.addColorStop(0.55, '#FF7A00'); grad.addColorStop(1, '#E11D48');
@@ -2443,97 +2702,6 @@ function drawArrowEffect(ctx: CanvasRenderingContext2D, fromX: number, fromY: nu
   ctx.beginPath(); ctx.moveTo(fromX, fromY); ctx.quadraticCurveTo(ctrlX, ctrlY, toX, toY); ctx.stroke();
   ctx.fillStyle = '#FFD447'; head(); ctx.fill();
   ctx.restore();
-}
-
-// ── Animated effects ────────────────────────────────────────────────────────
-// Sparkle / Fire / Confetti move. Instagram & Facebook can't show a moving picture, so when any of
-// them is on, the story is recorded as a short video (STORY_LOOP_S seconds) and posted as a video story.
-// Every motion below repeats a whole number of times per loop, so the video loops without a jump.
-const STORY_LOOP_S = 6;
-const TAU = Math.PI * 2;
-
-// Cloudinary delivers any uploaded video as a plain H.264 MP4 (what Instagram / Facebook / WhatsApp accept)
-const storyMp4Url = (u: string) =>
-  u.replace('/video/upload/', '/video/upload/f_mp4,vc_h264,ac_none,fps_30,c_limit,w_1080,h_1920,q_auto:best/').replace(/\.[a-z0-9]+$/i, '.mp4');
-
-// Where the flame sits (mirrors the layout in drawStory: image card at 120,350 size 840)
-const storyFireSpot = (hasBadge: boolean) => hasBadge ? { x: 780, y: 428 } : { x: 870, y: 480 };
-
-function drawSparkleAnimated(ctx: CanvasRenderingContext2D, W: number, H: number, t: number) {
-  const rnd = seededRandom(7);
-  for (let i = 0; i < 30; i++) {
-    const zone = rnd();
-    let x: number, y: number;
-    if (zone < 0.55) { x = rnd() < 0.5 ? 18 + rnd() * 84 : W - 102 + rnd() * 84; y = 300 + rnd() * (H - 620); }
-    else if (zone < 0.8) { x = rnd() * W; y = 20 + rnd() * 220; }
-    else { x = rnd() * W; y = H - 240 + rnd() * 220; }
-    const r = 11 + rnd() * 24;
-    const color = rnd() < 0.55 ? '#FFFFFF' : '#FFD447';
-    const baseAlpha = 0.6 + rnd() * 0.4;
-    const phase = rnd();
-    const k = 3 + (i % 4);                                              // 3–6 twinkles per loop
-    const s = 0.5 + 0.5 * Math.sin(TAU * (k * t / STORY_LOOP_S + phase)); // 0..1
-    drawSparkleStar(ctx, x, y, r * (0.35 + 0.75 * s), color, baseAlpha * (0.25 + 0.75 * s));
-  }
-}
-
-function drawEmbersAnimated(ctx: CanvasRenderingContext2D, x: number, y: number, scale: number, t: number) {
-  for (let i = 0; i < 7; i++) {
-    const p = (t / 2 + i / 7) % 1;                                      // one rise every 2s
-    const px = x + (i - 3) * 7 * scale * 0.5 + Math.sin(TAU * (p * 1.5 + i * 0.29)) * 14 * scale;
-    const py = y - 30 * scale - p * 120 * scale;
-    if (py < 322) continue;                                             // keep clear of the top label pill
-    ctx.save();
-    ctx.globalAlpha = Math.max(0, 1 - p) * 0.95;
-    ctx.fillStyle = i % 2 ? '#FFD447' : '#FF7A00';
-    ctx.beginPath(); ctx.arc(px, py, 3 + 6 * (1 - p), 0, TAU); ctx.fill();
-    ctx.restore();
-  }
-}
-
-function drawConfettiAnimated(ctx: CanvasRenderingContext2D, W: number, H: number, t: number) {
-  const colors = ['#FA5600', '#FFD447', '#25D366', '#2AABEE', '#E11D48', '#FFFFFF'];
-  const rnd = seededRandom(31);
-  const zoneH = H * 0.42 + 60;
-  for (let i = 0; i < 52; i++) {
-    const x0 = rnd() * W;
-    const y0 = rnd() * zoneH;
-    const size = 13 + rnd() * 15;
-    const rot = rnd() * TAU;
-    const color = colors[Math.floor(rnd() * colors.length)];
-    const isBar = rnd() > 0.5;
-    const y = ((y0 + (2 + (i % 2)) * zoneH * t / STORY_LOOP_S) % zoneH) - 30;   // falls 2–3 laps per loop
-    const x = x0 + Math.sin(TAU * (2 * t / STORY_LOOP_S + i * 0.13)) * 22;
-    const u = (y + 30) / zoneH;
-    const fade = Math.min(1, u * 8, (1 - u) * 8);                              // fade in at the top, out at the bottom
-    const blocked =
-      (x > 300 && x < 780 && y > 235 && y < 335) ||   // top label pill
-      Math.hypot(x - 920, y - 390) < 120 ||            // discount badge
-      Math.hypot(x - 780, y - 410) < 95;               // flame beside the badge
-    if (blocked) continue;
-    ctx.save();
-    ctx.translate(x, y);
-    ctx.rotate(rot + TAU * (1 + (i % 3)) * t / STORY_LOOP_S);
-    ctx.globalAlpha = 0.85 * fade;
-    ctx.fillStyle = color;
-    if (isBar) ctx.fillRect(-size / 2, -size / 4, size, size / 2);
-    else { ctx.beginPath(); ctx.arc(0, 0, size / 3, 0, TAU); ctx.fill(); }
-    ctx.restore();
-  }
-}
-
-function drawAnimatedEffects(
-  ctx: CanvasRenderingContext2D,
-  fx: { sparkle: boolean; fire: boolean; confetti: boolean; arrow: boolean },
-  hasBadge: boolean, t: number,
-) {
-  if (fx.confetti) drawConfettiAnimated(ctx, STORY_W, STORY_H, t);
-  if (fx.fire) {
-    const f = storyFireSpot(hasBadge);
-    drawFireEffect(ctx, f.x, f.y, 1.9, t);
-    drawEmbersAnimated(ctx, f.x, f.y, 1.9, t);
-  }
-  if (fx.sparkle) drawSparkleAnimated(ctx, STORY_W, STORY_H, t);
 }
 
 function drawStory(
@@ -2790,9 +2958,6 @@ function StoryComposer({ product, imageUrl, price, origPrice, caption, descripti
   const [showPrice, setShowPrice]       = useState(true);
   const [showDiscount, setShowDiscount] = useState(true);
   const [effects, setEffects]           = useState({ sparkle: false, fire: false, confetti: false, arrow: false });
-  const baseRef = useRef<HTMLCanvasElement | null>(null);   // static layer, cached while the overlays animate
-  const animated = effects.sparkle || effects.fire || effects.confetti;
-  const hasBadge = showDiscount && origPrice > price && price > 0;
   const [platforms, setPlatforms]       = useState({ instagram: true, facebook: true });
   const [posting, setPosting]           = useState(false);
   const [results, setResults]           = useState<Record<string, StoryResult> | null>(null);
@@ -2820,32 +2985,14 @@ function StoryComposer({ product, imageUrl, price, origPrice, caption, descripti
     return () => { cancelled = true; if (objUrl) URL.revokeObjectURL(objUrl); };
   }, [imageUrl]);
 
-  // Redraw whenever anything changes. With Sparkle / Fire / Confetti on, the static layer is drawn once
-  // into an offscreen canvas and only the moving overlays are redrawn every frame (keeps it smooth).
+  // Redraw whenever anything changes
   useEffect(() => {
-    const cv = canvasRef.current;
-    if (!cv) return;
-    const opts = { theme, name: product?.name || '', description: description || '', price, origPrice, tag, cta, showPrice, showDiscount };
-    if (!animated) { drawStory(cv, img, { ...opts, effects }); return; }
-    const base = baseRef.current || (baseRef.current = document.createElement('canvas'));
-    drawStory(base, img, { ...opts, effects: { ...effects, sparkle: false, fire: false, confetti: false } });
-    cv.width = STORY_W; cv.height = STORY_H;
-    const ctx = cv.getContext('2d');
-    if (!ctx) return;
-    let raf = 0;
-    const t0 = performance.now();
-    const frame = (now: number) => {
-      ctx.clearRect(0, 0, STORY_W, STORY_H);
-      ctx.drawImage(base, 0, 0);
-      drawAnimatedEffects(ctx, effects, hasBadge, (now - t0) / 1000);
-      raf = requestAnimationFrame(frame);
-    };
-    raf = requestAnimationFrame(frame);
-    return () => cancelAnimationFrame(raf);
-  }, [img, theme, tag, cta, showPrice, showDiscount, effects, animated, hasBadge, product?.name, description, price, origPrice]);
+    if (canvasRef.current) {
+      drawStory(canvasRef.current, img, { theme, name: product?.name || '', description: description || '', price, origPrice, tag, cta, showPrice, showDiscount, effects });
+    }
+  }, [img, theme, tag, cta, showPrice, showDiscount, effects, product?.name, description, price, origPrice]);
 
-  const baseName = `story-${String(product?.name || 'product').toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40)}`;
-  const fileNameFor = (b: Blob) => `${baseName}.${b.type.includes('mp4') ? 'mp4' : b.type.includes('webm') ? 'webm' : 'jpg'}`;
+  const fileName = `story-${String(product?.name || 'product').toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40)}.jpg`;
 
   // Instagram only accepts JPEG for stories, so always export JPEG.
   const getBlob = (): Promise<Blob> => new Promise((resolve, reject) => {
@@ -2856,72 +3003,17 @@ function StoryComposer({ product, imageUrl, price, origPrice, caption, descripti
     }
   });
 
-  // Records the animated canvas for STORY_LOOP_S seconds (MP4 if the browser can, otherwise WebM)
-  const recordVideo = (): Promise<Blob> => new Promise((resolve, reject) => {
-    const cv = canvasRef.current as any;
-    if (!cv?.captureStream || typeof MediaRecorder === 'undefined') { reject(new Error('This browser cannot record video — use Chrome or Edge.')); return; }
-    if (document.hidden) { reject(new Error('Keep this tab visible while the video records.')); return; }
-    const mime = ['video/mp4;codecs=avc1.42E01E', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm']
-      .find(m => MediaRecorder.isTypeSupported(m)) || '';
-    try {
-      const rec = new MediaRecorder(cv.captureStream(30), { ...(mime ? { mimeType: mime } : {}), videoBitsPerSecond: 8_000_000 });
-      const parts: Blob[] = [];
-      rec.ondataavailable = e => { if (e.data && e.data.size) parts.push(e.data); };
-      rec.onerror = () => reject(new Error('Video recording failed.'));
-      rec.onstop = () => resolve(new Blob(parts, { type: rec.mimeType || mime || 'video/webm' }));
-      rec.start(250);
-      setTimeout(() => { if (rec.state !== 'inactive') rec.stop(); }, STORY_LOOP_S * 1000);
-    } catch (e: any) { reject(new Error(e?.message || 'Video recording failed.')); }
-  });
-
-  // Straight from the browser to Cloudinary (same signed-upload route the Facebook video post uses)
-  const uploadStoryVideo = async (blob: Blob): Promise<string> => {
-    const sig = await (await fetch('/api/products?cloudinarySign=true&resourceType=video')).json();
-    if (!sig.signature) throw new Error('Could not get an upload permission from the server.');
-    const form = new FormData();
-    form.append('file', blob, `${baseName}.${blob.type.includes('mp4') ? 'mp4' : 'webm'}`);
-    form.append('api_key', sig.apiKey);
-    form.append('timestamp', String(sig.timestamp));
-    form.append('signature', sig.signature);
-    form.append('folder', sig.folder);
-    const r = await fetch(`https://api.cloudinary.com/v1_1/${sig.cloudName}/video/upload`, { method: 'POST', body: form });
-    const d = await r.json().catch(() => ({}));
-    if (!r.ok || !d.secure_url) throw new Error(d.error?.message || 'Video upload failed.');
-    return d.secure_url;
-  };
-
-  // Still JPEG normally; a recorded video when Sparkle / Fire / Confetti is on
-  const getMedia = async (): Promise<Blob> => {
-    if (!animated) return getBlob();
-    setNotice(`🎬 Recording a ${STORY_LOOP_S}-second animation — keep this tab open…`);
-    const b = await recordVideo();
-    setNotice('');
-    return b;
-  };
-
-  // For saving / WhatsApp: must be a real MP4 (WebM is converted through Cloudinary)
-  const getFileMedia = async (): Promise<Blob> => {
-    const b = await getMedia();
-    if (!b.type.includes('video') || b.type.includes('mp4')) return b;
-    setNotice('Converting to MP4…');
-    const r = await fetch(storyMp4Url(await uploadStoryVideo(b)), { cache: 'reload' });
-    if (!r.ok) throw new Error('MP4 conversion failed — try again in a moment.');
-    const out = await r.blob();
-    setNotice('');
-    return out.type.includes('mp4') ? out : new Blob([out], { type: 'video/mp4' });
-  };
-
   const downloadBlob = (blob: Blob) => {
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = fileNameFor(blob);
+    a.download = fileName;
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 3000);
   };
 
   const handleDownload = async () => {
     setNotice('');
-    try { downloadBlob(await getFileMedia()); }
+    try { downloadBlob(await getBlob()); }
     catch (e: any) { setNotice('❌ ' + e.message); }
   };
 
@@ -2938,8 +3030,8 @@ function StoryComposer({ product, imageUrl, price, origPrice, caption, descripti
   const doWhatsAppStatus = async () => {
     setNotice('');
     try {
-      const blob = await getFileMedia();
-      const file = new File([blob], fileNameFor(blob), { type: blob.type.split(';')[0] });
+      const blob = await getBlob();
+      const file = new File([blob], fileName, { type: 'image/jpeg' });
       if (isMobile && navigator.canShare && navigator.canShare({ files: [file] })) {
         await navigator.share({ files: [file], text: caption });
         onShared([String(product._id)], 'whatsapp-status');
@@ -2950,7 +3042,7 @@ function StoryComposer({ product, imageUrl, price, origPrice, caption, descripti
       let captionCopied = false;
       try { await navigator.clipboard.writeText(caption); captionCopied = true; } catch { /* clipboard blocked */ }
       setNotice(
-        `✓ ${blob.type.includes('video') ? 'Video' : 'Image'} saved${captionCopied ? ' and caption copied' : ''}. In WhatsApp Desktop: Status tab → “+” → Photos → pick "${fileNameFor(blob)}"${captionCopied ? ' → paste the caption (Ctrl+V)' : ''} → Send.`
+        `✓ Image saved${captionCopied ? ' and caption copied' : ''}. In WhatsApp Desktop: Status tab → “+” → Photos → pick "${fileName}"${captionCopied ? ' → paste the caption (Ctrl+V)' : ''} → Send.`
       );
     } catch (e: any) {
       if (e?.name !== 'AbortError') setNotice('❌ ' + (e.message || 'Share failed'));
@@ -2964,30 +3056,20 @@ function StoryComposer({ product, imageUrl, price, origPrice, caption, descripti
     if (selected.length === 0) { setNotice('Select Instagram and/or Facebook first.'); return; }
     setPosting(true); setResults(null); setNotice('');
     try {
-      // 1) Meta needs a public URL, so host the story on Cloudinary first
-      const media = await getMedia();
-      let payload: Record<string, unknown>;
-      if (media.type.includes('video')) {
-        setNotice('⬆ Uploading the video…');
-        const videoUrl = await uploadStoryVideo(media);
-        setNotice('📤 Posting the video story — this can take up to a minute…');
-        payload = { storyBroadcast: true, videoUrl, platforms: selected };
-      } else {
-        const up = await fetch('/api/upload?mode=story', { method: 'POST', body: media, headers: { 'Content-Type': 'image/jpeg' } });
-        const upData = await up.json();
-        if (!upData.url) throw new Error('Image upload failed');
-        payload = { storyBroadcast: true, imageUrl: upData.url, platforms: selected };
-      }
+      // 1) Meta needs a public URL, so host the rendered JPEG on Cloudinary via the existing upload endpoint
+      const blob = await getBlob();
+      const up = await fetch('/api/upload?mode=story', { method: 'POST', body: blob, headers: { 'Content-Type': 'image/jpeg' } });
+      const upData = await up.json();
+      if (!upData.url) throw new Error('Image upload failed');
       // 2) Ask the server to publish it as a story
       const res = await fetch('/api/products', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({ storyBroadcast: true, imageUrl: upData.url, platforms: selected }),
       });
       const data = await res.json();
       if (!res.ok && !data.results) throw new Error(data.error || 'Failed to post story');
       setResults(data.results || {});
-      setNotice('');
       Object.entries(data.results || {}).forEach(([k, r]: [string, any]) => { if (r?.ok) onShared([String(product._id)], k); });
     } catch (e: any) {
       setNotice('❌ ' + e.message);
@@ -3042,7 +3124,7 @@ function StoryComposer({ product, imageUrl, price, origPrice, caption, descripti
                 <button key={k} onClick={() => setEffects(e => ({ ...e, [k]: !e[k] }))} className={pill(effects[k])}>{label}</button>
               ))}
             </div>
-            <p className="text-[9px] text-gray-400 mt-1">Sparkle, Fire and Confetti move — the story is then recorded as a 6-second video (Arrow is drawn into a still picture).</p>
+            <p className="text-[9px] text-gray-400 mt-1">Decorations are drawn into the image itself. Instagram and Facebook stories/posts are still pictures, so these don't move.</p>
           </div>
         </div>
       </div>
@@ -3079,7 +3161,7 @@ function StoryComposer({ product, imageUrl, price, origPrice, caption, descripti
 
         <button onClick={handleDownload} disabled={!img}
           className="w-full flex items-center justify-center gap-2 border-2 border-gray-200 text-gray-600 font-black py-2.5 rounded-xl hover:border-[#FA5600] hover:text-[#FA5600] transition-all text-xs uppercase tracking-widest disabled:opacity-50">
-          <Download className="w-4 h-4" /> {animated ? 'Download Story Video' : 'Download Story Image'}
+          <Download className="w-4 h-4" /> Download Story Image
         </button>
 
         {results && (
