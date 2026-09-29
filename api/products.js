@@ -15,7 +15,7 @@ cloudinary.config({
 // ── Invoice Import (AI) — fully free: Gemini (free tier) + Jimp crop + Pollinations ────────
 // Free tier: Google AI Studio, no credit card. Get a key at https://aistudio.google.com
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const GEMINI_MODEL = 'gemini-2.5-flash';
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
 
 function invoiceBufferHash(buffer) {
   return crypto.createHash('md5').update(buffer).digest('hex').slice(0, 16);
