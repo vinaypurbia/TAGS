@@ -2207,21 +2207,32 @@ type InvoiceRow = {
   include: boolean;
 };
 
+// Selling prices are derived from the invoice unit cost: cost + 60% (original) and cost + 35% (discounted)
+const INVOICE_ORIGINAL_MARKUP = 0.60;
+const INVOICE_DISCOUNTED_MARKUP = 0.35;
+
 function InvoiceImportSection() {
   const [stage, setStage] = useState<'idle' | 'reading' | 'review' | 'importing' | 'done'>('idle');
   const [rows, setRows] = useState<InvoiceRow[]>([]);
   const [error, setError] = useState('');
-  const [categories, setCategories] = useState<string[]>([]);
+  const [allCats, setAllCats] = useState<any[]>([]);
   const [importResults, setImportResults] = useState<{ name: string; ok: boolean; error?: string }[]>([]);
   const [importProgress, setImportProgress] = useState({ current: 0, total: 0 });
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     fetch('/api/categories').then(r => r.json()).then(data => {
-      const list = Array.isArray(data) ? data : (data.categories || []);
-      setCategories(list.map((c: any) => c.name || c).filter(Boolean));
+      setAllCats(Array.isArray(data) ? data : (data.categories || []));
     }).catch(() => {});
   }, []);
+
+  // Main categories have no parentId; subcategories point at their parent's _id
+  const mainCats = allCats.filter((c: any) => !c.parentId);
+  const subsFor = (categoryName: string): string[] => {
+    const parent = mainCats.find((c: any) => (c.name || '').toLowerCase() === categoryName.trim().toLowerCase());
+    if (!parent) return [];
+    return allCats.filter((c: any) => c.parentId && String(c.parentId) === String(parent._id)).map((c: any) => c.name).filter(Boolean);
+  };
 
   // Free AI-generated picture (used when the invoice had no real photo for this item, or on "try a different picture")
   const fetchImageFor = async (id: string, name: string, prompt: string) => {
@@ -2274,8 +2285,8 @@ function InvoiceImportSection() {
         quantity: it.quantity, unitCost: it.unitCost,
         imagePrompt: it.imagePrompt || it.name || '',
         category: '', subcategory: '',
-        originalPrice: it.unitCost ? String(Math.round(it.unitCost * 1.6)) : '',
-        discountedPrice: '',
+        originalPrice: it.unitCost ? String(Math.round(it.unitCost * (1 + INVOICE_ORIGINAL_MARKUP))) : '',
+        discountedPrice: it.unitCost ? String(Math.round(it.unitCost * (1 + INVOICE_DISCOUNTED_MARKUP))) : '',
         imageUrl: it.imageUrl || '', imageSource: it.imageSource || '',
         imageStatus: it.imageUrl ? 'done' : 'pending', include: true,
       }));
@@ -2378,9 +2389,9 @@ function InvoiceImportSection() {
                 <div className="flex-1 min-w-0 grid grid-cols-2 gap-2">
                   <input value={row.name} onChange={e => updateRow(row.id, { name: e.target.value })} disabled={stage !== 'review'}
                     placeholder="Product name" className="col-span-2 text-xs font-black text-gray-800 border border-gray-200 rounded-lg px-2 py-1.5 disabled:bg-gray-50" />
-                  <input value={row.category} onChange={e => updateRow(row.id, { category: e.target.value })} disabled={stage !== 'review'} list="invoice-cats"
+                  <input value={row.category} onChange={e => updateRow(row.id, { category: e.target.value, subcategory: '' })} disabled={stage !== 'review'} list="invoice-cats"
                     placeholder="Category *" className="text-[11px] border border-gray-200 rounded-lg px-2 py-1.5 disabled:bg-gray-50" />
-                  <input value={row.subcategory} onChange={e => updateRow(row.id, { subcategory: e.target.value })} disabled={stage !== 'review'}
+                  <input value={row.subcategory} onChange={e => updateRow(row.id, { subcategory: e.target.value })} disabled={stage !== 'review'} list={`invoice-subs-${row.id}`}
                     placeholder="Subcategory" className="text-[11px] border border-gray-200 rounded-lg px-2 py-1.5 disabled:bg-gray-50" />
                   <input value={row.originalPrice} onChange={e => updateRow(row.id, { originalPrice: e.target.value })} disabled={stage !== 'review'}
                     placeholder="Selling price *" className="text-[11px] border border-gray-200 rounded-lg px-2 py-1.5 disabled:bg-gray-50" />
@@ -2389,7 +2400,7 @@ function InvoiceImportSection() {
                   <p className="col-span-2 text-[10px] text-gray-400">
                     {row.quantity != null && <>Qty {row.quantity} · </>}
                     {row.unitCost != null && <>Cost ₹{row.unitCost} · </>}
-                    Suggested selling price is cost × 1.6 — edit as needed.
+                    Prices are cost + 60% (original) and cost + 35% (discounted) — edit as needed.
                   </p>
                 </div>
 
@@ -2406,7 +2417,10 @@ function InvoiceImportSection() {
               </div>
             ))}
           </div>
-          <datalist id="invoice-cats">{categories.map(c => <option key={c} value={c} />)}</datalist>
+          <datalist id="invoice-cats">{mainCats.map((c: any) => <option key={c._id || c.name} value={c.name} />)}</datalist>
+          {rows.map(row => (
+            <datalist key={row.id} id={`invoice-subs-${row.id}`}>{subsFor(row.category).map(s => <option key={s} value={s} />)}</datalist>
+          ))}
 
           <div className="p-4 border-t border-gray-100 space-y-3">
             {error && <div className="rounded-xl p-3 text-sm font-bold text-center bg-red-50 text-red-600 border border-red-200">{error}</div>}
