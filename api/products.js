@@ -16,10 +16,9 @@ cloudinary.config({
 // Free tier: Google AI Studio, no credit card. Get a key at https://aistudio.google.com
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 // Primary model first, then fallback(s) if the primary is overloaded. Override the primary via env var.
-const GEMINI_MODELS = [
-  process.env.GEMINI_MODEL || 'gemini-3.8-flash',
-  'gemini-3-flash-preview',
-];
+const GEMINI_MODELS = process.env.GEMINI_MODELS
+  ? process.env.GEMINI_MODELS.split(',').map(m => m.trim()).filter(Boolean) // e.g. "gemini-3.8-flash,gemini-3-flash-preview"
+  : [process.env.GEMINI_MODEL || 'gemini-3.8-flash', 'gemini-3-flash-preview'];
 
 function invoiceBufferHash(buffer) {
   return crypto.createHash('md5').update(buffer).digest('hex').slice(0, 16);
@@ -37,8 +36,9 @@ async function callGemini(parts) {
   // (a Vercel timeout returns a plain-text page, which the admin panel cannot read as JSON).
   const deadline = Date.now() + 40000;
 
-  let lastErr;
+  let lastErr, hitQuota = false;
   for (const model of GEMINI_MODELS) {
+    let waitedFor429 = false;
     for (let attempt = 0; attempt < 3; attempt++) {
       const remaining = deadline - Date.now();
       if (remaining < 4000) throw lastErr || new Error('Google is taking too long to respond. Please try again in a minute.');
@@ -56,12 +56,28 @@ async function callGemini(parts) {
         catch { throw new Error('Could not read structured items from this invoice — try a clearer photo or scan'); }
       }
       lastErr = new Error(data.error?.message || `Gemini error (${r.status})`);
-      if (![429, 500, 503].includes(r.status)) {
+      if (r.status === 429) {
+        // Free-tier limit. Every retry is another counted request, so don't hammer it: wait once if Google
+        // says it clears within seconds, otherwise switch to the next model (each model has its own quota).
+        const secs = parseFloat((data.error?.message || '').match(/retry in ([\d.]+)s/i)?.[1]);
+        if (!waitedFor429 && secs && secs <= 20 && deadline - Date.now() > (secs + 6) * 1000) {
+          waitedFor429 = true;
+          await new Promise(res => setTimeout(res, (secs + 1) * 1000));
+          continue;
+        }
+        hitQuota = true;
+        break;
+      }
+      if (![500, 503].includes(r.status)) {
         if (r.status === 404) break; // model not available for this key: try the next model
         throw lastErr;
       }
       await new Promise(res => setTimeout(res, 1000 * (attempt + 1)));
     }
+  }
+  if (hitQuota) {
+    console.error('Gemini quota error:', lastErr?.message);
+    throw new Error("Google's free AI limit has been reached for now. Wait a minute and try again. If it keeps happening today, the daily free limit is used up (it resets around 12:30 pm IST), or you can enable billing on the Google AI project.");
   }
   throw lastErr;
 }
@@ -280,18 +296,44 @@ async function findSupplierProduct(siteUrl, name) {
 
 // ── Product description (from the item name + its final picture) ────────────
 // The picture is fetched from our own Cloudinary storage only, then shown to Gemini together with the name.
+async function loadCloudinaryImagePart(imageUrl) {
+  const u = new URL(imageUrl);
+  if (u.protocol !== 'https:' || !u.hostname.endsWith('cloudinary.com')) throw new Error('Unsupported image address');
+  const r = await fetch(imageUrl, { signal: AbortSignal.timeout(12000) });
+  if (!r.ok) throw new Error(`Could not load the picture (${r.status})`);
+  const mime = (r.headers.get('content-type') || 'image/jpeg').split(';')[0];
+  const buf = Buffer.from(await r.arrayBuffer());
+  if (buf.length > 8 * 1024 * 1024) throw new Error('Picture is too large');
+  return { inline_data: { mime_type: mime.startsWith('image/') ? mime : 'image/jpeg', data: buf.toString('base64') } };
+}
+
+// Many items in ONE Gemini request (saves free-tier quota: 1 call for a whole invoice instead of 1 per item)
+async function generateProductDescriptions(items) {
+  const parts = [];
+  for (const [i, it] of items.entries()) {
+    let img = null;
+    if (it.imageUrl) { try { img = await loadCloudinaryImagePart(it.imageUrl); } catch { img = null; } }
+    parts.push({ text: `ITEM ${i + 1} — id "${it.id}", name: "${it.name}"` + (it.hint ? `, supplier invoice note (may be rough): "${it.hint}"` : '') + (img ? ' — its picture:' : ' — (no picture)') });
+    if (img) parts.push(img);
+  }
+  parts.push({ text:
+    `You write product descriptions for an Indian toy & gadget shop's online catalogue. For EACH item above, look closely at its picture (when there is one) and describe THAT product.\n` +
+    `For each, write 2-3 short sentences (about 40-60 words) for shoppers: what the product is, how a child plays with it or what it does, and its visible features ` +
+    `(colours, lights, remote control, number of pieces, etc.) only when visible in the picture or clearly implied by the name.\n` +
+    `Rules: do NOT invent specifications such as battery type, size, material, age range, safety certificates or brand claims that are not visible. ` +
+    `Simple, warm English. No emojis, no markdown, no price, no hashtags, do not repeat the product name at the start.\n` +
+    `Return ONLY a JSON array with one element per item: [{"id": string, "description": string}]` });
+  const out = await callGemini(parts);
+  const map = {};
+  for (const o of (Array.isArray(out) ? out : [])) {
+    if (o && typeof o.id === 'string' && typeof o.description === 'string' && o.description.trim()) map[o.id] = o.description.trim();
+  }
+  return map;
+}
+
 async function generateProductDescription({ name, hint, imageUrl }) {
   const parts = [];
-  if (imageUrl) {
-    const u = new URL(imageUrl);
-    if (u.protocol !== 'https:' || !u.hostname.endsWith('cloudinary.com')) throw new Error('Unsupported image address');
-    const r = await fetch(imageUrl, { signal: AbortSignal.timeout(12000) });
-    if (!r.ok) throw new Error(`Could not load the picture (${r.status})`);
-    const mime = (r.headers.get('content-type') || 'image/jpeg').split(';')[0];
-    const buf = Buffer.from(await r.arrayBuffer());
-    if (buf.length > 8 * 1024 * 1024) throw new Error('Picture is too large');
-    parts.push({ inline_data: { mime_type: mime.startsWith('image/') ? mime : 'image/jpeg', data: buf.toString('base64') } });
-  }
+  if (imageUrl) parts.push(await loadCloudinaryImagePart(imageUrl));
   parts.push({ text:
     `You write product descriptions for an Indian toy & gadget shop's online catalogue.\n` +
     `Product name: "${name}"\n` +
@@ -798,6 +840,19 @@ export default async function handler(req, res) {
       } catch (error) {
         console.warn('Supplier image lookup failed:', error.message);
         return res.status(200).json({ found: false, error: error.message });
+      }
+    }
+
+    // ── Invoice Import (AI) — POST /api/products?invoiceDescriptions=true  { items: [{ id, name, hint?, imageUrl? }] } ──
+    if (req.method === 'POST' && req.query.invoiceDescriptions === 'true') {
+      const list = (Array.isArray(req.body?.items) ? req.body.items : []).filter(i => i && i.id && i.name).slice(0, 8)
+        .map(i => ({ id: String(i.id), name: String(i.name), hint: i.hint ? String(i.hint).slice(0, 300) : '', imageUrl: i.imageUrl ? String(i.imageUrl) : '' }));
+      if (list.length === 0) return res.status(400).json({ error: 'items are required' });
+      try {
+        return res.status(200).json({ success: true, descriptions: await generateProductDescriptions(list) });
+      } catch (error) {
+        console.error('Invoice descriptions error:', error);
+        return res.status(500).json({ error: error.message || 'Could not write descriptions' });
       }
     }
 
