@@ -2203,7 +2203,8 @@ type InvoiceRow = {
   name: string; description: string; quantity: number | null; unitCost: number | null;
   category: string; subcategory: string; originalPrice: string; discountedPrice: string;
   imagePrompt: string;
-  imageUrl: string; imageSource: 'invoice' | 'ai' | ''; imageStatus: 'pending' | 'loading' | 'done' | 'error';
+  matchedTitle: string;
+  imageUrl: string; imageSource: 'invoice' | 'supplier' | 'ai' | ''; imageStatus: 'pending' | 'loading' | 'done' | 'error';
   include: boolean;
 };
 
@@ -2219,6 +2220,20 @@ function InvoiceImportSection() {
   const [importResults, setImportResults] = useState<{ name: string; ok: boolean; error?: string }[]>([]);
   const [importProgress, setImportProgress] = useState({ current: 0, total: 0 });
   const fileRef = useRef<HTMLInputElement>(null);
+
+  // Supplier website for this import (optional). Recent ones are remembered so they're one click next time.
+  const [supplierSite, setSupplierSite] = useState('');
+  const [recentSuppliers, setRecentSuppliers] = useState<string[]>([]);
+  useEffect(() => {
+    try { setRecentSuppliers(JSON.parse(localStorage.getItem('tags_invoice_suppliers') || '[]')); } catch {}
+  }, []);
+  const normalizeSite = (v: string) => { const s = v.trim(); return !s ? '' : /^https?:\/\//i.test(s) ? s : `https://${s}`; };
+  const rememberSupplier = (site: string) => {
+    try {
+      const next = [site, ...recentSuppliers.filter(x => x !== site)].slice(0, 8);
+      setRecentSuppliers(next); localStorage.setItem('tags_invoice_suppliers', JSON.stringify(next));
+    } catch {}
+  };
 
   useEffect(() => {
     fetch('/api/categories').then(r => r.json()).then(data => {
@@ -2259,6 +2274,32 @@ function InvoiceImportSection() {
     await Promise.all(Array.from({ length: 3 }, worker));
   };
 
+  // Looks each item up on the supplier's website. Found → that photo replaces the invoice crop.
+  // Not found → keep the invoice crop if there is one, otherwise the AI picture.
+  const fetchSupplierImages = async (list: InvoiceRow[], site: string) => {
+    const queue = [...list];
+    const worker = async () => {
+      let item;
+      while ((item = queue.shift())) {
+        const it = item;
+        setRows(rs => rs.map(r => r.id === it.id ? { ...r, imageStatus: 'loading' } : r));
+        try {
+          const r = await fetch('/api/products?supplierImage=true', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: it.name, siteUrl: site }),
+          });
+          const data = await r.json().catch(() => ({}));
+          if (data.found && data.imageUrl) {
+            setRows(rs => rs.map(row => row.id === it.id ? { ...row, imageUrl: data.imageUrl, imageSource: 'supplier', matchedTitle: data.matchedTitle || '', imageStatus: 'done' } : row));
+            continue;
+          }
+        } catch {}
+        if (it.imageUrl) setRows(rs => rs.map(row => row.id === it.id ? { ...row, imageStatus: 'done' } : row));
+        else await fetchImageFor(it.id, it.name, it.imagePrompt);
+      }
+    };
+    await Promise.all(Array.from({ length: 3 }, worker));
+  };
+
   const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]; if (!file) return;
     setError(''); setRows([]); setImportResults([]); setStage('reading');
@@ -2287,13 +2328,20 @@ function InvoiceImportSection() {
         category: '', subcategory: '',
         originalPrice: it.unitCost ? String(Math.round(it.unitCost * (1 + INVOICE_ORIGINAL_MARKUP))) : '',
         discountedPrice: it.unitCost ? String(Math.round(it.unitCost * (1 + INVOICE_DISCOUNTED_MARKUP))) : '',
+        matchedTitle: '',
         imageUrl: it.imageUrl || '', imageSource: it.imageSource || '',
         imageStatus: it.imageUrl ? 'done' : 'pending', include: true,
       }));
       setRows(newRows);
       setStage('review');
-      // Only items with no real invoice photo need the (free, AI-generated) fallback picture
-      fetchAllImages(newRows.filter(r => !r.imageUrl));
+      const site = normalizeSite(supplierSite);
+      if (site) {
+        rememberSupplier(site);
+        fetchSupplierImages(newRows, site); // supplier photo first, then invoice crop, then AI
+      } else {
+        // Only items with no real invoice photo need the (free, AI-generated) fallback picture
+        fetchAllImages(newRows.filter(r => !r.imageUrl));
+      }
     } catch (e: any) {
       setError(e.message || 'Could not read this invoice'); setStage('idle');
     } finally {
@@ -2339,12 +2387,19 @@ function InvoiceImportSection() {
         <div className="w-10 h-10 bg-purple-100 rounded-xl flex items-center justify-center shrink-0"><Wand2 className="w-5 h-5 text-purple-600" /></div>
         <div className="flex-1">
           <p className="text-sm font-black text-gray-800">Import from a Supplier Invoice</p>
-          <p className="text-xs text-gray-500 mt-0.5">Upload the invoice (PDF or photo). If the invoice shows a photo per item, we crop that exact photo out — otherwise a free AI image is generated instead. You verify everything below before importing.</p>
+          <p className="text-xs text-gray-500 mt-0.5">Upload the invoice (PDF or photo). Add the supplier's website to pull each item's high-quality photo from it. Otherwise we crop the invoice photo, or generate a free AI image if the invoice has none. You verify everything below before importing.</p>
         </div>
       </div>
 
       {stage === 'idle' && (
         <div className="bg-white rounded-2xl border border-gray-200 p-6 shadow-sm">
+          <label className="block mb-4">
+            <span className="text-[10px] font-black uppercase tracking-widest text-gray-500">Supplier website (optional)</span>
+            <input value={supplierSite} onChange={e => setSupplierSite(e.target.value)} list="invoice-suppliers" placeholder="e.g. suppliername.com"
+              className="mt-1 w-full text-sm border border-gray-200 rounded-xl px-3 py-2.5 focus:outline-none focus:border-[#FA5600]" />
+            <span className="block text-[11px] text-gray-400 mt-1">If this supplier has a website, each item is searched there and its high-quality product photo is used. Leave empty to use the invoice photos.</span>
+            <datalist id="invoice-suppliers">{recentSuppliers.map(s => <option key={s} value={s} />)}</datalist>
+          </label>
           <div onClick={() => fileRef.current?.click()} className="border-2 border-dashed border-gray-200 hover:border-[#FA5600] rounded-2xl p-10 text-center cursor-pointer transition group">
             <FileText className="w-10 h-10 text-gray-300 group-hover:text-[#FA5600] mx-auto mb-3 transition" />
             <p className="font-black text-sm text-gray-700 uppercase tracking-widest">Click to Upload Invoice</p>
@@ -2380,8 +2435,8 @@ function InvoiceImportSection() {
                   {row.imageStatus === 'error' && <div className="w-full h-full flex items-center justify-center text-red-400 text-[9px] font-bold text-center px-1">No image</div>}
                   {row.imageUrl && <img src={row.imageUrl} alt={row.name} className="w-full h-full object-cover" />}
                   {row.imageSource && (
-                    <span className={`absolute bottom-0 left-0 right-0 text-[7px] font-black uppercase tracking-wider text-center py-0.5 ${row.imageSource === 'invoice' ? 'bg-green-600/90 text-white' : 'bg-purple-500/90 text-white'}`}>
-                      {row.imageSource === 'invoice' ? 'From invoice' : 'AI approx.'}
+                    <span className={`absolute bottom-0 left-0 right-0 text-[7px] font-black uppercase tracking-wider text-center py-0.5 ${row.imageSource === 'supplier' ? 'bg-blue-600/90 text-white' : row.imageSource === 'invoice' ? 'bg-green-600/90 text-white' : 'bg-purple-500/90 text-white'}`}>
+                      {row.imageSource === 'supplier' ? 'From supplier' : row.imageSource === 'invoice' ? 'From invoice' : 'AI approx.'}
                     </span>
                   )}
                 </div>
@@ -2402,6 +2457,7 @@ function InvoiceImportSection() {
                     {row.unitCost != null && <>Cost ₹{row.unitCost} · </>}
                     Prices are cost + 60% (original) and cost + 35% (discounted) — edit as needed.
                   </p>
+                  {row.matchedTitle && <p className="col-span-2 text-[10px] text-blue-600">Supplier match: {row.matchedTitle}</p>}
                 </div>
 
                 {stage === 'review' && (
