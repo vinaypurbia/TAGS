@@ -50,6 +50,63 @@ async function sendWhatsApp(phone, message) {
   }
 }
 
+// After a sale is EDITED, bring its Cash Flow entries back in line with the new figures.
+// Without this, the Sales tab shows the edited total while Cash Flow keeps the original amount
+// (and the original payment mode and cost of goods), so the two screens drift apart.
+// Only touches sales that already have their own Cash Flow entries (direct/POS sales); sales linked to
+// a delivery order keep their cash flow under the order and are left alone. Original entry date is kept.
+async function syncSaleCashFlow({ cashFlow, inventory, sale, saleId, newItems, totalAmount, paymentMode, customerName }) {
+  const oldIncome = await cashFlow.find({ referenceId: saleId, referenceType: 'sale', category: 'sales' }).toArray();
+  const oldCogs   = await cashFlow.find({ referenceId: saleId, referenceType: 'sale_cogs' }).toArray();
+  if (oldIncome.length === 0 && oldCogs.length === 0) return { synced: false };
+
+  const entryDate = (oldIncome[0] || oldCogs[0]).date || sale.date || new Date();
+  const who = customerName || 'Customer';
+
+  // ── Income entries ──
+  if (oldIncome.length > 0) {
+    await cashFlow.deleteMany({ referenceId: saleId, referenceType: 'sale', category: 'sales' });
+    const knownCash = Number(sale.mixedCashAmount) || 0;
+    const isMixed = paymentMode === 'mixed' && (knownCash > 0 || Number(sale.mixedOtherAmount) > 0);
+    if (isMixed) {
+      const cashAmt  = Math.min(knownCash, totalAmount);
+      const otherAmt = totalAmount - cashAmt; // any change lands on the non-cash portion
+      const otherMode = sale.mixedOtherMode || 'upi';
+      if (cashAmt > 0) await cashFlow.insertOne({
+        type: 'income', category: 'sales', amount: cashAmt, paymentMode: 'cash',
+        description: `Sale ${sale.saleNumber} — Cash portion — ${who}`,
+        referenceId: saleId, referenceType: 'sale', date: entryDate, createdAt: new Date(),
+      });
+      if (otherAmt > 0) await cashFlow.insertOne({
+        type: 'income', category: 'sales', amount: otherAmt, paymentMode: otherMode,
+        description: `Sale ${sale.saleNumber} — ${otherMode.toUpperCase()} portion — ${who}`,
+        referenceId: saleId, referenceType: 'sale', date: entryDate, createdAt: new Date(),
+      });
+      return { synced: true, mixed: { mixedCashAmount: cashAmt, mixedOtherAmount: otherAmt, mixedOtherMode: otherMode } };
+    }
+    await cashFlow.insertOne({
+      type: 'income', category: 'sales', amount: totalAmount, paymentMode: paymentMode === 'mixed' ? 'cash' : (paymentMode || 'cash'),
+      description: `Sale ${sale.saleNumber} — ${who}`,
+      referenceId: saleId, referenceType: 'sale', date: entryDate, createdAt: new Date(),
+    });
+  }
+
+  // ── Cost of goods (same rule as when a sale is created: inventory costPrice × quantity) ──
+  let totalCOGS = 0;
+  for (const item of newItems) {
+    if (!item.productId) continue;
+    const inv = await inventory.findOne({ productId: item.productId });
+    if (inv && inv.costPrice && inv.costPrice > 0) totalCOGS += inv.costPrice * item.quantity;
+  }
+  await cashFlow.deleteMany({ referenceId: saleId, referenceType: 'sale_cogs' });
+  if (totalCOGS > 0) await cashFlow.insertOne({
+    type: 'expense', category: 'cogs', amount: totalCOGS,
+    description: `Cost of goods — Sale ${sale.saleNumber}`,
+    referenceId: saleId, referenceType: 'sale_cogs', date: entryDate, createdAt: new Date(),
+  });
+  return { synced: true };
+}
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
@@ -534,6 +591,14 @@ export default async function handler(req, res) {
             },
           }
         );
+
+        // Keep Cash Flow (income, payment mode, cost of goods) in step with the edited sale
+        const finalMode = ecPayMode !== undefined ? ecPayMode : sale.paymentMode;
+        const sync = await syncSaleCashFlow({
+          cashFlow, inventory, sale, saleId: id, newItems, totalAmount, paymentMode: finalMode,
+          customerName: ecName !== undefined ? ecName : sale.customerName,
+        });
+        if (sync.mixed) await salesCol.updateOne({ _id: new ObjectId(id) }, { $set: sync.mixed });
 
         return res.status(200).json({ success: true, message: 'Sale updated and inventory reconciled.' });
       }
