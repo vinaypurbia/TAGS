@@ -2384,7 +2384,7 @@ type InvoiceRow = {
   category: string; subcategory: string; originalPrice: string; discountedPrice: string;
   imagePrompt: string;
   matchedTitle: string; descStatus: 'idle' | 'loading' | 'done' | 'error';
-  imageUrl: string; imageSource: 'invoice' | 'supplier' | 'ai' | ''; imageStatus: 'pending' | 'loading' | 'done' | 'error';
+  imageUrl: string; imageSource: 'invoice' | 'supplier' | 'link' | 'ai' | ''; imageStatus: 'pending' | 'loading' | 'done' | 'error';
   include: boolean;
 };
 
@@ -2500,6 +2500,38 @@ function InvoiceImportSection() {
       descBatchRunning.current = false;
     })();
   }, [rows, stage]);
+
+  // ── Picture viewer: see the picture large, or replace it with a link to a better one ──
+  const [viewId, setViewId] = useState<string | null>(null);
+  const [linkInput, setLinkInput] = useState('');
+  const [cleanText, setCleanText] = useState(true);
+  const [applying, setApplying] = useState(false);
+  const [viewMsg, setViewMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [viewSize, setViewSize] = useState('');
+  const viewRow = rows.find(r => r.id === viewId) || null;
+  const openViewer = (id: string) => { setViewId(id); setLinkInput(''); setViewMsg(null); setViewSize(''); };
+
+  // link = a new link to use; omit it to only clean the picture that is already there
+  const applyPicture = async (row: InvoiceRow, link: string) => {
+    if (!link.trim()) return;
+    setApplying(true); setViewMsg(null);
+    try {
+      const res = await fetch('/api/products?imageFromLink=true', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: link.trim(), name: row.name, clean: cleanText }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.imageUrl) throw new Error(data.error || 'Could not use that picture');
+      setRows(rs => rs.map(r => r.id === row.id ? { ...r, imageUrl: data.imageUrl, imageSource: 'link', imageStatus: 'done' } : r));
+      setViewMsg({ ok: true, text: data.cleaned ? 'Picture replaced and cleaned of text.' : (data.note || 'Picture replaced.') });
+      setLinkInput('');
+      setViewSize('');
+    } catch (e: any) {
+      setViewMsg({ ok: false, text: e.message || 'Something went wrong' });
+    } finally {
+      setApplying(false);
+    }
+  };
 
   // Looks each item up on the supplier's website. Found → that photo replaces the invoice crop.
   // Not found → keep the invoice crop if there is one, otherwise the AI picture.
@@ -2660,10 +2692,13 @@ function InvoiceImportSection() {
                 <div className="w-16 h-16 rounded-xl bg-gray-50 border border-gray-100 shrink-0 relative overflow-hidden">
                   {row.imageStatus === 'loading' && <div className="w-full h-full flex items-center justify-center"><RefreshCw className="w-4 h-4 text-gray-300 animate-spin" /></div>}
                   {row.imageStatus === 'error' && <div className="w-full h-full flex items-center justify-center text-red-400 text-[9px] font-bold text-center px-1">No image</div>}
-                  {row.imageUrl && <img src={row.imageUrl} alt={row.name} className="w-full h-full object-cover" />}
+                  {row.imageUrl && (
+                    <img src={row.imageUrl} alt={row.name} onClick={() => openViewer(row.id)} title="Click to view large / replace"
+                      className="w-full h-full object-cover cursor-zoom-in" />
+                  )}
                   {row.imageSource && (
-                    <span className={`absolute bottom-0 left-0 right-0 text-[7px] font-black uppercase tracking-wider text-center py-0.5 ${row.imageSource === 'supplier' ? 'bg-blue-600/90 text-white' : row.imageSource === 'invoice' ? 'bg-green-600/90 text-white' : 'bg-purple-500/90 text-white'}`}>
-                      {row.imageSource === 'supplier' ? 'From supplier' : row.imageSource === 'invoice' ? 'From invoice' : 'AI approx.'}
+                    <span className={`absolute bottom-0 left-0 right-0 text-[7px] font-black uppercase tracking-wider text-center py-0.5 ${row.imageSource === 'supplier' || row.imageSource === 'link' ? 'bg-blue-600/90 text-white' : row.imageSource === 'invoice' ? 'bg-green-600/90 text-white' : 'bg-purple-500/90 text-white'}`}>
+                      {row.imageSource === 'supplier' ? 'From supplier' : row.imageSource === 'link' ? 'From link' : row.imageSource === 'invoice' ? 'From invoice' : 'AI approx.'}
                     </span>
                   )}
                 </div>
@@ -2750,6 +2785,55 @@ function InvoiceImportSection() {
                 Import Another Invoice
               </button>
             )}
+          </div>
+        </div>
+      )}
+
+      {viewRow && (
+        <div className="fixed inset-0 z-[100] bg-black/60 flex items-center justify-center p-4" onClick={() => !applying && setViewId(null)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[92vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+            <div className="p-4 border-b border-gray-100 flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-xs font-black uppercase tracking-widest text-gray-700 truncate">{viewRow.name}</p>
+                <p className="text-[11px] text-gray-400 mt-0.5">
+                  {viewRow.imageSource === 'invoice' ? 'Cropped from the invoice' : viewRow.imageSource === 'link' ? 'From a link you pasted' : viewRow.imageSource === 'supplier' ? 'From the supplier website' : 'AI-generated'}
+                  {viewSize && <> · {viewSize}</>}
+                </p>
+              </div>
+              <button onClick={() => setViewId(null)} disabled={applying} className="text-gray-400 hover:text-gray-700 text-lg leading-none disabled:opacity-40">✕</button>
+            </div>
+
+            <div className="p-4 space-y-4">
+              <div className="bg-gray-50 border border-gray-100 rounded-xl flex items-center justify-center overflow-hidden" style={{ minHeight: 200 }}>
+                {viewRow.imageUrl
+                  ? <img src={viewRow.imageUrl} alt={viewRow.name} className="max-h-[50vh] w-auto max-w-full object-contain"
+                      onLoad={e => { const im = e.currentTarget; setViewSize(`${im.naturalWidth} × ${im.naturalHeight} px`); }} />
+                  : <p className="text-xs text-gray-400 py-16">No picture yet</p>}
+              </div>
+              <p className="text-[11px] text-gray-400 -mt-2">If it looks blurry or small (low pixel size), replace it with a better picture from the supplier below.</p>
+
+              <div className="space-y-2">
+                <span className="text-[10px] font-black uppercase tracking-widest text-gray-500">Better picture link</span>
+                <input value={linkInput} onChange={e => setLinkInput(e.target.value)} placeholder="Paste the image link (or product page link) from the supplier's site"
+                  className="w-full text-xs border border-gray-200 rounded-xl px-3 py-2.5 focus:outline-none focus:border-[#FA5600]" disabled={applying} />
+                <p className="text-[10px] text-gray-400">Tip: on the supplier's site, right-click the photo and choose "Copy image address".</p>
+                <label className="flex items-start gap-2 text-[11px] text-gray-600 cursor-pointer">
+                  <input type="checkbox" checked={cleanText} onChange={e => setCleanText(e.target.checked)} className="mt-0.5 accent-[#FA5600]" disabled={applying} />
+                  <span>Remove the wholesaler's text, captions and logos with AI <span className="text-gray-400">(needs Google's image model — may not work on the free plan; the picture is then used as it is)</span></span>
+                </label>
+                <button onClick={() => applyPicture(viewRow, linkInput)} disabled={applying || !linkInput.trim()}
+                  className="w-full py-2.5 bg-[#FA5600] text-white font-black uppercase tracking-widest text-xs rounded-xl hover:bg-[#E04A00] transition disabled:opacity-50 flex items-center justify-center gap-2">
+                  {applying ? <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Working…</> : 'Use this picture'}
+                </button>
+                {viewRow.imageUrl && (
+                  <button onClick={() => applyPicture(viewRow, viewRow.imageUrl)} disabled={applying}
+                    className="w-full py-2 border border-gray-200 text-gray-600 font-black uppercase tracking-widest text-[10px] rounded-xl hover:border-[#FA5600] hover:text-[#FA5600] transition disabled:opacity-50">
+                    Only remove text from the current picture
+                  </button>
+                )}
+                {viewMsg && <p className={`text-[11px] font-bold ${viewMsg.ok ? 'text-green-600' : 'text-red-500'}`}>{viewMsg.text}</p>}
+              </div>
+            </div>
           </div>
         </div>
       )}
