@@ -2383,7 +2383,7 @@ type InvoiceRow = {
   name: string; description: string; quantity: number | null; unitCost: number | null;
   category: string; subcategory: string; originalPrice: string; discountedPrice: string;
   imagePrompt: string;
-  matchedTitle: string; descStatus: 'idle' | 'loading' | 'done' | 'error';
+  matchedTitle: string; descStatus: 'idle' | 'loading' | 'done' | 'error'; descError: string;
   imageUrl: string; imageSource: 'invoice' | 'supplier' | 'link' | 'ai' | ''; imageStatus: 'pending' | 'loading' | 'done' | 'error';
   include: boolean;
 };
@@ -2463,10 +2463,10 @@ function InvoiceImportSection() {
         body: JSON.stringify({ name: row.name, hint: row.description, imageUrl: row.imageUrl }),
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data.description) throw new Error(data.error || 'failed');
-      setRows(rs => rs.map(r => r.id === row.id ? { ...r, description: data.description, descStatus: 'done' } : r));
-    } catch {
-      setRows(rs => rs.map(r => r.id === row.id ? { ...r, descStatus: 'error' } : r)); // keeps whatever description it had
+      if (!res.ok || !data.description) throw new Error(data.error || `Server error (${res.status})`);
+      setRows(rs => rs.map(r => r.id === row.id ? { ...r, description: data.description, descStatus: 'done', descError: '' } : r));
+    } catch (e: any) {
+      setRows(rs => rs.map(r => r.id === row.id ? { ...r, descStatus: 'error', descError: e?.message || 'failed' } : r)); // keeps whatever description it had
     }
   };
 
@@ -2490,11 +2490,12 @@ function InvoiceImportSection() {
           });
           const data = await res.json().catch(() => ({}));
           const map: Record<string, string> = res.ok ? (data.descriptions || {}) : {};
+          const why = res.ok ? 'The AI did not return a description for this item' : (data.error || `Server error (${res.status})`);
           setRows(rs => rs.map(r => chunk.some(c => c.id === r.id)
-            ? (map[r.id] ? { ...r, description: map[r.id], descStatus: 'done' } : { ...r, descStatus: 'error' })
+            ? (map[r.id] ? { ...r, description: map[r.id], descStatus: 'done', descError: '' } : { ...r, descStatus: 'error', descError: why })
             : r));
-        } catch {
-          setRows(rs => rs.map(r => chunk.some(c => c.id === r.id) ? { ...r, descStatus: 'error' } : r));
+        } catch (e: any) {
+          setRows(rs => rs.map(r => chunk.some(c => c.id === r.id) ? { ...r, descStatus: 'error', descError: e?.message || 'Network error' } : r));
         }
       }
       descBatchRunning.current = false;
@@ -2587,7 +2588,7 @@ function InvoiceImportSection() {
         category: '', subcategory: '',
         originalPrice: it.unitCost ? String(Math.round(it.unitCost * (1 + INVOICE_ORIGINAL_MARKUP))) : '',
         discountedPrice: it.unitCost ? String(Math.round(it.unitCost * (1 + INVOICE_DISCOUNTED_MARKUP))) : '',
-        matchedTitle: '', descStatus: 'idle',
+        matchedTitle: '', descStatus: 'idle', descError: '',
         imageUrl: it.imageUrl || '', imageSource: it.imageSource || '',
         imageStatus: it.imageUrl ? 'done' : 'pending', include: true,
       }));
@@ -2730,6 +2731,7 @@ function InvoiceImportSection() {
                           className="text-[10px] font-black uppercase tracking-widest text-gray-400 hover:text-[#FA5600] disabled:opacity-50">Rewrite</button>
                       )}
                     </div>
+                    {row.descStatus === 'error' && row.descError && <p className="text-[10px] text-red-500 mb-1 normal-case">Reason: {row.descError.slice(0, 220)}</p>}
                     <textarea value={row.description} onChange={e => updateRow(row.id, { description: e.target.value })} disabled={stage !== 'review'} rows={3}
                       placeholder="Product description" className="w-full text-[11px] border border-gray-200 rounded-lg px-2 py-1.5 disabled:bg-gray-50 resize-y" />
                   </div>
