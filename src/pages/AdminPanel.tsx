@@ -21,7 +21,7 @@ const VISIBILITY_KEY = 'tagsAdminVisibility';
 
 type Section =
   | 'dashboard' | 'promo' | 'banner' | 'category-images' | 'perks'
-  | 'products' | 'categories' | 'inventory' | 'business' | 'settings' | 'import' | 'reviews' | 'broadcast' | 'backup';
+  | 'products' | 'categories' | 'inventory' | 'business' | 'settings' | 'import' | 'reviews' | 'broadcast' | 'backup' | 'cleanup';
 
 interface BannerSlide { image: string; text: string; description: string; }
 interface Perk        { icon: string; text: string; }
@@ -42,6 +42,7 @@ const ALL_MODULES: { id: Section; label: string; icon: any; desc: string }[] = [
   { id: 'reviews',         label: 'Reviews',          icon: MessageSquare,   desc: 'Manage customer reviews' },
   { id: 'settings',        label: 'Settings',         icon: SettingsIcon,    desc: 'Module visibility' },
   { id: 'backup',          label: 'Backup',           icon: Database,        desc: 'Download a full database backup' },
+  { id: 'cleanup',         label: 'Cleanup',          icon: Trash2,          desc: 'Find and remove junk/orphaned data' },
 ];
 
 // ── Change Password Form (shared between login screen and Settings) ──────────
@@ -1376,6 +1377,7 @@ export function AdminPanel() {
           {activeSection === 'business'   && <div className="max-w-5xl mx-auto"><SectionHeader icon={BarChart2}  title="Business"   desc="Sales, PO, Cash Flow, Reports" /><BusinessEmbed /></div>}
           {activeSection === 'import'     && <div className="max-w-2xl mx-auto"><ImportProductsSection /></div>}
           {activeSection === 'backup'     && <div className="max-w-2xl mx-auto"><BackupSection /></div>}
+          {activeSection === 'cleanup'    && <div className="max-w-2xl mx-auto"><CleanupSection /></div>}
 
           {/* ── REVIEWS ── */}
           {activeSection === 'reviews' && <div className="max-w-4xl mx-auto"><ReviewsSection /></div>}
@@ -2021,6 +2023,137 @@ function BackupSection() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+// ── Cleanup Section ──────────────────────────────────────────────────────
+type AuditGroup = 'orphanInventory' | 'noActivityProducts' | 'badPriceProducts';
+
+function CleanupSection() {
+  const [status, setStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  const [error, setError] = useState('');
+  const [data, setData] = useState<{ orphanInventory: any[]; noActivityProducts: any[]; badPriceProducts: any[] } | null>(null);
+  const [selected, setSelected] = useState<Record<AuditGroup, Set<string>>>({ orphanInventory: new Set(), noActivityProducts: new Set(), badPriceProducts: new Set() });
+  const [confirmText, setConfirmText] = useState('');
+  const [deleteStatus, setDeleteStatus] = useState<'idle' | 'working' | 'done' | 'error'>('idle');
+  const [deleteMessage, setDeleteMessage] = useState('');
+
+  const runAudit = async () => {
+    setStatus('loading'); setError(''); setDeleteMessage(''); setDeleteStatus('idle');
+    try {
+      const res = await fetch('/api/products?audit=true');
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || `Scan failed (${res.status})`);
+      setData(json);
+      setSelected({ orphanInventory: new Set(), noActivityProducts: new Set(), badPriceProducts: new Set() });
+      setConfirmText('');
+      setStatus('ready');
+    } catch (e: any) {
+      setError(e.message || 'Scan failed'); setStatus('error');
+    }
+  };
+
+  const toggle = (group: AuditGroup, id: string) => setSelected(sel => {
+    const next = new Set(sel[group]);
+    next.has(id) ? next.delete(id) : next.add(id);
+    return { ...sel, [group]: next };
+  });
+
+  const totalSelected = selected.orphanInventory.size + selected.noActivityProducts.size + selected.badPriceProducts.size;
+
+  const handleDelete = async () => {
+    if (totalSelected === 0 || confirmText !== 'DELETE') return;
+    setDeleteStatus('working'); setDeleteMessage('');
+    try {
+      const inventoryIds = Array.from(selected.orphanInventory);
+      const productIds = [...selected.noActivityProducts, ...selected.badPriceProducts].filter((v, i, a) => a.indexOf(v) === i);
+      const res = await fetch('/api/products?auditDelete=true', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inventoryIds, productIds, confirm: 'DELETE' }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || `Delete failed (${res.status})`);
+      setDeleteStatus('done');
+      setDeleteMessage(`✅ Deleted ${json.results.inventoryDeleted} inventory record(s) and ${json.results.productsDeleted} product(s).${json.results.errors?.length ? ' Some items had errors — check console.' : ''}`);
+      runAudit(); // refresh the lists so deleted items disappear
+    } catch (e: any) {
+      setDeleteStatus('error'); setDeleteMessage(e.message || 'Delete failed');
+    }
+  };
+
+  const Group = ({ group, title, desc, render }: { group: AuditGroup; title: string; desc: string; render: (item: any) => React.ReactNode }) => {
+    const items = data?.[group] || [];
+    if (items.length === 0) return null;
+    return (
+      <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+        <div className="p-4 border-b border-gray-100">
+          <p className="text-xs font-black uppercase tracking-widest text-gray-700">{title} <span className="text-gray-400">({items.length})</span></p>
+          <p className="text-[11px] text-gray-400 mt-0.5">{desc}</p>
+        </div>
+        <div className="divide-y divide-gray-100 max-h-64 overflow-y-auto">
+          {items.map((item: any) => (
+            <label key={item._id} className="flex items-center gap-3 px-4 py-2.5 text-xs font-bold text-gray-700 cursor-pointer hover:bg-gray-50">
+              <input type="checkbox" checked={selected[group].has(item._id)} onChange={() => toggle(group, item._id)} className="w-4 h-4 accent-red-500 shrink-0" />
+              {render(item)}
+            </label>
+          ))}
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div className="max-w-2xl mx-auto space-y-4">
+      <SectionHeader icon={Trash2} title="Cleanup" desc="Find and remove junk or orphaned data — nothing deletes until you say so" />
+
+      <div className="bg-blue-50 border border-blue-200 rounded-2xl p-5 flex items-start gap-4">
+        <div className="w-10 h-10 bg-blue-100 rounded-xl flex items-center justify-center shrink-0"><Trash2 className="w-5 h-5 text-blue-600" /></div>
+        <div className="flex-1">
+          <p className="text-sm font-black text-gray-800">Take a backup first</p>
+          <p className="text-xs text-gray-500 mt-0.5">This scan is read-only — it only lists candidates. But once you delete, it's permanent. Use the Backup tab first if you're not fully sure.</p>
+        </div>
+      </div>
+
+      <button onClick={runAudit} disabled={status === 'loading'}
+        className="w-full py-3 bg-[#FA5600] text-white font-black uppercase tracking-widest text-sm rounded-xl hover:bg-[#E04A00] transition flex items-center justify-center gap-2 disabled:opacity-50">
+        {status === 'loading' ? (<><RefreshCw className="w-4 h-4 animate-spin" /> Scanning...</>) : (<><RefreshCw className="w-4 h-4" /> {data ? 'Re-scan' : 'Scan for Junk Data'}</>)}
+      </button>
+
+      {error && <div className="rounded-xl p-3 text-sm font-bold text-center bg-red-50 text-red-600 border border-red-200">{error}</div>}
+
+      {data && (
+        <>
+          <Group group="orphanInventory" title="Orphaned Inventory Records"
+            desc={`Stock entries pointing at a product that no longer exists — these are what show up as "Unknown / ₹0" in Stock Visibility.`}
+            render={(item) => <span>Inventory record <span className="text-gray-400 font-normal">· productId {item.productId} · stock {item.stock}</span></span>} />
+
+          <Group group="noActivityProducts" title="Products With No Activity"
+            desc="Never sold, never shared, never on a purchase order. Not proof no one added it on purpose — review each before deleting."
+            render={(item) => <span>{item.name} <span className="text-gray-400 font-normal">· {item.category || 'no category'} · ₹{item.price}</span></span>} />
+
+          <Group group="badPriceProducts" title="Products With Missing/Zero Price"
+            desc="Price resolves to 0 or isn't a real number — this is also why a product can silently disappear from a low→high price sort."
+            render={(item) => <span>{item.name} <span className="text-gray-400 font-normal">· original {item.originalPrice ?? '—'} · discounted {item.discountedPrice ?? '—'}</span></span>} />
+
+          {data.orphanInventory.length === 0 && data.noActivityProducts.length === 0 && data.badPriceProducts.length === 0 && (
+            <div className="bg-white rounded-2xl border border-gray-200 p-8 text-center text-sm text-gray-400 font-bold">Nothing found — your data looks clean.</div>
+          )}
+
+          {totalSelected > 0 && (
+            <div className="bg-white rounded-2xl border border-red-200 p-6 shadow-sm space-y-3">
+              <p className="text-xs font-black text-gray-700">{totalSelected} item(s) selected for permanent deletion.</p>
+              <input value={confirmText} onChange={e => setConfirmText(e.target.value)} disabled={deleteStatus === 'working'}
+                placeholder="Type DELETE to confirm" className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm" />
+              <button onClick={handleDelete} disabled={deleteStatus === 'working' || confirmText !== 'DELETE'}
+                className="w-full py-3 bg-red-600 text-white font-black uppercase tracking-widest text-sm rounded-xl hover:bg-red-700 transition flex items-center justify-center gap-2 disabled:opacity-50">
+                {deleteStatus === 'working' ? (<><RefreshCw className="w-4 h-4 animate-spin" /> Deleting...</>) : (<><Trash2 className="w-4 h-4" /> Delete {totalSelected} Selected Item(s)</>)}
+              </button>
+              {deleteMessage && <div className={`rounded-xl p-3 text-sm font-bold text-center ${deleteStatus === 'done' ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-red-50 text-red-600 border border-red-200'}`}>{deleteMessage}</div>}
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }
