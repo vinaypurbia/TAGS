@@ -937,7 +937,7 @@ export default async function handler(req, res) {
     // Nothing is deleted here — this only reports candidates.
     if (req.method === 'GET' && req.query.audit === 'true') {
       const [allProducts, allInventory, saleDocs, shareDocs, poDocs] = await Promise.all([
-        collection.find({}).project({ name: 1, category: 1, originalPrice: 1, discountedPrice: 1, price: 1, createdAt: 1 }).toArray(),
+        collection.find({}).project({ name: 1, category: 1, originalPrice: 1, discountedPrice: 1, price: 1, createdAt: 1, image: 1, imageUrl: 1 }).toArray(),
         inventory.find({}).toArray(),
         salesCol.find({}, { projection: { items: 1 } }).toArray(),
         shareLog.find({}, { projection: { productId: 1 } }).toArray(),
@@ -960,12 +960,12 @@ export default async function handler(req, res) {
         .sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0)) // oldest untouched first
         .slice(0, 300)
         .map(p => ({ _id: p._id, name: p.name || '(no name)', category: p.category || '', createdAt: p.createdAt || null,
-          price: Number(p.discountedPrice || p.originalPrice || p.price || 0) }));
+          image: p.image || p.imageUrl || '', price: Number(p.discountedPrice || p.originalPrice || p.price || 0) }));
 
       const badPriceProducts = allProducts
         .filter(p => !(Number(p.discountedPrice || p.originalPrice || p.price) > 0))
         .slice(0, 300)
-        .map(p => ({ _id: p._id, name: p.name || '(no name)', category: p.category || '',
+        .map(p => ({ _id: p._id, name: p.name || '(no name)', category: p.category || '', image: p.image || p.imageUrl || '',
           originalPrice: p.originalPrice ?? null, discountedPrice: p.discountedPrice ?? null }));
 
       return res.status(200).json({
