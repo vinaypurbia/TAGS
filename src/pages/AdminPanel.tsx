@@ -2032,16 +2032,37 @@ type AuditGroup = 'orphanInventory' | 'noActivityProducts' | 'badPriceProducts';
 
 function CleanupSection() {
   const [status, setStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  const [progressLabel, setProgressLabel] = useState('');
   const [error, setError] = useState('');
+  const [backupNote, setBackupNote] = useState('');
   const [data, setData] = useState<{ orphanInventory: any[]; noActivityProducts: any[]; badPriceProducts: any[] } | null>(null);
   const [selected, setSelected] = useState<Record<AuditGroup, Set<string>>>({ orphanInventory: new Set(), noActivityProducts: new Set(), badPriceProducts: new Set() });
   const [confirmText, setConfirmText] = useState('');
   const [deleteStatus, setDeleteStatus] = useState<'idle' | 'working' | 'done' | 'error'>('idle');
   const [deleteMessage, setDeleteMessage] = useState('');
 
+  // A fresh full backup is taken and downloaded automatically before every scan, so there's
+  // always a safety copy on hand before anything from Cleanup could get deleted. If the backup
+  // itself fails, the scan is cancelled rather than proceeding without one.
   const runAudit = async () => {
-    setStatus('loading'); setError(''); setDeleteMessage(''); setDeleteStatus('idle');
+    setStatus('loading'); setError(''); setBackupNote(''); setDeleteMessage(''); setDeleteStatus('idle');
     try {
+      setProgressLabel('Taking a safety backup...');
+      const bkRes = await fetch('/api/products?backup=true', { method: 'POST' });
+      if (!bkRes.ok) {
+        const err = await bkRes.json().catch(() => ({}));
+        throw new Error(err.error || `Safety backup failed (${bkRes.status}) — scan cancelled so nothing gets deleted without one.`);
+      }
+      const blob = await bkRes.blob();
+      const disposition = bkRes.headers.get('content-disposition') || '';
+      const match = disposition.match(/filename="([^"]+)"/);
+      const filename = match?.[1] || `tags-backup-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url; a.download = filename; a.click();
+      URL.revokeObjectURL(url);
+      setBackupNote(`✅ Safety backup "${filename}" downloaded.`);
+
+      setProgressLabel('Scanning for junk data...');
       const res = await fetch('/api/products?audit=true');
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || `Scan failed (${res.status})`);
@@ -2051,6 +2072,8 @@ function CleanupSection() {
       setStatus('ready');
     } catch (e: any) {
       setError(e.message || 'Scan failed'); setStatus('error');
+    } finally {
+      setProgressLabel('');
     }
   };
 
@@ -2082,19 +2105,33 @@ function CleanupSection() {
     }
   };
 
+  const selectAll = (group: AuditGroup, ids: string[], checked: boolean) =>
+    setSelected(sel => ({ ...sel, [group]: checked ? new Set(ids) : new Set() }));
+
   const Group = ({ group, title, desc, render }: { group: AuditGroup; title: string; desc: string; render: (item: any) => React.ReactNode }) => {
     const items = data?.[group] || [];
     if (items.length === 0) return null;
+    const ids = items.map((it: any) => it._id);
+    const allSelected = ids.length > 0 && ids.every((id: string) => selected[group].has(id));
     return (
       <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
-        <div className="p-4 border-b border-gray-100">
-          <p className="text-xs font-black uppercase tracking-widest text-gray-700">{title} <span className="text-gray-400">({items.length})</span></p>
-          <p className="text-[11px] text-gray-400 mt-0.5">{desc}</p>
+        <div className="p-4 border-b border-gray-100 flex items-center justify-between gap-3">
+          <div>
+            <p className="text-xs font-black uppercase tracking-widest text-gray-700">{title} <span className="text-gray-400">({items.length})</span></p>
+            <p className="text-[11px] text-gray-400 mt-0.5">{desc}</p>
+          </div>
+          <label className="flex items-center gap-1.5 text-[10px] font-black uppercase tracking-widest text-gray-500 cursor-pointer shrink-0">
+            <input type="checkbox" checked={allSelected} onChange={e => selectAll(group, ids, e.target.checked)} className="w-3.5 h-3.5 accent-red-500" />
+            Select All
+          </label>
         </div>
         <div className="divide-y divide-gray-100 max-h-64 overflow-y-auto">
           {items.map((item: any) => (
             <label key={item._id} className="flex items-center gap-3 px-4 py-2.5 text-xs font-bold text-gray-700 cursor-pointer hover:bg-gray-50">
               <input type="checkbox" checked={selected[group].has(item._id)} onChange={() => toggle(group, item._id)} className="w-4 h-4 accent-red-500 shrink-0" />
+              <div className="w-9 h-9 rounded-lg bg-gray-50 border border-gray-100 shrink-0 overflow-hidden flex items-center justify-center">
+                {item.image ? <img src={item.image} alt="" className="w-full h-full object-cover" /> : <Package className="w-4 h-4 text-gray-300" />}
+              </div>
               {render(item)}
             </label>
           ))}
@@ -2117,9 +2154,11 @@ function CleanupSection() {
 
       <button onClick={runAudit} disabled={status === 'loading'}
         className="w-full py-3 bg-[#FA5600] text-white font-black uppercase tracking-widest text-sm rounded-xl hover:bg-[#E04A00] transition flex items-center justify-center gap-2 disabled:opacity-50">
-        {status === 'loading' ? (<><RefreshCw className="w-4 h-4 animate-spin" /> Scanning...</>) : (<><RefreshCw className="w-4 h-4" /> {data ? 'Re-scan' : 'Scan for Junk Data'}</>)}
+        {status === 'loading' ? (<><RefreshCw className="w-4 h-4 animate-spin" /> {progressLabel || 'Working...'}</>) : (<><RefreshCw className="w-4 h-4" /> {data ? 'Re-scan (takes a fresh backup too)' : 'Scan for Junk Data'}</>)}
       </button>
+      <p className="text-[11px] text-gray-400 text-center -mt-2">Every scan automatically downloads a full backup first, before showing any results.</p>
 
+      {backupNote && <div className="rounded-xl p-3 text-sm font-bold text-center bg-green-50 text-green-700 border border-green-200">{backupNote}</div>}
       {error && <div className="rounded-xl p-3 text-sm font-bold text-center bg-red-50 text-red-600 border border-red-200">{error}</div>}
 
       {data && (
