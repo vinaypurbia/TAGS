@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   TrendingUp, TrendingDown, DollarSign, ShoppingCart, Package,
   AlertTriangle, BarChart2, Users, FileText, Plus, Trash2,
@@ -1301,6 +1301,10 @@ function SalesModule({ showMsg }: any) {
   const [stockErrorModal, setStockErrorModal] = useState<string[] | null>(null);
   const [editingSale, setEditingSale] = useState<any>(null);
   const [viewingSale, setViewingSale] = useState<any>(null);
+  // The sale form sits ABOVE the list, so when Edit is clicked further down the page it used to open
+  // out of sight and the button looked dead. This brings the form (and any error) into view.
+  const formRef = useRef<HTMLDivElement>(null);
+  const scrollToForm = () => setTimeout(() => formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 60);
 
   const fetchSales = () => {
     setLoading(true);
@@ -1334,9 +1338,10 @@ function SalesModule({ showMsg }: any) {
   };
 
   const handleSubmit = async () => {
-    if (!form.customerName || !form.customerPhone) { showMsg('Customer name and phone required.', 'error'); return; }
+    const phoneOptional = !!editingSale && !editingSale.customerPhone; // older sale saved without a phone
+    if (!form.customerName || (!form.customerPhone && !phoneOptional)) { showMsg('Customer name and phone required.', 'error'); scrollToForm(); return; }
     const validItems = form.items.filter(i => i.productName && i.price && i.quantity);
-    if (validItems.length === 0) { showMsg('Add at least one item.', 'error'); return; }
+    if (validItems.length === 0) { showMsg('Add at least one item.', 'error'); scrollToForm(); return; }
     const items = validItems.map(i => ({ productId: i.productId, productName: i.productName, category: i.category || '', price: parseFloat(i.price), quantity: parseInt(i.quantity), imageUrl: i.imageUrl || '' }));
 
     setSaving(true);
@@ -1360,9 +1365,11 @@ function SalesModule({ showMsg }: any) {
         setStockErrorModal(data.stockErrors);
       } else {
         showMsg(data.error || 'Failed.', 'error');
+        scrollToForm();
       }
     } catch (err: any) {
       showMsg('Network error — could not reach the server. ' + (err?.message || ''), 'error');
+      scrollToForm();
     } finally {
       setSaving(false);
     }
@@ -1379,6 +1386,7 @@ function SalesModule({ showMsg }: any) {
       items: (sale.items || []).map((i: any) => ({ productId: i.productId || '', productName: i.productName || '', category: i.category || '', price: String(i.price), quantity: String(i.quantity), imageUrl: i.imageUrl || '' })),
     });
     setShowForm(true);
+    scrollToForm();
   };
 
   const deleteSale = async (id: string) => {
@@ -1417,7 +1425,7 @@ function SalesModule({ showMsg }: any) {
       </div>
 
       {showForm && (
-        <div className="bg-white rounded-2xl border-2 border-[#FA5600] p-5 space-y-4">
+        <div ref={formRef} className="bg-white rounded-2xl border-2 border-[#FA5600] p-5 space-y-4 scroll-mt-4">
           <h3 className="font-black text-sm uppercase tracking-widest text-gray-800">{editingSale ? `Edit Sale — ${editingSale.saleNumber}` : 'New Sale'}</h3>
           {editingSale && (
             <p className="text-xs text-blue-600 font-bold bg-blue-50 rounded-lg px-3 py-2">✏️ Editing a recorded sale — inventory will be adjusted by the quantity difference, not just the sale record.</p>
