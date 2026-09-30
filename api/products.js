@@ -926,6 +926,94 @@ export default async function handler(req, res) {
       }
     }
 
+    // ── Data cleanup audit — GET /api/products?audit=true ──────────────────────────────────────
+    // Finds three kinds of likely-junk data for the admin to REVIEW before deleting anything:
+    //   orphanInventory   — inventory rows whose productId points at a product that no longer exists
+    //                        (this is what shows up as "Unknown / ₹0 / Stock 0" in Stock Visibility)
+    //   noActivityProducts — products never sold, never shared, and never on a purchase order —
+    //                        the closest available proxy for "nobody here added this on purpose"
+    //   badPriceProducts   — products whose price resolves to 0 or isn't a real number, which is
+    //                        also why a product can silently vanish from a low→high price sort
+    // Nothing is deleted here — this only reports candidates.
+    if (req.method === 'GET' && req.query.audit === 'true') {
+      const [allProducts, allInventory, saleDocs, shareDocs, poDocs] = await Promise.all([
+        collection.find({}).project({ name: 1, category: 1, originalPrice: 1, discountedPrice: 1, price: 1, createdAt: 1 }).toArray(),
+        inventory.find({}).toArray(),
+        salesCol.find({}, { projection: { items: 1 } }).toArray(),
+        shareLog.find({}, { projection: { productId: 1 } }).toArray(),
+        purchaseOrders.find({}, { projection: { items: 1 } }).toArray(),
+      ]);
+
+      const productIdSet = new Set(allProducts.map(p => p._id.toString()));
+      const activeIdSet = new Set();
+      for (const d of saleDocs) for (const it of d.items || []) if (it.productId) activeIdSet.add(String(it.productId));
+      for (const d of shareDocs) if (d.productId) activeIdSet.add(String(d.productId));
+      for (const d of poDocs) for (const it of d.items || []) if (it.productId) activeIdSet.add(String(it.productId));
+
+      const orphanInventory = allInventory
+        .filter(inv => inv.productId && !productIdSet.has(String(inv.productId)))
+        .slice(0, 300)
+        .map(inv => ({ _id: inv._id, productId: inv.productId, stock: inv.stock ?? inv.quantity ?? 0 }));
+
+      const noActivityProducts = allProducts
+        .filter(p => !activeIdSet.has(p._id.toString()))
+        .sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0)) // oldest untouched first
+        .slice(0, 300)
+        .map(p => ({ _id: p._id, name: p.name || '(no name)', category: p.category || '', createdAt: p.createdAt || null,
+          price: Number(p.discountedPrice || p.originalPrice || p.price || 0) }));
+
+      const badPriceProducts = allProducts
+        .filter(p => !(Number(p.discountedPrice || p.originalPrice || p.price) > 0))
+        .slice(0, 300)
+        .map(p => ({ _id: p._id, name: p.name || '(no name)', category: p.category || '',
+          originalPrice: p.originalPrice ?? null, discountedPrice: p.discountedPrice ?? null }));
+
+      return res.status(200).json({
+        counts: { products: allProducts.length, inventory: allInventory.length },
+        orphanInventory, noActivityProducts, badPriceProducts,
+      });
+    }
+
+    // ── Cleanup delete — POST /api/products?auditDelete=true  { inventoryIds?, productIds?, confirm } ──
+    // Deletes only what the admin explicitly selected after reviewing the audit above.
+    if (req.method === 'POST' && req.query.auditDelete === 'true') {
+      const { inventoryIds, productIds, confirm } = req.body || {};
+      if (confirm !== 'DELETE') return res.status(400).json({ error: 'Type DELETE to confirm' });
+      const invIds = (Array.isArray(inventoryIds) ? inventoryIds : []).filter(Boolean);
+      const prodIds = (Array.isArray(productIds) ? productIds : []).filter(Boolean);
+      if (invIds.length === 0 && prodIds.length === 0) return res.status(400).json({ error: 'Nothing selected to delete' });
+
+      const results = { inventoryDeleted: 0, productsDeleted: 0, errors: [] };
+
+      if (invIds.length > 0) {
+        try {
+          const r = await inventory.deleteMany({ _id: { $in: invIds.map(id => new ObjectId(id)) } });
+          results.inventoryDeleted = r.deletedCount || 0;
+        } catch (e) { results.errors.push(`Inventory: ${e.message}`); }
+      }
+
+      for (const id of prodIds) {
+        try {
+          const existing = await collection.findOne({ _id: new ObjectId(id) });
+          const r = await collection.deleteOne({ _id: new ObjectId(id) });
+          if (r.deletedCount === 0) continue;
+          results.productsDeleted++;
+          await inventory.deleteOne({ productId: id }).catch(() => {});
+          try {
+            const imageUrl = existing?.image || existing?.imageUrl || '';
+            if (imageUrl && imageUrl.includes('res.cloudinary.com')) {
+              const match = imageUrl.match(/\/upload\/(?:v\d+\/)?(.+?)(?:\.[^.]+)?$/);
+              if (match && match[1]) await cloudinary.uploader.destroy(match[1], { invalidate: true });
+            }
+          } catch { /* non-fatal: product is still deleted */ }
+          try { if (existing?.metaId) await deleteProductFromMeta(existing.metaId); }
+          catch { /* non-fatal: product is still deleted */ }
+        } catch (e) { results.errors.push(`Product ${id}: ${e.message}`); }
+      }
+
+      return res.status(200).json({ success: true, results });
+    }
+
     // ── Cloudinary direct-upload signature (for videos too large for this function's body limit) ──
     // GET /api/products?cloudinarySign=true&resourceType=video
     // The browser uploads the file straight to Cloudinary with this signature — the file itself
