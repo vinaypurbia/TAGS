@@ -952,13 +952,13 @@ export default async function handler(req, res) {
       // Stock can be entered directly in Inventory without ever going through a purchase order, so a
       // product carrying real stock is clear evidence someone is actively managing it — even with none
       // of the three signals above. Treat "has stock" the same as "has activity".
-      const stockMap = new Map(allInventory.map(inv => [String(inv.productId), Number(inv.stock ?? inv.quantity ?? 0)]));
+      const stockMap = new Map(allInventory.map(inv => [String(inv.productId), Number(inv.availableStock ?? inv.currentStock ?? 0)]));
       for (const [pid, stock] of stockMap) if (stock > 0) activeIdSet.add(pid);
 
       const orphanInventory = allInventory
         .filter(inv => inv.productId && !productIdSet.has(String(inv.productId)))
         .slice(0, 300)
-        .map(inv => ({ _id: inv._id, productId: inv.productId, stock: inv.stock ?? inv.quantity ?? 0 }));
+        .map(inv => ({ _id: inv._id, productId: inv.productId, stock: inv.availableStock ?? inv.currentStock ?? 0 }));
 
       const noActivityProducts = allProducts
         .filter(p => !activeIdSet.has(p._id.toString()))
