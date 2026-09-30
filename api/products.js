@@ -936,22 +936,35 @@ export default async function handler(req, res) {
     //                        also why a product can silently vanish from a low→high price sort
     // Nothing is deleted here — this only reports candidates.
     if (req.method === 'GET' && req.query.audit === 'true') {
-      const [allProducts, allInventory, saleDocs, shareDocs, poDocs] = await Promise.all([
+      const [allProducts, allInventory] = await Promise.all([
         collection.find({}).project({ name: 1, category: 1, originalPrice: 1, discountedPrice: 1, price: 1, createdAt: 1, image: 1, imageUrl: 1 }).toArray(),
         inventory.find({}).toArray(),
-        salesCol.find({}, { projection: { items: 1 } }).toArray(),
-        shareLog.find({}, { projection: { productId: 1 } }).toArray(),
-        purchaseOrders.find({}, { projection: { items: 1 } }).toArray(),
       ]);
 
       const productIdSet = new Set(allProducts.map(p => p._id.toString()));
+
+      // "Activity" is checked across EVERY collection in the database, not a fixed list — a real
+      // customer checkout, for instance, may write to an "orders" collection that has nothing to do
+      // with the admin's manual "Record Sale" (sales) feature. This catches any collection, present
+      // or future, that references a productId either directly or inside an items[] array.
       const activeIdSet = new Set();
-      for (const d of saleDocs) for (const it of d.items || []) if (it.productId) activeIdSet.add(String(it.productId));
-      for (const d of shareDocs) if (d.productId) activeIdSet.add(String(d.productId));
-      for (const d of poDocs) for (const it of d.items || []) if (it.productId) activeIdSet.add(String(it.productId));
+      const collInfos = await db.listCollections().toArray();
+      const scanCollections = collInfos.filter(c => (!c.type || c.type === 'collection') && !['products', 'inventory'].includes(c.name));
+      await Promise.all(scanCollections.map(async (info) => {
+        const col = db.collection(info.name);
+        const cursor = col.find(
+          { $or: [{ productId: { $exists: true } }, { 'items.productId': { $exists: true } }] },
+          { projection: { productId: 1, items: 1 } }
+        );
+        for await (const d of cursor) {
+          if (d.productId) activeIdSet.add(String(d.productId));
+          for (const it of d.items || []) if (it && it.productId) activeIdSet.add(String(it.productId));
+        }
+      }));
+
       // Stock can be entered directly in Inventory without ever going through a purchase order, so a
       // product carrying real stock is clear evidence someone is actively managing it — even with none
-      // of the three signals above. Treat "has stock" the same as "has activity".
+      // of the signals above. Treat "has stock" the same as "has activity".
       const stockMap = new Map(allInventory.map(inv => [String(inv.productId), Number(inv.availableStock ?? inv.currentStock ?? 0)]));
       for (const [pid, stock] of stockMap) if (stock > 0) activeIdSet.add(pid);
 
