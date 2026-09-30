@@ -761,7 +761,7 @@ export function AdminPanel() {
           </div>
         </header>
 
-        <main className="flex-1 p-4 md:p-6 overflow-y-auto overflow-x-hidden">
+        <main className="flex-1 p-4 md:p-6 overflow-x-hidden">
 
           {/* ── DASHBOARD ── */}
           {activeSection === 'dashboard' && (
@@ -2030,6 +2030,46 @@ function BackupSection() {
 // ── Cleanup Section ──────────────────────────────────────────────────────
 type AuditGroup = 'orphanInventory' | 'noActivityProducts' | 'badPriceProducts';
 
+// Defined OUTSIDE CleanupSection on purpose: a component declared inside another component's body
+// gets recreated on every render, which makes React unmount + remount this whole list on every
+// click (losing scroll position in the process). Declaring it here once avoids that entirely.
+function CleanupGroup({ group, title, desc, items, selected, toggle, selectAll, render }: {
+  group: AuditGroup; title: string; desc: string; items: any[];
+  selected: Record<AuditGroup, Set<string>>;
+  toggle: (group: AuditGroup, id: string) => void;
+  selectAll: (group: AuditGroup, ids: string[], checked: boolean) => void;
+  render: (item: any) => React.ReactNode;
+}) {
+  if (items.length === 0) return null;
+  const ids = items.map((it: any) => it._id);
+  const allSelected = ids.length > 0 && ids.every((id: string) => selected[group].has(id));
+  return (
+    <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+      <div className="p-4 border-b border-gray-100 flex items-center justify-between gap-3">
+        <div>
+          <p className="text-xs font-black uppercase tracking-widest text-gray-700">{title} <span className="text-gray-400">({items.length})</span></p>
+          <p className="text-[11px] text-gray-400 mt-0.5">{desc}</p>
+        </div>
+        <label className="flex items-center gap-1.5 text-[10px] font-black uppercase tracking-widest text-gray-500 cursor-pointer shrink-0">
+          <input type="checkbox" checked={allSelected} onChange={e => selectAll(group, ids, e.target.checked)} className="w-3.5 h-3.5 accent-red-500" />
+          Select All
+        </label>
+      </div>
+      <div className="divide-y divide-gray-100 max-h-64 overflow-y-auto">
+        {items.map((item: any) => (
+          <label key={item._id} className="flex items-center gap-3 px-4 py-2.5 text-xs font-bold text-gray-700 cursor-pointer hover:bg-gray-50">
+            <input type="checkbox" checked={selected[group].has(item._id)} onChange={() => toggle(group, item._id)} className="w-4 h-4 accent-red-500 shrink-0" />
+            <div className="w-9 h-9 rounded-lg bg-gray-50 border border-gray-100 shrink-0 overflow-hidden flex items-center justify-center">
+              {item.image ? <img src={item.image} alt="" className="w-full h-full object-cover" /> : <Package className="w-4 h-4 text-gray-300" />}
+            </div>
+            {render(item)}
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function CleanupSection() {
   const [status, setStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const [progressLabel, setProgressLabel] = useState('');
@@ -2108,38 +2148,6 @@ function CleanupSection() {
   const selectAll = (group: AuditGroup, ids: string[], checked: boolean) =>
     setSelected(sel => ({ ...sel, [group]: checked ? new Set(ids) : new Set() }));
 
-  const Group = ({ group, title, desc, render }: { group: AuditGroup; title: string; desc: string; render: (item: any) => React.ReactNode }) => {
-    const items = data?.[group] || [];
-    if (items.length === 0) return null;
-    const ids = items.map((it: any) => it._id);
-    const allSelected = ids.length > 0 && ids.every((id: string) => selected[group].has(id));
-    return (
-      <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
-        <div className="p-4 border-b border-gray-100 flex items-center justify-between gap-3">
-          <div>
-            <p className="text-xs font-black uppercase tracking-widest text-gray-700">{title} <span className="text-gray-400">({items.length})</span></p>
-            <p className="text-[11px] text-gray-400 mt-0.5">{desc}</p>
-          </div>
-          <label className="flex items-center gap-1.5 text-[10px] font-black uppercase tracking-widest text-gray-500 cursor-pointer shrink-0">
-            <input type="checkbox" checked={allSelected} onChange={e => selectAll(group, ids, e.target.checked)} className="w-3.5 h-3.5 accent-red-500" />
-            Select All
-          </label>
-        </div>
-        <div className="divide-y divide-gray-100 max-h-64 overflow-y-auto">
-          {items.map((item: any) => (
-            <label key={item._id} className="flex items-center gap-3 px-4 py-2.5 text-xs font-bold text-gray-700 cursor-pointer hover:bg-gray-50">
-              <input type="checkbox" checked={selected[group].has(item._id)} onChange={() => toggle(group, item._id)} className="w-4 h-4 accent-red-500 shrink-0" />
-              <div className="w-9 h-9 rounded-lg bg-gray-50 border border-gray-100 shrink-0 overflow-hidden flex items-center justify-center">
-                {item.image ? <img src={item.image} alt="" className="w-full h-full object-cover" /> : <Package className="w-4 h-4 text-gray-300" />}
-              </div>
-              {render(item)}
-            </label>
-          ))}
-        </div>
-      </div>
-    );
-  };
-
   return (
     <div className="max-w-2xl mx-auto space-y-4">
       <SectionHeader icon={Trash2} title="Cleanup" desc="Find and remove junk or orphaned data — nothing deletes until you say so" />
@@ -2163,15 +2171,15 @@ function CleanupSection() {
 
       {data && (
         <>
-          <Group group="orphanInventory" title="Orphaned Inventory Records"
+          <CleanupGroup group="orphanInventory" title="Orphaned Inventory Records" items={data.orphanInventory} selected={selected} toggle={toggle} selectAll={selectAll}
             desc={`Stock entries pointing at a product that no longer exists — these are what show up as "Unknown / ₹0" in Stock Visibility.`}
             render={(item) => <span>Inventory record <span className="text-gray-400 font-normal">· productId {item.productId} · stock {item.stock}</span></span>} />
 
-          <Group group="noActivityProducts" title="Products With No Activity"
+          <CleanupGroup group="noActivityProducts" title="Products With No Activity" items={data.noActivityProducts} selected={selected} toggle={toggle} selectAll={selectAll}
             desc="Never sold, never shared, never on a purchase order. Not proof no one added it on purpose — review each before deleting."
             render={(item) => <span>{item.name} <span className="text-gray-400 font-normal">· {item.category || 'no category'} · ₹{item.price}</span></span>} />
 
-          <Group group="badPriceProducts" title="Products With Missing/Zero Price"
+          <CleanupGroup group="badPriceProducts" title="Products With Missing/Zero Price" items={data.badPriceProducts} selected={selected} toggle={toggle} selectAll={selectAll}
             desc="Price resolves to 0 or isn't a real number — this is also why a product can silently disappear from a low→high price sort."
             render={(item) => <span>{item.name} <span className="text-gray-400 font-normal">· original {item.originalPrice ?? '—'} · discounted {item.discountedPrice ?? '—'}</span></span>} />
 
