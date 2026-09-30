@@ -358,6 +358,69 @@ async function downloadImage(url) {
   return buf;
 }
 
+// ── Use a picture from a link (supplier site), optionally with AI text removal ──────────────
+// The link can be a direct image address or a product page (its main image is used).
+async function loadImageFromLink(link) {
+  const u = assertPublicUrl(link);
+  const r = await fetch(u.toString(), {
+    headers: { 'User-Agent': SUPPLIER_UA, 'Accept': 'image/*,text/html;q=0.8,*/*;q=0.5' },
+    redirect: 'follow', signal: AbortSignal.timeout(15000),
+  });
+  if (!r.ok) throw new Error(`Could not open that link (${r.status})`);
+  const type = (r.headers.get('content-type') || '').toLowerCase();
+  if (type.startsWith('image/')) {
+    const buf = Buffer.from(await r.arrayBuffer());
+    if (buf.length < 2000 || buf.length > 12 * 1024 * 1024) throw new Error('Image size looks wrong');
+    return buf;
+  }
+  if (type.includes('text/html')) {
+    const img = await productPageImage(u.toString());
+    if (!img) throw new Error('No product image found on that page — right-click the photo and use "Copy image address" instead');
+    return await downloadImage(img);
+  }
+  throw new Error('That link is not an image or a product page');
+}
+
+// Removes seller/wholesaler text, banners, captions and watermarks, keeping the product itself.
+// Needs an image-capable Gemini model on this key (mostly paid-only) — returns null when unavailable.
+const GEMINI_IMAGE_MODELS = [
+  process.env.GEMINI_IMAGE_MODEL || 'gemini-3.1-flash-image-preview',
+  'gemini-2.5-flash-image',
+];
+async function geminiCleanImage(buffer, name) {
+  if (!GEMINI_API_KEY) return { buf: null, reason: 'no-key' };
+  const mime = buffer[0] === 0x89 && buffer[1] === 0x50 ? 'image/png' : buffer.slice(0, 4).toString() === 'RIFF' ? 'image/webp' : 'image/jpeg';
+  const body = JSON.stringify({
+    contents: [{ parts: [
+      { inline_data: { mime_type: mime, data: buffer.toString('base64') } },
+      { text:
+        `This is a wholesaler's photo of a toy called "${name}". Edit it into a clean online-shop product photo:\n` +
+        `- REMOVE all text, titles, captions, banners, item numbers, quantity or packing labels, price tags, watermarks, logos and any lettering the seller added over the picture (including cartoon-style title text).\n` +
+        `- KEEP the product itself exactly as it is: same shape, colours, parts and its own packaging artwork. Do not redesign or add anything.\n` +
+        `- If several copies or extra items appear, keep only the main product.\n` +
+        `- Plain white background, soft even lighting, product centred and fully visible, square 1:1 image, high resolution.` },
+    ] }],
+    generationConfig: { responseModalities: ['IMAGE'] },
+  });
+  let reason = 'unavailable';
+  for (const model of GEMINI_IMAGE_MODELS) {
+    try {
+      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body, signal: AbortSignal.timeout(50000),
+      });
+      const data = await r.json();
+      if (!r.ok) { console.warn(`Image model ${model} unavailable (${r.status}):`, data.error?.message); reason = r.status === 429 ? 'quota' : 'unavailable'; continue; }
+      const part = (data.candidates?.[0]?.content?.parts || []).find(p => (p.inlineData || p.inline_data)?.data);
+      const inline = part && (part.inlineData || part.inline_data);
+      if (inline) return { buf: Buffer.from(inline.data, 'base64'), reason: '' };
+      reason = 'empty';
+    } catch (e) {
+      console.warn(`Image model ${model} failed:`, e.message);
+    }
+  }
+  return { buf: null, reason };
+}
+
 async function uploadInvoiceItemImage(buffer) {
   const isWebp = buffer.slice(0, 4).toString() === 'RIFF' && buffer.slice(8, 12).toString() === 'WEBP';
   const mime = buffer[0] === 0x89 && buffer[1] === 0x50 ? 'image/png' : isWebp ? 'image/webp' : buffer.slice(0, 3).toString() === 'GIF' ? 'image/gif' : 'image/jpeg';
@@ -824,6 +887,31 @@ export default async function handler(req, res) {
       } catch (error) {
         console.error('Invoice extract error:', error);
         return res.status(500).json({ error: error.message || 'Invoice import failed' });
+      }
+    }
+
+    // ── Invoice Import (AI) — POST /api/products?imageFromLink=true  { url, name?, clean? } ─────
+    // Replaces an item's picture with the image at a link (e.g. the supplier's high-resolution photo).
+    // clean=true also asks AI to remove wholesaler text/logos; if that model is unavailable the picture is
+    // still used as-is and the response says cleaned:false so the admin knows.
+    if (req.method === 'POST' && req.query.imageFromLink === 'true') {
+      const { url, name, clean } = req.body || {};
+      if (!url) return res.status(400).json({ error: 'A link is required' });
+      try {
+        let buf = await loadImageFromLink(String(url));
+        let cleaned = false, note = '';
+        if (clean) {
+          const out = await geminiCleanImage(buf, String(name || 'toy'));
+          if (out.buf) { buf = out.buf; cleaned = true; }
+          else note = out.reason === 'quota'
+            ? 'The picture was saved as-is: the AI image limit is used up right now.'
+            : 'The picture was saved as-is: AI text removal is not available on this Google plan (image editing usually needs billing enabled).';
+        }
+        const imageUrl = await uploadInvoiceItemImage(buf);
+        return res.status(200).json({ success: true, imageUrl, cleaned, note });
+      } catch (error) {
+        console.warn('Image from link failed:', error.message);
+        return res.status(400).json({ error: error.message || 'Could not use that link' });
       }
     }
 
