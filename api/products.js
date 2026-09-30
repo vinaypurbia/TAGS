@@ -322,11 +322,32 @@ async function generateProductDescriptions(items) {
     `(colours, lights, remote control, number of pieces, etc.) only when visible in the picture or clearly implied by the name.\n` +
     `Rules: do NOT invent specifications such as battery type, size, material, age range, safety certificates or brand claims that are not visible. ` +
     `Simple, warm English. No emojis, no markdown, no price, no hashtags, do not repeat the product name at the start.\n` +
-    `Return ONLY a JSON array with one element per item: [{"id": string, "description": string}]` });
+    `Return ONLY a JSON array with EXACTLY ${items.length} elements, in the SAME ORDER as the items above: [{"item": <the item number>, "description": string}]` });
   const out = await callGemini(parts);
+
+  // Be forgiving about the shape Gemini returns: a bare array, an object wrapping an array, or an object keyed by item number/id.
+  let arr = null;
+  if (Array.isArray(out)) arr = out;
+  else if (out && typeof out === 'object') arr = Object.values(out).find(Array.isArray) || null;
+  const textOf = (o) => {
+    const v = typeof o === 'string' ? o : (o && (o.description ?? o.text ?? o.desc));
+    return typeof v === 'string' ? v.trim() : '';
+  };
   const map = {};
-  for (const o of (Array.isArray(out) ? out : [])) {
-    if (o && typeof o.id === 'string' && typeof o.description === 'string' && o.description.trim()) map[o.id] = o.description.trim();
+  items.forEach((it, idx) => {
+    let d = '';
+    if (arr) {
+      // match by item number, then by echoed id, then by position (when the count lines up)
+      const hit = arr.find(o => o && typeof o === 'object' && (Number(o.item) === idx + 1 || String(o.id) === it.id));
+      d = textOf(hit) || (arr.length === items.length ? textOf(arr[idx]) : '');
+    } else if (out && typeof out === 'object') {
+      d = textOf(out[String(idx + 1)]) || textOf(out[it.id]);
+    }
+    if (d) map[it.id] = d;
+  });
+  if (Object.keys(map).length === 0) {
+    console.error('Descriptions: could not read the AI response shape:', JSON.stringify(out).slice(0, 300));
+    throw new Error('The AI answered in a format that could not be read. Press Rewrite to try again.');
   }
   return map;
 }
