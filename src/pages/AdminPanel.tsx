@@ -1905,27 +1905,12 @@ function drawGlitter(ctx: CanvasRenderingContext2D, W: number, H: number, t: num
   }
 }
 
-// ── Arrow pointer, aimed at the price text ──
-function drawPriceArrow(ctx: CanvasRenderingContext2D, W: number, H: number, t: number, hasPrice: boolean) {
-  if (!hasPrice) return;
-  const bob = Math.sin(t * Math.PI * 4) * 6; // gentle bounce toward the price
-  const tipX = W * 0.30, tipY = H - H * 0.075 + bob;
-  const tailX = tipX + 46, tailY = tipY - 40;
-  ctx.save();
-  ctx.strokeStyle = '#FFD447'; ctx.fillStyle = '#FFD447';
-  ctx.lineWidth = 6; ctx.lineCap = 'round';
-  ctx.beginPath(); ctx.moveTo(tailX, tailY); ctx.lineTo(tipX + 10, tipY + 6); ctx.stroke();
-  ctx.beginPath();
-  ctx.moveTo(tipX, tipY); ctx.lineTo(tipX + 20, tipY - 4); ctx.lineTo(tipX + 14, tipY + 16); ctx.closePath();
-  ctx.fill();
-  ctx.restore();
-}
 
 // Draws one frame (t = 0..1 progress through the clip) for the given style.
 function drawProductVideoFrame(
   ctx: CanvasRenderingContext2D, img: HTMLImageElement, style: VideoStyle, t: number,
-  W: number, H: number, name: string, price: string,
-  glitter: boolean, arrow: boolean,
+  W: number, H: number, name: string, description: string,
+  glitter: boolean,
 ) {
   ctx.clearRect(0, 0, W, H);
   ctx.fillStyle = '#ffffff';
@@ -1949,39 +1934,43 @@ function drawProductVideoFrame(
   }
   const e = easeInOut(t);
 
-  // "Zoom Appear": held invisible for a beat, then pops to full size with a spring overshoot —
-  // the POP_AT instant below is also where recordProductVideo fires the synthesized sound effect.
-  const POP_AT = 0.12;
+  // The image always appears first, with a quick spring pop-in — the POP_AT instant is also where
+  // recordProductVideo fires the synthesized sound effect. "Zoom Appear" makes this the whole show
+  // (appear, then hold); the other styles layer their own continuous motion on top after it settles.
+  const POP_AT = 0.08;
+  const APPEAR_END = 0.28;
   let popScale = 1, popAlpha = 1;
-  if (style === 'pop') {
-    if (t < POP_AT) { popScale = 0; popAlpha = 0; }
-    else { const pt = Math.min(1, (t - POP_AT) / 0.35); popScale = Math.max(0, easeOutBack(pt)); popAlpha = Math.min(1, pt * 3); }
-  }
+  if (t < POP_AT) { popScale = 0; popAlpha = 0; }
+  else if (t < APPEAR_END) { const pt = (t - POP_AT) / (APPEAR_END - POP_AT); popScale = Math.max(0, easeOutBack(pt)); popAlpha = Math.min(1, pt * 2.2); }
+
+  // Continuous motion only kicks in once the appear-in has settled, using "since" (0..1 over the
+  // remaining clip) so zoom/rock/sweep don't jump the instant the pop-in finishes.
+  const since = Math.max(0, (t - APPEAR_END) / (1 - APPEAR_END));
 
   ctx.save();
   ctx.translate(W / 2, H / 2);
+  ctx.globalAlpha = popAlpha;
 
   if (style === 'zoom') {
-    const s = baseScale * (1 + 0.14 * e);
+    const s = baseScale * popScale * (1 + 0.14 * easeInOut(since));
     ctx.scale(s, s);
   } else if (style === 'tilt') {
-    const s = baseScale * (1 + 0.05 * e);
-    const angle = 0.05 * Math.sin(t * Math.PI * 2); // one gentle rock over the whole clip
+    const s = baseScale * popScale * (1 + 0.05 * easeInOut(since));
+    const angle = 0.05 * Math.sin(since * Math.PI * 2);
     ctx.rotate(angle);
-    ctx.scale(s * (1 - 0.02 * Math.abs(Math.sin(t * Math.PI * 2))), s);
+    ctx.scale(s * (1 - 0.02 * Math.abs(Math.sin(since * Math.PI * 2))), s);
   } else if (style === 'pop') {
-    ctx.globalAlpha = popAlpha;
-    ctx.scale(baseScale * popScale, baseScale * popScale);
+    ctx.scale(baseScale * popScale, baseScale * popScale); // appear, then hold — no extra motion
   } else {
-    const s = baseScale * (1 + 0.10 * e);
+    const s = baseScale * popScale * (1 + 0.10 * easeInOut(since));
     ctx.scale(s, s);
   }
 
   ctx.drawImage(img, -iw / 2, -ih / 2, iw, ih);
   ctx.restore();
 
-  if (style === 'shine') {
-    const sweepX = -W * 0.3 + (W * 1.6) * t; // one pass, left to right, across the whole clip
+  if (style === 'shine' && t >= APPEAR_END) {
+    const sweepX = -W * 0.3 + (W * 1.6) * since; // one pass, left to right, over the remaining clip
     const grad = ctx.createLinearGradient(sweepX - 120, 0, sweepX + 120, H);
     grad.addColorStop(0, 'rgba(255,255,255,0)');
     grad.addColorStop(0.5, 'rgba(255,255,255,0.35)');
@@ -1991,24 +1980,66 @@ function drawProductVideoFrame(
   }
 
   if (glitter) drawGlitter(ctx, W, H, t);
-  if (arrow) drawPriceArrow(ctx, W, H, t, !!price);
 
-  if (name) {
-    const barH = H * 0.16;
-    const grad = ctx.createLinearGradient(0, H - barH, 0, H);
-    grad.addColorStop(0, 'rgba(0,0,0,0)');
-    grad.addColorStop(1, 'rgba(0,0,0,0.65)');
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, H - barH, W, barH);
-    ctx.fillStyle = '#fff';
-    ctx.textBaseline = 'alphabetic';
-    ctx.font = `700 ${Math.round(W * 0.042)}px system-ui, sans-serif`;
-    ctx.fillText(name.length > 34 ? name.slice(0, 34) + '…' : name, W * 0.04, H - barH * 0.42);
-    if (price) {
-      ctx.fillStyle = '#FA5600';
-      ctx.font = `800 ${Math.round(W * 0.05)}px system-ui, sans-serif`;
-      ctx.fillText(price, W * 0.04, H - barH * 0.12);
-    }
+  // Name + description reveal AFTER the product has appeared — sliding up and fading in so it
+  // reads as "product arrives, then its name introduces it," rather than a bar that's just always
+  // there. Price is deliberately not drawn here at all — see the note in recordProductVideo/
+  // ProductVideoSection on why price lives outside the video instead.
+  const NAME_START = 0.38, NAME_END = 0.58;
+  const DESC_START = 0.5, DESC_END = 0.66;
+  if (name && t >= NAME_START) {
+    const np = Math.min(1, (t - NAME_START) / (NAME_END - NAME_START));
+    const nEase = easeOutBack(np);
+    const slide = (1 - Math.min(1, np * 1.4)) * 40; // slides up into place, slightly overshooting
+    const alpha = Math.min(1, np * 2.2);
+
+    const label = name.length > 30 ? name.slice(0, 30) + '…' : name;
+    ctx.font = `800 ${Math.round(W * 0.062)}px system-ui, sans-serif`;
+    const textW = ctx.measureText(label).width;
+    const padX = W * 0.045, padY = H * 0.022;
+    const pillW = textW + padX * 2, pillH = H * 0.09;
+    const pillX = (W - pillW) / 2, pillY = H * 0.74 + slide;
+
+    ctx.save();
+    ctx.globalAlpha = alpha * 0.92;
+    ctx.fillStyle = '#ffffff';
+    ctx.shadowColor = 'rgba(0,0,0,0.25)'; ctx.shadowBlur = 18; ctx.shadowOffsetY = 6;
+    const r = pillH / 2;
+    ctx.beginPath();
+    ctx.moveTo(pillX + r, pillY);
+    ctx.arcTo(pillX + pillW, pillY, pillX + pillW, pillY + pillH, r);
+    ctx.arcTo(pillX + pillW, pillY + pillH, pillX, pillY + pillH, r);
+    ctx.arcTo(pillX, pillY + pillH, pillX, pillY, r);
+    ctx.arcTo(pillX, pillY, pillX + pillW, pillY, r);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = '#1a1a1a';
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'center';
+    ctx.fillText(label, W / 2, pillY + pillH / 2 + padY * 0.1);
+    ctx.restore();
+    ctx.textAlign = 'left';
+  }
+
+  if (description && t >= DESC_START) {
+    const dp = Math.min(1, (t - DESC_START) / (DESC_END - DESC_START));
+    const alpha = Math.min(1, dp * 2.2);
+    const slide = (1 - Math.min(1, dp * 1.4)) * 20;
+    const label = description.length > 54 ? description.slice(0, 54) + '…' : description;
+
+    ctx.save();
+    ctx.globalAlpha = alpha * 0.85;
+    ctx.fillStyle = '#ffffff';
+    ctx.font = `500 ${Math.round(W * 0.028)}px system-ui, sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.shadowColor = 'rgba(0,0,0,0.55)'; ctx.shadowBlur = 8;
+    ctx.fillText(label, W / 2, H * 0.885 + slide);
+    ctx.restore();
+    ctx.textAlign = 'left';
   }
 }
 
@@ -2052,8 +2083,8 @@ async function buildMusicSource(ctx: AudioContext, destination: AudioNode, url: 
 // Records a real-time animation of the canvas for PRODUCT_VIDEO_DURATION_S seconds, optionally
 // mixing in a music track and/or the synthesized pop sound effect (for the "Zoom Appear" style).
 function recordProductVideo(
-  img: HTMLImageElement, style: VideoStyle, name: string, price: string,
-  glitter: boolean, arrow: boolean, musicUrl: string | null,
+  img: HTMLImageElement, style: VideoStyle, name: string, description: string,
+  glitter: boolean, musicUrl: string | null,
 ): Promise<Blob> {
   return new Promise(async (resolve, reject) => {
     const canvas = document.createElement('canvas');
@@ -2078,7 +2109,7 @@ function recordProductVideo(
           try { const src = await buildMusicSource(audioCtx, dest, musicUrl, PRODUCT_VIDEO_DURATION_S); src.start(); }
           catch { /* bad/blocked track URL — continue without music rather than failing the whole video */ }
         }
-        if (style === 'pop') scheduleSynthPop(audioCtx, dest, audioCtx.currentTime + 0.12);
+        if (style === 'pop') scheduleSynthPop(audioCtx, dest, audioCtx.currentTime + 0.08); // matches POP_AT in drawProductVideoFrame
         combinedStream = new MediaStream([...videoStream.getVideoTracks(), ...dest.stream.getAudioTracks()]);
       }
     } catch { combinedStream = videoStream; }
@@ -2095,7 +2126,7 @@ function recordProductVideo(
     let raf = 0;
     const frame = (now: number) => {
       const t = Math.min(1, (now - t0) / (PRODUCT_VIDEO_DURATION_S * 1000));
-      drawProductVideoFrame(ctx, img, style, t, PRODUCT_VIDEO_SIZE, PRODUCT_VIDEO_SIZE, name, price, glitter, arrow);
+      drawProductVideoFrame(ctx, img, style, t, PRODUCT_VIDEO_SIZE, PRODUCT_VIDEO_SIZE, name, description, glitter);
       if (t < 1) raf = requestAnimationFrame(frame);
       else rec.stop();
     };
@@ -2126,7 +2157,7 @@ async function uploadProductVideo(blob: Blob, baseName: string): Promise<string>
   return mp4Url;
 }
 
-type VideoProduct = { _id: string; name: string; image: string; videoUrl?: string; discountedPrice?: number; originalPrice?: number };
+type VideoProduct = { _id: string; name: string; image: string; description?: string; videoUrl?: string; discountedPrice?: number; originalPrice?: number };
 
 function ProductVideoSection() {
   const [mode, setMode] = useState<'individual' | 'batch'>('individual');
@@ -2146,7 +2177,6 @@ function ProductVideoSection() {
   const [selectedId, setSelectedId] = useState('');
   const [style, setStyle] = useState<VideoStyle>('zoom');
   const [glitter, setGlitter] = useState(false);
-  const [arrow, setArrow] = useState(false);
   const [musicChoice, setMusicChoice] = useState<string>('none'); // 'none' | 'random' | track.id
   const [working, setWorking] = useState(false);
   const [resultUrl, setResultUrl] = useState('');
@@ -2155,7 +2185,6 @@ function ProductVideoSection() {
   const [batchSelected, setBatchSelected] = useState<Set<string>>(new Set());
   const [batchStyle, setBatchStyle] = useState<VideoStyle>('zoom');
   const [batchGlitter, setBatchGlitter] = useState(false);
-  const [batchArrow, setBatchArrow] = useState(false);
   const [batchMusicChoice, setBatchMusicChoice] = useState<string>('none'); // 'none' | 'random' | track.id
   const [batchWorking, setBatchWorking] = useState(false);
   const [batchProgress, setBatchProgress] = useState({ current: 0, total: 0 });
@@ -2166,7 +2195,8 @@ function ProductVideoSection() {
       .then(r => r.json())
       .then(data => setProducts((data.products || []).map((p: any) => ({
         _id: p._id, name: p.name || '(no name)', image: p.image || p.imageUrl || '',
-        videoUrl: p.videoUrl || '', discountedPrice: p.discountedPrice, originalPrice: p.originalPrice,
+        description: p.description || '', videoUrl: p.videoUrl || '',
+        discountedPrice: p.discountedPrice, originalPrice: p.originalPrice,
       }))))
       .catch(() => setError('Could not load your product list.'))
       .finally(() => setLoadingList(false));
@@ -2221,11 +2251,11 @@ function ProductVideoSection() {
   const filtered = products.filter(p => p.name.toLowerCase().includes(search.toLowerCase()));
   const priceOf = (p: VideoProduct) => { const v = Number(p.discountedPrice || p.originalPrice || 0); return v > 0 ? `₹${v}` : ''; };
 
-  const generateOne = async (p: VideoProduct, useStyle: VideoStyle, useGlitter: boolean, useArrow: boolean, musicUrl: string | null) => {
+  const generateOne = async (p: VideoProduct, useStyle: VideoStyle, useGlitter: boolean, musicUrl: string | null) => {
     if (!p.image) throw new Error('No image on this product');
     const { im, release } = await loadImageElement(p.image);
     try {
-      const blob = await recordProductVideo(im, useStyle, p.name, priceOf(p), useGlitter, useArrow, musicUrl);
+      const blob = await recordProductVideo(im, useStyle, p.name, p.description || '', useGlitter, musicUrl);
       const safeName = p.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40) || 'product';
       const url = await uploadProductVideo(blob, `pv-${safeName}`);
       const putRes = await fetch('/api/products', {
@@ -2242,7 +2272,7 @@ function ProductVideoSection() {
     if (!p) return;
     setWorking(true); setError(''); setResultUrl('');
     try {
-      const url = await generateOne(p, style, glitter, arrow, pickMusicUrl(musicChoice));
+      const url = await generateOne(p, style, glitter, pickMusicUrl(musicChoice));
       setResultUrl(url);
       setProducts(ps => ps.map(x => x._id === p._id ? { ...x, videoUrl: url } : x));
     } catch (e: any) {
@@ -2261,7 +2291,7 @@ function ProductVideoSection() {
     setBatchWorking(true); setBatchResults([]); setBatchProgress({ current: 0, total: list.length });
     const results: { name: string; ok: boolean; error?: string }[] = [];
     for (let i = 0; i < list.length; i++) {
-      try { await generateOne(list[i], batchStyle, batchGlitter, batchArrow, pickMusicUrl(batchMusicChoice)); results.push({ name: list[i].name, ok: true }); }
+      try { await generateOne(list[i], batchStyle, batchGlitter, pickMusicUrl(batchMusicChoice)); results.push({ name: list[i].name, ok: true }); }
       catch (e: any) { results.push({ name: list[i].name, ok: false, error: e.message }); }
       setBatchProgress({ current: i + 1, total: list.length });
       setBatchResults([...results]);
@@ -2281,19 +2311,13 @@ function ProductVideoSection() {
     </div>
   );
 
-  const EffectToggles = ({ glitterOn, setGlitterOn, arrowOn, setArrowOn, disabled }: {
-    glitterOn: boolean; setGlitterOn: (v: boolean) => void; arrowOn: boolean; setArrowOn: (v: boolean) => void; disabled?: boolean;
+  const EffectToggles = ({ glitterOn, setGlitterOn, disabled }: {
+    glitterOn: boolean; setGlitterOn: (v: boolean) => void; disabled?: boolean;
   }) => (
-    <div className="flex gap-3">
-      <label className="flex-1 flex items-center gap-2 text-xs font-bold text-gray-700 border border-gray-200 rounded-xl px-3 py-2.5 cursor-pointer">
-        <input type="checkbox" checked={glitterOn} onChange={e => setGlitterOn(e.target.checked)} disabled={disabled} className="w-4 h-4 accent-[#FA5600]" />
-        ✨ Falling glitter
-      </label>
-      <label className="flex-1 flex items-center gap-2 text-xs font-bold text-gray-700 border border-gray-200 rounded-xl px-3 py-2.5 cursor-pointer">
-        <input type="checkbox" checked={arrowOn} onChange={e => setArrowOn(e.target.checked)} disabled={disabled} className="w-4 h-4 accent-[#FA5600]" />
-        ➘ Arrow at price
-      </label>
-    </div>
+    <label className="flex items-center gap-2 text-xs font-bold text-gray-700 border border-gray-200 rounded-xl px-3 py-2.5 cursor-pointer">
+      <input type="checkbox" checked={glitterOn} onChange={e => setGlitterOn(e.target.checked)} disabled={disabled} className="w-4 h-4 accent-[#FA5600]" />
+      ✨ Falling glitter
+    </label>
   );
 
   const MusicPicker = ({ value, onChange, disabled }: { value: string; onChange: (v: string) => void; disabled?: boolean }) => (
@@ -2321,8 +2345,8 @@ function ProductVideoSection() {
       <div className="bg-blue-50 border border-blue-200 rounded-2xl p-5 flex items-start gap-4">
         <div className="w-10 h-10 bg-blue-100 rounded-xl flex items-center justify-center shrink-0"><Video className="w-5 h-5 text-blue-600" /></div>
         <div className="flex-1">
-          <p className="text-sm font-black text-gray-800">Animation of your real photo — plus your own music</p>
-          <p className="text-xs text-gray-500 mt-0.5">The visuals (zoom, rock, shine, pop-in, glitter, arrow) are all free and built-in. Music is different: we can't legally pick "royalty-free" songs on your behalf, so you upload your own tracks below — from YouTube Audio Library, Pixabay Music, or Incompetech, all genuinely free to use (check each track's specific license for any attribution it asks for).</p>
+          <p className="text-sm font-black text-gray-800">Product appears first, then its name & description — price stays out of the video</p>
+          <p className="text-xs text-gray-500 mt-0.5">Each clip reveals the photo first (zoom, rock, shine or pop-in), then the name slides in over it with a short description line beneath. Price is deliberately NOT baked into the video — a video file can never update itself when you change a price later, so show price as a live element over the video in your product card instead (ask if you want help wiring that into your storefront). Music is your own upload below — we can't legally pick tracks on your behalf, but YouTube Audio Library, Pixabay Music, and Incompetech are all genuinely free (check each track's own attribution terms).</p>
         </div>
       </div>
 
@@ -2391,7 +2415,7 @@ function ProductVideoSection() {
           {selectedId && (
             <>
               <StylePicker value={style} onChange={setStyle} disabled={working} />
-              <EffectToggles glitterOn={glitter} setGlitterOn={setGlitter} arrowOn={arrow} setArrowOn={setArrow} disabled={working} />
+              <EffectToggles glitterOn={glitter} setGlitterOn={setGlitter} disabled={working} />
               <MusicPicker value={musicChoice} onChange={setMusicChoice} disabled={working} />
               <button onClick={handleGenerateIndividual} disabled={working}
                 className="w-full py-3 bg-[#FA5600] text-white font-black uppercase tracking-widest text-sm rounded-xl hover:bg-[#E04A00] transition flex items-center justify-center gap-2 disabled:opacity-50">
@@ -2433,7 +2457,7 @@ function ProductVideoSection() {
           </div>
 
           <StylePicker value={batchStyle} onChange={setBatchStyle} disabled={batchWorking} />
-          <EffectToggles glitterOn={batchGlitter} setGlitterOn={setBatchGlitter} arrowOn={batchArrow} setArrowOn={setBatchArrow} disabled={batchWorking} />
+          <EffectToggles glitterOn={batchGlitter} setGlitterOn={setBatchGlitter} disabled={batchWorking} />
           <MusicPicker value={batchMusicChoice} onChange={setBatchMusicChoice} disabled={batchWorking} />
           {batchMusicChoice === 'random' && <p className="text-[10px] text-gray-400 -mt-2">A different random track from your library is picked for each video.</p>}
 
