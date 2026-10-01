@@ -15,13 +15,14 @@ import {
   TrendingUp, TrendingDown, Users, AlertTriangle, DollarSign, IndianRupee,
   KeyRound, EyeOff, MessageSquare, Pencil, Database, Send, Radio, Copy, Download,
   CheckCircle, RefreshCw, FileText, Sparkles, Wand2,
+  Video,
 } from 'lucide-react';
 
 const VISIBILITY_KEY = 'tagsAdminVisibility';
 
 type Section =
   | 'dashboard' | 'promo' | 'banner' | 'category-images' | 'perks'
-  | 'products' | 'categories' | 'inventory' | 'business' | 'settings' | 'import' | 'reviews' | 'broadcast' | 'backup' | 'cleanup';
+  | 'products' | 'categories' | 'inventory' | 'business' | 'settings' | 'import' | 'reviews' | 'broadcast' | 'backup' | 'cleanup' | 'video';
 
 interface BannerSlide { image: string; text: string; description: string; }
 interface Perk        { icon: string; text: string; }
@@ -43,6 +44,7 @@ const ALL_MODULES: { id: Section; label: string; icon: any; desc: string }[] = [
   { id: 'settings',        label: 'Settings',         icon: SettingsIcon,    desc: 'Module visibility' },
   { id: 'backup',          label: 'Backup',           icon: Database,        desc: 'Download a full database backup' },
   { id: 'cleanup',         label: 'Cleanup',          icon: Trash2,          desc: 'Find and remove junk/orphaned data' },
+  { id: 'video',           label: 'Video',            icon: Video,           desc: 'Free animated videos for product cards' },
 ];
 
 // ── Change Password Form (shared between login screen and Settings) ──────────
@@ -1378,6 +1380,7 @@ export function AdminPanel() {
           {activeSection === 'import'     && <div className="max-w-2xl mx-auto"><ImportProductsSection /></div>}
           {activeSection === 'backup'     && <div className="max-w-2xl mx-auto"><BackupSection /></div>}
           {activeSection === 'cleanup'    && <div className="max-w-2xl mx-auto"><CleanupSection /></div>}
+          {activeSection === 'video'      && <div className="max-w-2xl mx-auto"><ProductVideoSection /></div>}
 
           {/* ── REVIEWS ── */}
           {activeSection === 'reviews' && <div className="max-w-4xl mx-auto"><ReviewsSection /></div>}
@@ -1857,6 +1860,343 @@ function SettingsIcon({ className }: { className?: string }) {
       <path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
       <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
     </svg>
+  );
+}
+
+// ── Product Video (free, no AI generation) ─────────────────────────────────
+// Turns a product's existing photo into a real 10-second MP4 using canvas animation +
+// MediaRecorder — zero AI calls, zero cost. Three motion styles to pick from.
+type VideoStyle = 'zoom' | 'tilt' | 'shine';
+const VIDEO_STYLES: { id: VideoStyle; label: string; blurb: string }[] = [
+  { id: 'zoom',  label: 'Slow Zoom',    blurb: 'Smooth zoom-in with the name & price overlaid' },
+  { id: 'tilt',  label: 'Gentle Rock',  blurb: 'A subtle rocking tilt, like a slow turntable' },
+  { id: 'shine', label: 'Shine Sweep',  blurb: 'Zoom plus a light sweep across the product' },
+];
+const PRODUCT_VIDEO_DURATION_S = 10;
+const PRODUCT_VIDEO_SIZE = 1000; // square, matches your Cloudinary product image crop
+
+function easeInOut(t: number) { return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2; }
+
+// Draws one frame (t = 0..1 progress through the clip) for the given style.
+function drawProductVideoFrame(
+  ctx: CanvasRenderingContext2D, img: HTMLImageElement, style: VideoStyle, t: number,
+  W: number, H: number, name: string, price: string,
+) {
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, W, H);
+
+  const iw = img.naturalWidth || img.width, ih = img.naturalHeight || img.height;
+  const baseScale = Math.max(W / iw, H / ih);
+  const e = easeInOut(t);
+
+  ctx.save();
+  ctx.translate(W / 2, H / 2);
+
+  if (style === 'zoom') {
+    const s = baseScale * (1 + 0.14 * e);
+    ctx.scale(s, s);
+  } else if (style === 'tilt') {
+    const s = baseScale * (1 + 0.05 * e);
+    const angle = 0.05 * Math.sin(t * Math.PI * 2); // one gentle rock over the whole clip
+    ctx.rotate(angle);
+    ctx.scale(s * (1 - 0.02 * Math.abs(Math.sin(t * Math.PI * 2))), s);
+  } else {
+    const s = baseScale * (1 + 0.10 * e);
+    ctx.scale(s, s);
+  }
+
+  ctx.drawImage(img, -iw / 2, -ih / 2, iw, ih);
+  ctx.restore();
+
+  if (style === 'shine') {
+    const sweepX = -W * 0.3 + (W * 1.6) * t; // one pass, left to right, across the whole clip
+    const grad = ctx.createLinearGradient(sweepX - 120, 0, sweepX + 120, H);
+    grad.addColorStop(0, 'rgba(255,255,255,0)');
+    grad.addColorStop(0.5, 'rgba(255,255,255,0.35)');
+    grad.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  if (name) {
+    const barH = H * 0.16;
+    const grad = ctx.createLinearGradient(0, H - barH, 0, H);
+    grad.addColorStop(0, 'rgba(0,0,0,0)');
+    grad.addColorStop(1, 'rgba(0,0,0,0.65)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, H - barH, W, barH);
+    ctx.fillStyle = '#fff';
+    ctx.textBaseline = 'alphabetic';
+    ctx.font = `700 ${Math.round(W * 0.042)}px system-ui, sans-serif`;
+    ctx.fillText(name.length > 34 ? name.slice(0, 34) + '…' : name, W * 0.04, H - barH * 0.42);
+    if (price) {
+      ctx.fillStyle = '#FA5600';
+      ctx.font = `800 ${Math.round(W * 0.05)}px system-ui, sans-serif`;
+      ctx.fillText(price, W * 0.04, H - barH * 0.12);
+    }
+  }
+}
+
+// Records a real-time animation of the canvas for PRODUCT_VIDEO_DURATION_S seconds.
+function recordProductVideo(
+  img: HTMLImageElement, style: VideoStyle, name: string, price: string,
+): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    const canvas = document.createElement('canvas');
+    canvas.width = PRODUCT_VIDEO_SIZE; canvas.height = PRODUCT_VIDEO_SIZE;
+    const ctx = canvas.getContext('2d');
+    const stream = (canvas as any).captureStream?.(30);
+    if (!ctx || !stream || typeof MediaRecorder === 'undefined') {
+      reject(new Error('This browser cannot record video — use Chrome or Edge.')); return;
+    }
+    const mime = ['video/mp4;codecs=avc1.42E01E', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm']
+      .find(m => MediaRecorder.isTypeSupported(m)) || '';
+    const rec = new MediaRecorder(stream, { ...(mime ? { mimeType: mime } : {}), videoBitsPerSecond: 6_000_000 });
+    const parts: Blob[] = [];
+    rec.ondataavailable = e => { if (e.data?.size) parts.push(e.data); };
+    rec.onerror = () => reject(new Error('Recording failed'));
+    rec.onstop = () => resolve(new Blob(parts, { type: rec.mimeType || mime || 'video/webm' }));
+
+    const t0 = performance.now();
+    let raf = 0;
+    const frame = (now: number) => {
+      const t = Math.min(1, (now - t0) / (PRODUCT_VIDEO_DURATION_S * 1000));
+      drawProductVideoFrame(ctx, img, style, t, PRODUCT_VIDEO_SIZE, PRODUCT_VIDEO_SIZE, name, price);
+      if (t < 1) raf = requestAnimationFrame(frame);
+      else rec.stop();
+    };
+    rec.start(250);
+    raf = requestAnimationFrame(frame);
+    setTimeout(() => { if (rec.state !== 'inactive') { cancelAnimationFrame(raf); rec.stop(); } }, PRODUCT_VIDEO_DURATION_S * 1000 + 1500);
+  });
+}
+
+// Uploads straight from the browser to Cloudinary (same signed-upload pattern used elsewhere),
+// then asks Cloudinary to deliver it back as a plain H.264 MP4 regardless of what was recorded.
+async function uploadProductVideo(blob: Blob, baseName: string): Promise<string> {
+  const sig = await (await fetch('/api/products?cloudinarySign=true&resourceType=video')).json();
+  if (!sig.signature) throw new Error('Could not get an upload permission from the server.');
+  const form = new FormData();
+  form.append('file', blob, `${baseName}.${blob.type.includes('mp4') ? 'mp4' : 'webm'}`);
+  form.append('api_key', sig.apiKey);
+  form.append('timestamp', String(sig.timestamp));
+  form.append('signature', sig.signature);
+  form.append('folder', sig.folder);
+  const r = await fetch(`https://api.cloudinary.com/v1_1/${sig.cloudName}/video/upload`, { method: 'POST', body: form });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok || !d.secure_url) throw new Error(d.error?.message || 'Video upload failed.');
+  const mp4Url = d.secure_url
+    .replace('/video/upload/', '/video/upload/f_mp4,vc_h264,ac_none,fps_30,c_limit,w_1000,h_1000,q_auto:best/')
+    .replace(/\.[a-z0-9]+$/i, '.mp4');
+  await fetch(mp4Url, { cache: 'reload' }).catch(() => {}); // warm it so it's ready the moment the admin opens it
+  return mp4Url;
+}
+
+type VideoProduct = { _id: string; name: string; image: string; videoUrl?: string; discountedPrice?: number; originalPrice?: number };
+
+function ProductVideoSection() {
+  const [mode, setMode] = useState<'individual' | 'batch'>('individual');
+  const [products, setProducts] = useState<VideoProduct[]>([]);
+  const [loadingList, setLoadingList] = useState(true);
+  const [search, setSearch] = useState('');
+
+  const [selectedId, setSelectedId] = useState('');
+  const [style, setStyle] = useState<VideoStyle>('zoom');
+  const [working, setWorking] = useState(false);
+  const [resultUrl, setResultUrl] = useState('');
+  const [error, setError] = useState('');
+
+  const [batchSelected, setBatchSelected] = useState<Set<string>>(new Set());
+  const [batchStyle, setBatchStyle] = useState<VideoStyle>('zoom');
+  const [batchWorking, setBatchWorking] = useState(false);
+  const [batchProgress, setBatchProgress] = useState({ current: 0, total: 0 });
+  const [batchResults, setBatchResults] = useState<{ name: string; ok: boolean; error?: string }[]>([]);
+
+  useEffect(() => {
+    fetch('/api/products?adminView=true&limit=1000')
+      .then(r => r.json())
+      .then(data => setProducts((data.products || []).map((p: any) => ({
+        _id: p._id, name: p.name || '(no name)', image: p.image || p.imageUrl || '',
+        videoUrl: p.videoUrl || '', discountedPrice: p.discountedPrice, originalPrice: p.originalPrice,
+      }))))
+      .catch(() => setError('Could not load your product list.'))
+      .finally(() => setLoadingList(false));
+  }, []);
+
+  const filtered = products.filter(p => p.name.toLowerCase().includes(search.toLowerCase()));
+  const priceOf = (p: VideoProduct) => { const v = Number(p.discountedPrice || p.originalPrice || 0); return v > 0 ? `₹${v}` : ''; };
+
+  const generateOne = async (p: VideoProduct, useStyle: VideoStyle) => {
+    if (!p.image) throw new Error('No image on this product');
+    const { im, release } = await loadImageElement(p.image);
+    try {
+      const blob = await recordProductVideo(im, useStyle, p.name, priceOf(p));
+      const safeName = p.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40) || 'product';
+      const url = await uploadProductVideo(blob, `pv-${safeName}`);
+      const putRes = await fetch('/api/products', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: p._id, videoUrl: url }),
+      });
+      if (!putRes.ok) { const err = await putRes.json().catch(() => ({})); throw new Error(err.error || 'Could not save the video to this product'); }
+      return url;
+    } finally { release(); }
+  };
+
+  const handleGenerateIndividual = async () => {
+    const p = products.find(x => x._id === selectedId);
+    if (!p) return;
+    setWorking(true); setError(''); setResultUrl('');
+    try {
+      const url = await generateOne(p, style);
+      setResultUrl(url);
+      setProducts(ps => ps.map(x => x._id === p._id ? { ...x, videoUrl: url } : x));
+    } catch (e: any) {
+      setError(e.message || 'Video generation failed');
+    } finally { setWorking(false); }
+  };
+
+  const toggleBatch = (id: string) => setBatchSelected(sel => {
+    const next = new Set(sel); next.has(id) ? next.delete(id) : next.add(id); return next;
+  });
+  const selectAllFiltered = (checked: boolean) => setBatchSelected(checked ? new Set(filtered.map(p => p._id)) : new Set());
+
+  const handleGenerateBatch = async () => {
+    const list = products.filter(p => batchSelected.has(p._id));
+    if (list.length === 0) return;
+    setBatchWorking(true); setBatchResults([]); setBatchProgress({ current: 0, total: list.length });
+    const results: { name: string; ok: boolean; error?: string }[] = [];
+    for (let i = 0; i < list.length; i++) {
+      try { await generateOne(list[i], batchStyle); results.push({ name: list[i].name, ok: true }); }
+      catch (e: any) { results.push({ name: list[i].name, ok: false, error: e.message }); }
+      setBatchProgress({ current: i + 1, total: list.length });
+      setBatchResults([...results]);
+    }
+    setBatchWorking(false);
+  };
+
+  const StylePicker = ({ value, onChange, disabled }: { value: VideoStyle; onChange: (s: VideoStyle) => void; disabled?: boolean }) => (
+    <div className="grid grid-cols-3 gap-2">
+      {VIDEO_STYLES.map(s => (
+        <button key={s.id} type="button" disabled={disabled} onClick={() => onChange(s.id)}
+          className={`text-left p-3 rounded-xl border-2 transition ${value === s.id ? 'border-[#FA5600] bg-orange-50' : 'border-gray-200 hover:border-gray-300'} disabled:opacity-50`}>
+          <p className="text-xs font-black text-gray-800">{s.label}</p>
+          <p className="text-[10px] text-gray-400 mt-0.5">{s.blurb}</p>
+        </button>
+      ))}
+    </div>
+  );
+
+  return (
+    <div className="space-y-4">
+      <SectionHeader icon={Video} title="Product Video" desc="Free 10-second animated videos made from your existing product photos" />
+
+      <div className="bg-blue-50 border border-blue-200 rounded-2xl p-5 flex items-start gap-4">
+        <div className="w-10 h-10 bg-blue-100 rounded-xl flex items-center justify-center shrink-0"><Video className="w-5 h-5 text-blue-600" /></div>
+        <div className="flex-1">
+          <p className="text-sm font-black text-gray-800">Not AI-generated motion — animation of your real photo</p>
+          <p className="text-xs text-gray-500 mt-0.5">This doesn't invent new footage of the product. It takes the photo you already have and animates it (zoom, a gentle rock, or a light sweep) into a real 10-second MP4, saved as that product's video. Completely free — no AI video API involved.</p>
+        </div>
+      </div>
+
+      <div className="flex gap-2 bg-gray-100 rounded-xl p-1">
+        <button onClick={() => setMode('individual')} className={`flex-1 flex items-center justify-center gap-1.5 text-xs font-black uppercase tracking-widest py-2.5 rounded-lg transition ${mode === 'individual' ? 'bg-white text-[#FA5600] shadow-sm' : 'text-gray-400 hover:text-gray-600'}`}>
+          <Video className="w-3.5 h-3.5" /> One Product
+        </button>
+        <button onClick={() => setMode('batch')} className={`flex-1 flex items-center justify-center gap-1.5 text-xs font-black uppercase tracking-widest py-2.5 rounded-lg transition ${mode === 'batch' ? 'bg-white text-[#FA5600] shadow-sm' : 'text-gray-400 hover:text-gray-600'}`}>
+          <Upload className="w-3.5 h-3.5" /> Batch (Same Style)
+        </button>
+      </div>
+
+      <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search products..."
+        className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm" />
+
+      {loadingList && <div className="text-center text-xs text-gray-400 font-bold py-6">Loading products...</div>}
+
+      {mode === 'individual' && !loadingList && (
+        <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 space-y-4">
+          <div className="max-h-56 overflow-y-auto divide-y divide-gray-100 border border-gray-100 rounded-xl">
+            {filtered.slice(0, 200).map(p => (
+              <label key={p._id} className="flex items-center gap-3 px-3 py-2 text-xs font-bold text-gray-700 cursor-pointer hover:bg-gray-50">
+                <input type="radio" name="pv-pick" checked={selectedId === p._id} onChange={() => { setSelectedId(p._id); setResultUrl(''); setError(''); }} className="w-4 h-4 accent-[#FA5600]" />
+                <div className="w-9 h-9 rounded-lg bg-gray-50 border border-gray-100 shrink-0 overflow-hidden flex items-center justify-center">
+                  {p.image ? <img src={p.image} alt="" className="w-full h-full object-cover" /> : <Package className="w-4 h-4 text-gray-300" />}
+                </div>
+                <span className="flex-1 truncate">{p.name}</span>
+                {p.videoUrl && <span className="text-[9px] font-black uppercase text-green-600">Has video</span>}
+              </label>
+            ))}
+          </div>
+
+          {selectedId && (
+            <>
+              <StylePicker value={style} onChange={setStyle} disabled={working} />
+              <button onClick={handleGenerateIndividual} disabled={working}
+                className="w-full py-3 bg-[#FA5600] text-white font-black uppercase tracking-widest text-sm rounded-xl hover:bg-[#E04A00] transition flex items-center justify-center gap-2 disabled:opacity-50">
+                {working ? (<><RefreshCw className="w-4 h-4 animate-spin" /> Recording 10s video...</>) : (<><Video className="w-4 h-4" /> Generate & Save Video</>)}
+              </button>
+              {error && <div className="rounded-xl p-3 text-sm font-bold text-center bg-red-50 text-red-600 border border-red-200">{error}</div>}
+              {resultUrl && (
+                <div className="space-y-2">
+                  <div className="rounded-xl p-3 text-sm font-bold text-center bg-green-50 text-green-700 border border-green-200">✅ Video saved to this product.</div>
+                  <video src={resultUrl} controls loop className="w-full rounded-xl border border-gray-200" />
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
+      {mode === 'batch' && !loadingList && (
+        <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 space-y-4">
+          <div className="flex items-center justify-between">
+            <p className="text-[11px] font-black uppercase tracking-widest text-gray-500">{batchSelected.size} selected</p>
+            <label className="flex items-center gap-1.5 text-[10px] font-black uppercase tracking-widest text-gray-500 cursor-pointer">
+              <input type="checkbox" checked={filtered.length > 0 && filtered.every(p => batchSelected.has(p._id))} onChange={e => selectAllFiltered(e.target.checked)} className="w-3.5 h-3.5 accent-[#FA5600]" disabled={batchWorking} />
+              Select All ({filtered.length})
+            </label>
+          </div>
+
+          <div className="max-h-56 overflow-y-auto divide-y divide-gray-100 border border-gray-100 rounded-xl">
+            {filtered.slice(0, 200).map(p => (
+              <label key={p._id} className="flex items-center gap-3 px-3 py-2 text-xs font-bold text-gray-700 cursor-pointer hover:bg-gray-50">
+                <input type="checkbox" checked={batchSelected.has(p._id)} onChange={() => toggleBatch(p._id)} disabled={batchWorking} className="w-4 h-4 accent-[#FA5600]" />
+                <div className="w-9 h-9 rounded-lg bg-gray-50 border border-gray-100 shrink-0 overflow-hidden flex items-center justify-center">
+                  {p.image ? <img src={p.image} alt="" className="w-full h-full object-cover" /> : <Package className="w-4 h-4 text-gray-300" />}
+                </div>
+                <span className="flex-1 truncate">{p.name}</span>
+                {p.videoUrl && <span className="text-[9px] font-black uppercase text-green-600">Has video</span>}
+              </label>
+            ))}
+          </div>
+
+          <StylePicker value={batchStyle} onChange={setBatchStyle} disabled={batchWorking} />
+
+          <button onClick={handleGenerateBatch} disabled={batchWorking || batchSelected.size === 0}
+            className="w-full py-3 bg-[#FA5600] text-white font-black uppercase tracking-widest text-sm rounded-xl hover:bg-[#E04A00] transition flex items-center justify-center gap-2 disabled:opacity-50">
+            {batchWorking ? (<><RefreshCw className="w-4 h-4 animate-spin" /> {batchProgress.current}/{batchProgress.total} videos...</>) : (<><Video className="w-4 h-4" /> Generate {batchSelected.size} Video{batchSelected.size === 1 ? '' : 's'}</>)}
+          </button>
+          <p className="text-[11px] text-gray-400 text-center -mt-2">Each video takes about 10 seconds to record — keep this tab open while it runs. {batchSelected.size > 0 && `Roughly ${Math.ceil(batchSelected.size * 10 / 60)} min total.`}</p>
+
+          {batchWorking && (
+            <div className="w-full bg-gray-100 rounded-full h-3">
+              <div className="bg-[#FA5600] h-3 rounded-full transition-all" style={{ width: `${batchProgress.total ? (batchProgress.current / batchProgress.total) * 100 : 0}%` }} />
+            </div>
+          )}
+
+          {batchResults.length > 0 && (
+            <div className="space-y-1 max-h-48 overflow-y-auto">
+              {batchResults.map((r, i) => (
+                <div key={i} className={`flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-bold ${r.ok ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-600'}`}>
+                  <span>{r.ok ? '✅' : '❌'}</span><span className="flex-1 truncate">{r.name}</span>
+                  {r.error && <span className="text-[10px] opacity-70">{r.error}</span>}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
