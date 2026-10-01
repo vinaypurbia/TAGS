@@ -1866,21 +1866,66 @@ function SettingsIcon({ className }: { className?: string }) {
 // ── Product Video (free, no AI generation) ─────────────────────────────────
 // Turns a product's existing photo into a real 10-second MP4 using canvas animation +
 // MediaRecorder — zero AI calls, zero cost. Three motion styles to pick from.
-type VideoStyle = 'zoom' | 'tilt' | 'shine';
+type VideoStyle = 'zoom' | 'tilt' | 'shine' | 'pop';
 const VIDEO_STYLES: { id: VideoStyle; label: string; blurb: string }[] = [
   { id: 'zoom',  label: 'Slow Zoom',    blurb: 'Smooth zoom-in with the name & price overlaid' },
   { id: 'tilt',  label: 'Gentle Rock',  blurb: 'A subtle rocking tilt, like a slow turntable' },
   { id: 'shine', label: 'Shine Sweep',  blurb: 'Zoom plus a light sweep across the product' },
+  { id: 'pop',   label: 'Zoom Appear',  blurb: 'Product pops into the center, with a sound effect' },
 ];
+type MusicTrack = { id: string; name: string; url: string };
 const PRODUCT_VIDEO_DURATION_S = 10;
 const PRODUCT_VIDEO_SIZE = 1000; // square, matches your Cloudinary product image crop
 
 function easeInOut(t: number) { return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2; }
+// A little overshoot-then-settle spring, used for the "Zoom Appear" pop-in.
+function easeOutBack(t: number) { const c1 = 1.70158, c3 = c1 + 1; return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2); }
+
+// ── Glitter overlay: falling, twinkling particles — pure canvas, no assets needed ──
+function drawGlitter(ctx: CanvasRenderingContext2D, W: number, H: number, t: number, seedBase = 1) {
+  const rnd = (i: number) => { const x = Math.sin(i * 999.123 + seedBase * 7.77) * 43758.5453; return x - Math.floor(x); };
+  for (let i = 0; i < 34; i++) {
+    const colX = rnd(i) * W;
+    const speed = 0.4 + rnd(i + 50) * 0.5;      // laps per clip
+    const fall = ((t * speed + rnd(i + 100)) % 1);
+    const y = fall * H * 1.15 - H * 0.075;
+    const x = colX + Math.sin((t * 3 + i) * Math.PI) * 10;
+    if (y < 0 || y > H) continue;
+    const twinkle = 0.4 + 0.6 * Math.abs(Math.sin((t * 6 + i) * Math.PI));
+    const r = 2 + rnd(i + 150) * 3.5;
+    ctx.save();
+    ctx.globalAlpha = twinkle;
+    ctx.fillStyle = i % 3 === 0 ? '#FFD447' : i % 3 === 1 ? '#FFFFFF' : '#FFB3D9';
+    ctx.beginPath();
+    ctx.moveTo(x, y - r); ctx.lineTo(x + r * 0.3, y - r * 0.3); ctx.lineTo(x + r, y);
+    ctx.lineTo(x + r * 0.3, y + r * 0.3); ctx.lineTo(x, y + r); ctx.lineTo(x - r * 0.3, y + r * 0.3);
+    ctx.lineTo(x - r, y); ctx.lineTo(x - r * 0.3, y - r * 0.3); ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+// ── Arrow pointer, aimed at the price text ──
+function drawPriceArrow(ctx: CanvasRenderingContext2D, W: number, H: number, t: number, hasPrice: boolean) {
+  if (!hasPrice) return;
+  const bob = Math.sin(t * Math.PI * 4) * 6; // gentle bounce toward the price
+  const tipX = W * 0.30, tipY = H - H * 0.075 + bob;
+  const tailX = tipX + 46, tailY = tipY - 40;
+  ctx.save();
+  ctx.strokeStyle = '#FFD447'; ctx.fillStyle = '#FFD447';
+  ctx.lineWidth = 6; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(tailX, tailY); ctx.lineTo(tipX + 10, tipY + 6); ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(tipX, tipY); ctx.lineTo(tipX + 20, tipY - 4); ctx.lineTo(tipX + 14, tipY + 16); ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
 
 // Draws one frame (t = 0..1 progress through the clip) for the given style.
 function drawProductVideoFrame(
   ctx: CanvasRenderingContext2D, img: HTMLImageElement, style: VideoStyle, t: number,
   W: number, H: number, name: string, price: string,
+  glitter: boolean, arrow: boolean,
 ) {
   ctx.clearRect(0, 0, W, H);
   ctx.fillStyle = '#ffffff';
@@ -1889,6 +1934,15 @@ function drawProductVideoFrame(
   const iw = img.naturalWidth || img.width, ih = img.naturalHeight || img.height;
   const baseScale = Math.max(W / iw, H / ih);
   const e = easeInOut(t);
+
+  // "Zoom Appear": held invisible for a beat, then pops to full size with a spring overshoot —
+  // the POP_AT instant below is also where recordProductVideo fires the synthesized sound effect.
+  const POP_AT = 0.12;
+  let popScale = 1, popAlpha = 1;
+  if (style === 'pop') {
+    if (t < POP_AT) { popScale = 0; popAlpha = 0; }
+    else { const pt = Math.min(1, (t - POP_AT) / 0.35); popScale = Math.max(0, easeOutBack(pt)); popAlpha = Math.min(1, pt * 3); }
+  }
 
   ctx.save();
   ctx.translate(W / 2, H / 2);
@@ -1901,6 +1955,9 @@ function drawProductVideoFrame(
     const angle = 0.05 * Math.sin(t * Math.PI * 2); // one gentle rock over the whole clip
     ctx.rotate(angle);
     ctx.scale(s * (1 - 0.02 * Math.abs(Math.sin(t * Math.PI * 2))), s);
+  } else if (style === 'pop') {
+    ctx.globalAlpha = popAlpha;
+    ctx.scale(baseScale * popScale, baseScale * popScale);
   } else {
     const s = baseScale * (1 + 0.10 * e);
     ctx.scale(s, s);
@@ -1918,6 +1975,9 @@ function drawProductVideoFrame(
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, W, H);
   }
+
+  if (glitter) drawGlitter(ctx, W, H, t);
+  if (arrow) drawPriceArrow(ctx, W, H, t, !!price);
 
   if (name) {
     const barH = H * 0.16;
@@ -1938,31 +1998,90 @@ function drawProductVideoFrame(
   }
 }
 
-// Records a real-time animation of the canvas for PRODUCT_VIDEO_DURATION_S seconds.
+// A short synthesized "pop" sound — an oscillator pitch-sweep plus a quick noise burst.
+// Nothing sampled or downloaded, so there's no licensing question at all.
+function scheduleSynthPop(ctx: AudioContext, destination: AudioNode, atTime: number) {
+  const osc = ctx.createOscillator(); const oscGain = ctx.createGain();
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(220, atTime);
+  osc.frequency.exponentialRampToValueAtTime(880, atTime + 0.09);
+  oscGain.gain.setValueAtTime(0.0001, atTime);
+  oscGain.gain.exponentialRampToValueAtTime(0.5, atTime + 0.02);
+  oscGain.gain.exponentialRampToValueAtTime(0.0001, atTime + 0.22);
+  osc.connect(oscGain).connect(destination);
+  osc.start(atTime); osc.stop(atTime + 0.25);
+
+  const bufferSize = ctx.sampleRate * 0.08;
+  const noiseBuf = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+  const data = noiseBuf.getChannelData(0);
+  for (let i = 0; i < bufferSize; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / bufferSize);
+  const noise = ctx.createBufferSource(); noise.buffer = noiseBuf;
+  const noiseGain = ctx.createGain(); noiseGain.gain.setValueAtTime(0.25, atTime);
+  noise.connect(noiseGain).connect(destination);
+  noise.start(atTime);
+}
+
+// Decodes an admin-supplied music track and loops/trims it to exactly the clip length,
+// mixed quietly under everything else so it doesn't drown out a pop sound effect.
+async function buildMusicSource(ctx: AudioContext, destination: AudioNode, url: string, durationS: number) {
+  const res = await fetch(url, { mode: 'cors' });
+  if (!res.ok) throw new Error('Could not load the selected music track');
+  const arrayBuf = await res.arrayBuffer();
+  const audioBuf = await ctx.decodeAudioData(arrayBuf);
+  const src = ctx.createBufferSource();
+  src.buffer = audioBuf; src.loop = audioBuf.duration < durationS;
+  const gain = ctx.createGain(); gain.gain.value = 0.35;
+  src.connect(gain).connect(destination);
+  return src;
+}
+
+// Records a real-time animation of the canvas for PRODUCT_VIDEO_DURATION_S seconds, optionally
+// mixing in a music track and/or the synthesized pop sound effect (for the "Zoom Appear" style).
 function recordProductVideo(
   img: HTMLImageElement, style: VideoStyle, name: string, price: string,
+  glitter: boolean, arrow: boolean, musicUrl: string | null,
 ): Promise<Blob> {
-  return new Promise((resolve, reject) => {
+  return new Promise(async (resolve, reject) => {
     const canvas = document.createElement('canvas');
     canvas.width = PRODUCT_VIDEO_SIZE; canvas.height = PRODUCT_VIDEO_SIZE;
     const ctx = canvas.getContext('2d');
-    const stream = (canvas as any).captureStream?.(30);
-    if (!ctx || !stream || typeof MediaRecorder === 'undefined') {
+    const videoStream = (canvas as any).captureStream?.(30);
+    if (!ctx || !videoStream || typeof MediaRecorder === 'undefined') {
       reject(new Error('This browser cannot record video — use Chrome or Edge.')); return;
     }
-    const mime = ['video/mp4;codecs=avc1.42E01E', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm']
+
+    // Build the audio mix (music and/or the pop sound effect) and combine it with the video track
+    // into one MediaStream. If audio setup fails for any reason, we fall back to a silent video
+    // rather than losing the whole generation over a music glitch.
+    let audioCtx: AudioContext | null = null;
+    let combinedStream: MediaStream = videoStream;
+    try {
+      const AudioCtxCls = (window as any).AudioContext || (window as any).webkitAudioContext;
+      if (AudioCtxCls && (musicUrl || style === 'pop')) {
+        audioCtx = new AudioCtxCls();
+        const dest = audioCtx.createMediaStreamDestination();
+        if (musicUrl) {
+          try { const src = await buildMusicSource(audioCtx, dest, musicUrl, PRODUCT_VIDEO_DURATION_S); src.start(); }
+          catch { /* bad/blocked track URL — continue without music rather than failing the whole video */ }
+        }
+        if (style === 'pop') scheduleSynthPop(audioCtx, dest, audioCtx.currentTime + 0.12);
+        combinedStream = new MediaStream([...videoStream.getVideoTracks(), ...dest.stream.getAudioTracks()]);
+      }
+    } catch { combinedStream = videoStream; }
+
+    const mime = ['video/mp4;codecs=avc1.42E01E,mp4a.40.2', 'video/mp4', 'video/webm;codecs=vp9,opus', 'video/webm']
       .find(m => MediaRecorder.isTypeSupported(m)) || '';
-    const rec = new MediaRecorder(stream, { ...(mime ? { mimeType: mime } : {}), videoBitsPerSecond: 6_000_000 });
+    const rec = new MediaRecorder(combinedStream, { ...(mime ? { mimeType: mime } : {}), videoBitsPerSecond: 6_000_000 });
     const parts: Blob[] = [];
     rec.ondataavailable = e => { if (e.data?.size) parts.push(e.data); };
     rec.onerror = () => reject(new Error('Recording failed'));
-    rec.onstop = () => resolve(new Blob(parts, { type: rec.mimeType || mime || 'video/webm' }));
+    rec.onstop = () => { audioCtx?.close().catch(() => {}); resolve(new Blob(parts, { type: rec.mimeType || mime || 'video/webm' })); };
 
     const t0 = performance.now();
     let raf = 0;
     const frame = (now: number) => {
       const t = Math.min(1, (now - t0) / (PRODUCT_VIDEO_DURATION_S * 1000));
-      drawProductVideoFrame(ctx, img, style, t, PRODUCT_VIDEO_SIZE, PRODUCT_VIDEO_SIZE, name, price);
+      drawProductVideoFrame(ctx, img, style, t, PRODUCT_VIDEO_SIZE, PRODUCT_VIDEO_SIZE, name, price, glitter, arrow);
       if (t < 1) raf = requestAnimationFrame(frame);
       else rec.stop();
     };
@@ -1987,7 +2106,7 @@ async function uploadProductVideo(blob: Blob, baseName: string): Promise<string>
   const d = await r.json().catch(() => ({}));
   if (!r.ok || !d.secure_url) throw new Error(d.error?.message || 'Video upload failed.');
   const mp4Url = d.secure_url
-    .replace('/video/upload/', '/video/upload/f_mp4,vc_h264,ac_none,fps_30,c_limit,w_1000,h_1000,q_auto:best/')
+    .replace('/video/upload/', '/video/upload/f_mp4,vc_h264,ac_aac,fps_30,c_limit,w_1000,h_1000,q_auto:best/')
     .replace(/\.[a-z0-9]+$/i, '.mp4');
   await fetch(mp4Url, { cache: 'reload' }).catch(() => {}); // warm it so it's ready the moment the admin opens it
   return mp4Url;
@@ -2001,14 +2120,29 @@ function ProductVideoSection() {
   const [loadingList, setLoadingList] = useState(true);
   const [search, setSearch] = useState('');
 
+  const [tracks, setTracks] = useState<MusicTrack[]>([]);
+  const [loadingTracks, setLoadingTracks] = useState(true);
+  const [showMusicManager, setShowMusicManager] = useState(false);
+  const [newTrackName, setNewTrackName] = useState('');
+  const [newTrackFile, setNewTrackFile] = useState<File | null>(null);
+  const [trackUploading, setTrackUploading] = useState(false);
+  const [trackError, setTrackError] = useState('');
+  const trackFileRef = useRef<HTMLInputElement>(null);
+
   const [selectedId, setSelectedId] = useState('');
   const [style, setStyle] = useState<VideoStyle>('zoom');
+  const [glitter, setGlitter] = useState(false);
+  const [arrow, setArrow] = useState(false);
+  const [musicChoice, setMusicChoice] = useState<string>('none'); // 'none' | 'random' | track.id
   const [working, setWorking] = useState(false);
   const [resultUrl, setResultUrl] = useState('');
   const [error, setError] = useState('');
 
   const [batchSelected, setBatchSelected] = useState<Set<string>>(new Set());
   const [batchStyle, setBatchStyle] = useState<VideoStyle>('zoom');
+  const [batchGlitter, setBatchGlitter] = useState(false);
+  const [batchArrow, setBatchArrow] = useState(false);
+  const [batchMusicChoice, setBatchMusicChoice] = useState<string>('none'); // 'none' | 'random' | track.id
   const [batchWorking, setBatchWorking] = useState(false);
   const [batchProgress, setBatchProgress] = useState({ current: 0, total: 0 });
   const [batchResults, setBatchResults] = useState<{ name: string; ok: boolean; error?: string }[]>([]);
@@ -2022,16 +2156,62 @@ function ProductVideoSection() {
       }))))
       .catch(() => setError('Could not load your product list.'))
       .finally(() => setLoadingList(false));
+
+    fetch('/api/products?musicLibrary=true').then(r => r.json())
+      .then(data => setTracks(data.tracks || []))
+      .catch(() => {})
+      .finally(() => setLoadingTracks(false));
   }, []);
+
+  const saveTracks = async (next: MusicTrack[]) => {
+    setTracks(next);
+    try {
+      await fetch('/api/products?musicLibrary=true', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tracks: next }),
+      });
+    } catch { /* kept in local state even if the save call fails; next load will just miss it */ }
+  };
+
+  const handleAddTrack = async () => {
+    if (!newTrackFile || !newTrackName.trim()) { setTrackError('Pick a file and give it a name first.'); return; }
+    setTrackUploading(true); setTrackError('');
+    try {
+      const sig = await (await fetch('/api/products?cloudinarySign=true&resourceType=video')).json();
+      if (!sig.signature) throw new Error('Could not get an upload permission from the server.');
+      const form = new FormData();
+      form.append('file', newTrackFile);
+      form.append('api_key', sig.apiKey);
+      form.append('timestamp', String(sig.timestamp));
+      form.append('signature', sig.signature);
+      form.append('folder', sig.folder);
+      const r = await fetch(`https://api.cloudinary.com/v1_1/${sig.cloudName}/video/upload`, { method: 'POST', body: form });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok || !d.secure_url) throw new Error(d.error?.message || 'Upload failed');
+      const track: MusicTrack = { id: `${Date.now()}`, name: newTrackName.trim(), url: d.secure_url };
+      await saveTracks([...tracks, track]);
+      setNewTrackName(''); setNewTrackFile(null);
+      if (trackFileRef.current) trackFileRef.current.value = '';
+    } catch (e: any) {
+      setTrackError(e.message || 'Could not add this track');
+    } finally { setTrackUploading(false); }
+  };
+
+  const removeTrack = (id: string) => saveTracks(tracks.filter(t => t.id !== id));
+
+  const pickMusicUrl = (choice: string): string | null => {
+    if (choice === 'none' || tracks.length === 0) return null;
+    if (choice === 'random') return tracks[Math.floor(Math.random() * tracks.length)].url;
+    return tracks.find(t => t.id === choice)?.url || null;
+  };
 
   const filtered = products.filter(p => p.name.toLowerCase().includes(search.toLowerCase()));
   const priceOf = (p: VideoProduct) => { const v = Number(p.discountedPrice || p.originalPrice || 0); return v > 0 ? `₹${v}` : ''; };
 
-  const generateOne = async (p: VideoProduct, useStyle: VideoStyle) => {
+  const generateOne = async (p: VideoProduct, useStyle: VideoStyle, useGlitter: boolean, useArrow: boolean, musicUrl: string | null) => {
     if (!p.image) throw new Error('No image on this product');
     const { im, release } = await loadImageElement(p.image);
     try {
-      const blob = await recordProductVideo(im, useStyle, p.name, priceOf(p));
+      const blob = await recordProductVideo(im, useStyle, p.name, priceOf(p), useGlitter, useArrow, musicUrl);
       const safeName = p.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40) || 'product';
       const url = await uploadProductVideo(blob, `pv-${safeName}`);
       const putRes = await fetch('/api/products', {
@@ -2048,7 +2228,7 @@ function ProductVideoSection() {
     if (!p) return;
     setWorking(true); setError(''); setResultUrl('');
     try {
-      const url = await generateOne(p, style);
+      const url = await generateOne(p, style, glitter, arrow, pickMusicUrl(musicChoice));
       setResultUrl(url);
       setProducts(ps => ps.map(x => x._id === p._id ? { ...x, videoUrl: url } : x));
     } catch (e: any) {
@@ -2067,7 +2247,7 @@ function ProductVideoSection() {
     setBatchWorking(true); setBatchResults([]); setBatchProgress({ current: 0, total: list.length });
     const results: { name: string; ok: boolean; error?: string }[] = [];
     for (let i = 0; i < list.length; i++) {
-      try { await generateOne(list[i], batchStyle); results.push({ name: list[i].name, ok: true }); }
+      try { await generateOne(list[i], batchStyle, batchGlitter, batchArrow, pickMusicUrl(batchMusicChoice)); results.push({ name: list[i].name, ok: true }); }
       catch (e: any) { results.push({ name: list[i].name, ok: false, error: e.message }); }
       setBatchProgress({ current: i + 1, total: list.length });
       setBatchResults([...results]);
@@ -2076,7 +2256,7 @@ function ProductVideoSection() {
   };
 
   const StylePicker = ({ value, onChange, disabled }: { value: VideoStyle; onChange: (s: VideoStyle) => void; disabled?: boolean }) => (
-    <div className="grid grid-cols-3 gap-2">
+    <div className="grid grid-cols-2 gap-2">
       {VIDEO_STYLES.map(s => (
         <button key={s.id} type="button" disabled={disabled} onClick={() => onChange(s.id)}
           className={`text-left p-3 rounded-xl border-2 transition ${value === s.id ? 'border-[#FA5600] bg-orange-50' : 'border-gray-200 hover:border-gray-300'} disabled:opacity-50`}>
@@ -2087,17 +2267,83 @@ function ProductVideoSection() {
     </div>
   );
 
+  const EffectToggles = ({ glitterOn, setGlitterOn, arrowOn, setArrowOn, disabled }: {
+    glitterOn: boolean; setGlitterOn: (v: boolean) => void; arrowOn: boolean; setArrowOn: (v: boolean) => void; disabled?: boolean;
+  }) => (
+    <div className="flex gap-3">
+      <label className="flex-1 flex items-center gap-2 text-xs font-bold text-gray-700 border border-gray-200 rounded-xl px-3 py-2.5 cursor-pointer">
+        <input type="checkbox" checked={glitterOn} onChange={e => setGlitterOn(e.target.checked)} disabled={disabled} className="w-4 h-4 accent-[#FA5600]" />
+        ✨ Falling glitter
+      </label>
+      <label className="flex-1 flex items-center gap-2 text-xs font-bold text-gray-700 border border-gray-200 rounded-xl px-3 py-2.5 cursor-pointer">
+        <input type="checkbox" checked={arrowOn} onChange={e => setArrowOn(e.target.checked)} disabled={disabled} className="w-4 h-4 accent-[#FA5600]" />
+        ➘ Arrow at price
+      </label>
+    </div>
+  );
+
+  const MusicPicker = ({ value, onChange, disabled }: { value: string; onChange: (v: string) => void; disabled?: boolean }) => (
+    <div>
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-[10px] font-black uppercase tracking-widest text-gray-500">Music</span>
+        <button type="button" onClick={() => setShowMusicManager(v => !v)} className="text-[10px] font-black uppercase tracking-widest text-[#FA5600] hover:underline">
+          {showMusicManager ? 'Hide library' : 'Manage library'}
+        </button>
+      </div>
+      <select value={value} onChange={e => onChange(e.target.value)} disabled={disabled}
+        className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm disabled:opacity-50">
+        <option value="none">No music</option>
+        {tracks.length > 0 && <option value="random">🎲 Random from library</option>}
+        {tracks.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+      </select>
+      {tracks.length === 0 && !loadingTracks && <p className="text-[10px] text-gray-400 mt-1">No tracks yet — add some in "Manage library" below.</p>}
+    </div>
+  );
+
   return (
     <div className="space-y-4">
-      <SectionHeader icon={Video} title="Product Video" desc="Free 10-second animated videos made from your existing product photos" />
+      <SectionHeader icon={Video} title="Product Video" desc="Free animated videos made from your existing product photos" />
 
       <div className="bg-blue-50 border border-blue-200 rounded-2xl p-5 flex items-start gap-4">
         <div className="w-10 h-10 bg-blue-100 rounded-xl flex items-center justify-center shrink-0"><Video className="w-5 h-5 text-blue-600" /></div>
         <div className="flex-1">
-          <p className="text-sm font-black text-gray-800">Not AI-generated motion — animation of your real photo</p>
-          <p className="text-xs text-gray-500 mt-0.5">This doesn't invent new footage of the product. It takes the photo you already have and animates it (zoom, a gentle rock, or a light sweep) into a real 10-second MP4, saved as that product's video. Completely free — no AI video API involved.</p>
+          <p className="text-sm font-black text-gray-800">Animation of your real photo — plus your own music</p>
+          <p className="text-xs text-gray-500 mt-0.5">The visuals (zoom, rock, shine, pop-in, glitter, arrow) are all free and built-in. Music is different: we can't legally pick "royalty-free" songs on your behalf, so you upload your own tracks below — from YouTube Audio Library, Pixabay Music, or Incompetech, all genuinely free to use (check each track's specific license for any attribution it asks for).</p>
         </div>
       </div>
+
+      {showMusicManager && (
+        <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 space-y-3">
+          <p className="text-xs font-black uppercase tracking-widest text-gray-700">Music Library</p>
+          {loadingTracks ? (
+            <p className="text-xs text-gray-400">Loading...</p>
+          ) : tracks.length === 0 ? (
+            <p className="text-xs text-gray-400">No tracks added yet.</p>
+          ) : (
+            <div className="space-y-1.5">
+              {tracks.map(t => (
+                <div key={t.id} className="flex items-center gap-2 border border-gray-100 rounded-xl px-3 py-2">
+                  <span className="flex-1 text-xs font-bold text-gray-700 truncate">{t.name}</span>
+                  <audio src={t.url} controls className="h-7" style={{ maxWidth: 160 }} />
+                  <button onClick={() => removeTrack(t.id)} className="text-gray-400 hover:text-red-500 shrink-0"><Trash2 className="w-3.5 h-3.5" /></button>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="border-t border-gray-100 pt-3 space-y-2">
+            <p className="text-[10px] font-black uppercase tracking-widest text-gray-500">Add a track (MP3, your own free-license file)</p>
+            <input value={newTrackName} onChange={e => setNewTrackName(e.target.value)} placeholder="Track name (e.g. Upbeat Corporate)"
+              className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm" disabled={trackUploading} />
+            <input ref={trackFileRef} type="file" accept="audio/*" onChange={e => setNewTrackFile(e.target.files?.[0] || null)} disabled={trackUploading}
+              className="w-full text-xs" />
+            <button onClick={handleAddTrack} disabled={trackUploading || !newTrackFile || !newTrackName.trim()}
+              className="w-full py-2.5 bg-gray-800 text-white font-black uppercase tracking-widest text-xs rounded-xl hover:bg-gray-900 transition disabled:opacity-50 flex items-center justify-center gap-2">
+              {trackUploading ? (<><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Uploading...</>) : 'Add to Library'}
+            </button>
+            {trackError && <p className="text-[11px] text-red-500 font-bold">{trackError}</p>}
+          </div>
+        </div>
+      )}
 
       <div className="flex gap-2 bg-gray-100 rounded-xl p-1">
         <button onClick={() => setMode('individual')} className={`flex-1 flex items-center justify-center gap-1.5 text-xs font-black uppercase tracking-widest py-2.5 rounded-lg transition ${mode === 'individual' ? 'bg-white text-[#FA5600] shadow-sm' : 'text-gray-400 hover:text-gray-600'}`}>
@@ -2131,6 +2377,8 @@ function ProductVideoSection() {
           {selectedId && (
             <>
               <StylePicker value={style} onChange={setStyle} disabled={working} />
+              <EffectToggles glitterOn={glitter} setGlitterOn={setGlitter} arrowOn={arrow} setArrowOn={setArrow} disabled={working} />
+              <MusicPicker value={musicChoice} onChange={setMusicChoice} disabled={working} />
               <button onClick={handleGenerateIndividual} disabled={working}
                 className="w-full py-3 bg-[#FA5600] text-white font-black uppercase tracking-widest text-sm rounded-xl hover:bg-[#E04A00] transition flex items-center justify-center gap-2 disabled:opacity-50">
                 {working ? (<><RefreshCw className="w-4 h-4 animate-spin" /> Recording 10s video...</>) : (<><Video className="w-4 h-4" /> Generate & Save Video</>)}
@@ -2171,6 +2419,9 @@ function ProductVideoSection() {
           </div>
 
           <StylePicker value={batchStyle} onChange={setBatchStyle} disabled={batchWorking} />
+          <EffectToggles glitterOn={batchGlitter} setGlitterOn={setBatchGlitter} arrowOn={batchArrow} setArrowOn={setBatchArrow} disabled={batchWorking} />
+          <MusicPicker value={batchMusicChoice} onChange={setBatchMusicChoice} disabled={batchWorking} />
+          {batchMusicChoice === 'random' && <p className="text-[10px] text-gray-400 -mt-2">A different random track from your library is picked for each video.</p>}
 
           <button onClick={handleGenerateBatch} disabled={batchWorking || batchSelected.size === 0}
             className="w-full py-3 bg-[#FA5600] text-white font-black uppercase tracking-widest text-sm rounded-xl hover:bg-[#E04A00] transition flex items-center justify-center gap-2 disabled:opacity-50">
