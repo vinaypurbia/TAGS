@@ -195,6 +195,59 @@ export function EditProductForm() {
     setExistingImageUrls(updated);
   };
 
+  // ── Add a picture by link, or paste a copied picture (Ctrl+V) ──
+  const [imgLink, setImgLink] = useState('');
+  const [linkBusy, setLinkBusy] = useState(false);
+  const [imgMsg, setImgMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const addImageFromLink = async () => {
+    const link = imgLink.trim();
+    if (!link) return;
+    setLinkBusy(true); setImgMsg(null);
+    try {
+      const res = await fetch('/api/products?imageFromLink=true', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: link, name: formData.name || 'toy', clean: false }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.imageUrl) throw new Error(data.error || 'Could not use that link');
+      setExistingImageUrls(prev => [...prev, data.imageUrl]);
+      setImgLink('');
+      setImgMsg({ ok: true, text: 'Picture added — press Save Changes to keep it.' });
+    } catch (err: any) {
+      setImgMsg({ ok: false, text: err.message || 'Something went wrong' });
+    } finally {
+      setLinkBusy(false);
+    }
+  };
+
+  const addPastedImage = async (file: File) => {
+    const index = imageFiles.findIndex(f => !f);
+    if (index === -1) { setImgMsg({ ok: false, text: 'All 3 "Add New Images" slots are full — remove one first.' }); return; }
+    setCompressing(prev => { const n = [...prev]; n[index] = true; return n; });
+    try {
+      const result = await compressImage(file, { maxWidth: 800, maxHeight: 800, quality: 0.72, format: 'webp' });
+      const compressedFile = blobToFile(result.blob, 'pasted.webp', 'webp');
+      setImageFiles(prev => { const n = [...prev]; n[index] = compressedFile; return n; });
+      setImagePreviews(prev => { const n = [...prev]; n[index] = result.dataUrl; return n; });
+      setCompressionInfo(prev => { const n = [...prev]; n[index] = { originalKB: result.originalKB, compressedKB: result.compressedKB, savedPct: result.savedPct }; return n; });
+      setImgMsg({ ok: true, text: 'Pasted picture added — press Save Changes to keep it.' });
+    } catch {
+      setImgMsg({ ok: false, text: 'Could not read the pasted picture.' });
+    } finally {
+      setCompressing(prev => { const n = [...prev]; n[index] = false; return n; });
+    }
+  };
+
+  useEffect(() => {
+    const onPaste = (ev: ClipboardEvent) => {
+      const file = Array.from(ev.clipboardData?.items || []).find(i => i.kind === 'file' && i.type.startsWith('image/'))?.getAsFile();
+      if (file) { ev.preventDefault(); addPastedImage(file); }
+    };
+    window.addEventListener('paste', onPaste);
+    return () => window.removeEventListener('paste', onPaste);
+  }, [imageFiles]);
+
   const getEmbedUrl = (url: string): string | null => {
     if (!url) return null;
     const yt = url.match(/youtube\.com\/watch\?v=([\w-]+)/) || url.match(/youtu\.be\/([\w-]+)/) || url.match(/youtube\.com\/shorts\/([\w-]+)/);
@@ -428,6 +481,23 @@ export function EditProductForm() {
                       onChange={e => handleImageChange(index, e)} className="hidden" />
                   </div>
                 ))}
+              </div>
+
+              {/* Add by link / paste */}
+              <div className="mt-4 space-y-1.5">
+                <label className="block text-sm font-semibold text-gray-700">Add image by link</label>
+                <div className="flex gap-2">
+                  <input type="url" value={imgLink} onChange={ev => setImgLink(ev.target.value)} disabled={linkBusy}
+                    onKeyDown={ev => { if (ev.key === 'Enter') { ev.preventDefault(); addImageFromLink(); } }}
+                    placeholder="Paste an image link (or product page link)"
+                    className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400" />
+                  <button type="button" onClick={addImageFromLink} disabled={linkBusy || !imgLink.trim()}
+                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold rounded-lg disabled:opacity-50">
+                    {linkBusy ? 'Adding…' : 'Add'}
+                  </button>
+                </div>
+                <p className="text-xs text-gray-400">Or copy a picture anywhere and press <b>Ctrl+V</b> on this page to paste it into the next free slot above.</p>
+                {imgMsg && <p className={`text-xs font-semibold ${imgMsg.ok ? 'text-green-600' : 'text-red-500'}`}>{imgMsg.text}</p>}
               </div>
             </div>
 
