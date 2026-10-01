@@ -61,6 +61,10 @@ const roundedPrice = (value: string | number | undefined): number => {
 const fmt = (value: string | number | undefined): string =>
   `₹${roundedPrice(value).toLocaleString('en-IN')}`;
 
+// A video FILE (e.g. the animated .mp4 made in the Video section, hosted on Cloudinary) plays directly — it is not an embed link
+const isDirectVideo = (url: string): boolean =>
+  /\.(mp4|webm|mov|m4v)(\?|#|$)/i.test(url) || (/res\.cloudinary\.com/i.test(url) && /\/video\/upload\//i.test(url));
+
 const getEmbedUrl = (url: string): string | null => {
   if (!url) return null;
   const yt = url.match(/youtube\.com\/watch\?v=([\w-]+)/) || url.match(/youtu\.be\/([\w-]+)/) || url.match(/youtube\.com\/shorts\/([\w-]+)/);
@@ -182,7 +186,7 @@ function EditModal({
   const [uploading, setUploading] = useState(false);
   const [videoUrlError, setVideoUrlError] = useState('');
   const [embedUrl, setEmbedUrl] = useState<string | null>(
-    product.videoUrl ? getEmbedUrl(product.videoUrl) : null
+    product.videoUrl ? (getEmbedUrl(product.videoUrl) || (isDirectVideo(product.videoUrl) ? product.videoUrl : null)) : null
   );
   const [saveSuccess, setSaveSuccess] = useState(false);
   // Auto-expand if product already has images or video
@@ -289,8 +293,9 @@ function EditModal({
   const handlePreviewVideo = () => {
     const url = formData.videoUrl.trim();
     if (!url) { setVideoUrlError('Please enter a video URL first.'); return; }
-    const embed = getEmbedUrl(url);
-    if (!embed) { setVideoUrlError('Could not embed this URL. Supported: YouTube, Facebook, Instagram, TikTok.'); return; }
+    const embed = getEmbedUrl(url) || (isDirectVideo(url) ? url : null);
+    if (!embed) { setVideoUrlError('Could not embed this URL. Supported: YouTube, Facebook, Instagram, TikTok, or a direct video file (.mp4).'); return; }
+    setVideoUrlError('');
     setEmbedUrl(embed);
   };
 
@@ -306,7 +311,7 @@ function EditModal({
       alert('Please fill in Name, Category and Original Price.');
       return;
     }
-    if (formData.videoUrl && !getEmbedUrl(formData.videoUrl)) {
+    if (formData.videoUrl && !getEmbedUrl(formData.videoUrl) && !isDirectVideo(formData.videoUrl)) {
       setVideoUrlError('Could not embed this URL.');
       return;
     }
@@ -531,7 +536,7 @@ function EditModal({
                   </label>
                   <div className="flex gap-2">
                     <input type="url" name="videoUrl" value={formData.videoUrl} onChange={handleChange}
-                      placeholder="YouTube, Facebook, Instagram or TikTok..."
+                      placeholder="YouTube, Facebook, Instagram, TikTok or a video file (.mp4)..."
                       className={`flex-1 border-2 rounded-xl p-3 text-sm font-bold outline-none transition ${videoUrlError ? 'border-red-400' : 'border-gray-200 focus:border-[#FA5600]'}`} />
                     <button onClick={handlePreviewVideo}
                       className="shrink-0 bg-gray-100 hover:bg-[#FA5600] hover:text-white text-gray-600 text-xs font-black px-3 rounded-xl transition uppercase tracking-widest">
@@ -545,11 +550,15 @@ function EditModal({
                         <span>📺 Preview</span>
                         <button onClick={() => { setEmbedUrl(null); setFormData(f => ({ ...f, videoUrl: '' })); }} className="text-gray-400 hover:text-white">✕</button>
                       </div>
-                      <div className="relative w-full" style={{ paddingTop: '56.25%' }}>
-                        <iframe src={embedUrl} className="absolute top-0 left-0 w-full h-full"
-                          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                          allowFullScreen frameBorder="0" />
-                      </div>
+                      {isDirectVideo(embedUrl) ? (
+                        <video src={embedUrl} controls loop playsInline className="w-full max-h-[420px] bg-black" />
+                      ) : (
+                        <div className="relative w-full" style={{ paddingTop: '56.25%' }}>
+                          <iframe src={embedUrl} className="absolute top-0 left-0 w-full h-full"
+                            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                            allowFullScreen frameBorder="0" />
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
