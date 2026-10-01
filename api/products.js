@@ -101,7 +101,7 @@ async function extractInvoiceItems(buffer, mimeType) {
     `  "imagePrompt": string        // a detailed visual description of the item for generating a matching product photo if no real photo is available: colors, shape, material, packaging, visible text/branding\n` +
     `}\n\n` +
     `Rules:\n` +
-    `- name: the product name as written, cleaned up (title case, no SKU/item codes)\n` +
+    `- name: the product name as written, cleaned up (title case, no SKU/item codes). Leave out wholesaler words that are not part of the product's name, such as BULK, VIDEO, CARTOON, BOXED, WHOLESALE, and remove brackets that only held those words\n` +
     `- quantity: the ordered quantity as a plain number\n` +
     `- unitCost: the per-unit cost in the invoice's currency, as a plain number (no symbol, no commas)\n` +
     `- Skip subtotal, tax, discount, shipping and total lines — only real product line items\n` +
@@ -117,7 +117,7 @@ async function extractInvoiceItems(buffer, mimeType) {
   return items
     .filter(it => it && typeof it.name === 'string' && it.name.trim())
     .map(it => ({
-      name: it.name.trim(),
+      name: cleanInvoiceName(it.name),
       quantity: Number.isFinite(it.quantity) ? it.quantity : null,
       unitCost: Number.isFinite(it.unitCost) ? it.unitCost : null,
       description: typeof it.description === 'string' ? it.description.trim() : '',
@@ -125,6 +125,24 @@ async function extractInvoiceItems(buffer, mimeType) {
       photoBox: it.photoBox || null,
       imagePrompt: typeof it.imagePrompt === 'string' ? it.imagePrompt.trim() : '',
     }));
+}
+
+// Wholesaler words on the invoice that are not part of the product's real name (e.g. "SMALL TRAIN (VIDEO)(BULK)").
+// Edit this list to add more. Matching is case-insensitive on whole words.
+const INVOICE_NAME_NOISE = ['bulk', 'video', 'videos', 'cartoon', 'cartoons', 'boxed', 'wholesale', 'lot', 'pkt'];
+function cleanInvoiceName(raw) {
+  const noise = new RegExp(`\\b(?:${INVOICE_NAME_NOISE.join('|')})\\b`, 'gi');
+  let n = String(raw || '')
+    .replace(/\(([^)]*)\)/g, (m, inner) => (inner.replace(noise, '').replace(/[\s,\-–/&+]+/g, '') === '' ? ' ' : m)) // drop brackets that held only noise words, e.g. (BULK)
+    .replace(noise, ' ')                       // drop remaining noise words
+    .replace(/\(\s*\)/g, ' ')                  // leftover empty brackets
+    .replace(/\s*([(\[])\s*/g, ' $1').replace(/\s+([)\]])/g, '$1')
+    .replace(/\s{2,}/g, ' ')
+    .replace(/^[\s,\-–/&+]+|[\s,\-–/&+]+$/g, '') // stray punctuation at the ends
+    .trim();
+  // Title case (keeps codes like A-07 and 3D upper-case)
+  n = n.split(' ').map(w => /\d/.test(w) ? w.toUpperCase() : w.replace(/[A-Za-z]+/g, p => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase())).join(' ');
+  return n || String(raw || '').trim(); // never end up with an empty name
 }
 
 // Crop the item's real photo straight out of the invoice image (pure JS, no native deps)
