@@ -1920,11 +1920,14 @@ function drawProductVideoFrame(
 
   const iw = img.naturalWidth || img.width, ih = img.naturalHeight || img.height;
   const coverScale = Math.max(W / iw, H / ih);
-  // Never stretch the real product more than 1.5x its native resolution — beyond that it looks
-  // pixelated. If the photo is too small to cover the frame at that cap, a softly blurred, full-bleed
-  // copy fills the background instead (the same trick Instagram Stories uses for small/odd-shaped photos).
-  const baseScale = Math.min(coverScale, 1.5);
-  if (coverScale > 1.5) {
+  // Fill the frame normally (as before) for any photo of reasonable resolution — this was over-capped
+  // previously, which left normal product photos looking small with excess blurred padding around them.
+  // The cap now only kicks in for genuinely tiny source photos (under ~400px), where filling the frame
+  // outright really would look blocky even with smoothing — those get a blurred full-bleed backdrop
+  // behind a less-stretched foreground instead, the same trick Instagram Stories uses for small photos.
+  const CAP = 2.5;
+  const baseScale = Math.min(coverScale, CAP);
+  if (coverScale > CAP) {
     ctx.save();
     ctx.filter = 'blur(28px) brightness(0.9)';
     ctx.translate(W / 2, H / 2);
@@ -2251,9 +2254,20 @@ function ProductVideoSection() {
   const filtered = products.filter(p => p.name.toLowerCase().includes(search.toLowerCase()));
   const priceOf = (p: VideoProduct) => { const v = Number(p.discountedPrice || p.originalPrice || 0); return v > 0 ? `₹${v}` : ''; };
 
+  // Whatever transformation happens to be baked into the stored image URL (e.g. a small thumbnail
+  // crop) is stripped, then a large, best-quality version is requested fresh from Cloudinary's
+  // original master file — so it can't matter which size/quality variant was actually stored.
+  const highQualityImageUrl = (url: string): string => {
+    if (!url.includes('res.cloudinary.com') || !url.includes('/upload/')) return url;
+    const stripped = url
+      .replace(/\/upload\/(?:[^/]+\/)*?(v\d+\/)/, '/upload/$1')
+      .replace(/\/upload\/[^/]+\/(?!v\d)/, '/upload/');
+    return stripped.replace('/upload/', '/upload/q_auto:best,f_auto,w_1400,c_limit/');
+  };
+
   const generateOne = async (p: VideoProduct, useStyle: VideoStyle, useGlitter: boolean, musicUrl: string | null) => {
     if (!p.image) throw new Error('No image on this product');
-    const { im, release } = await loadImageElement(p.image);
+    const { im, release } = await loadImageElement(highQualityImageUrl(p.image));
     try {
       const blob = await recordProductVideo(im, useStyle, p.name, p.description || '', useGlitter, musicUrl);
       const safeName = p.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40) || 'product';
