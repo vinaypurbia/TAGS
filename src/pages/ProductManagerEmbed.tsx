@@ -192,6 +192,64 @@ function EditModal({
 
   const imageInputRefs = [useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null)];
 
+  // ── Add a picture by link, or paste a copied picture (Ctrl+V) ──
+  const [imgLink, setImgLink] = useState('');
+  const [linkBusy, setLinkBusy] = useState(false);
+  const [imgMsg, setImgMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const addImageFromLink = async () => {
+    const link = imgLink.trim();
+    if (!link) return;
+    setLinkBusy(true); setImgMsg(null);
+    try {
+      const res = await fetch('/api/products?imageFromLink=true', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: link, name: formData.name || 'toy', clean: false }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.imageUrl) throw new Error(data.error || 'Could not use that link');
+      setExistingImageUrls(prev => [...prev, data.imageUrl]);
+      setImgLink(''); setShowMore(true);
+      setImgMsg({ ok: true, text: 'Picture added — press Save to keep it.' });
+    } catch (e: any) {
+      setImgMsg({ ok: false, text: e.message || 'Something went wrong' });
+    } finally {
+      setLinkBusy(false);
+    }
+  };
+
+  // Shrink big screenshots before they are uploaded on Save
+  const shrinkPasted = (file: File): Promise<File> => new Promise(resolve => {
+    const url = URL.createObjectURL(file); const img = new Image();
+    img.onload = () => {
+      const scale = Math.min(1, 1600 / Math.max(img.naturalWidth, img.naturalHeight));
+      const c = document.createElement('canvas'); c.width = Math.round(img.naturalWidth * scale); c.height = Math.round(img.naturalHeight * scale);
+      c.getContext('2d')!.drawImage(img, 0, 0, c.width, c.height); URL.revokeObjectURL(url);
+      c.toBlob(b => resolve(b ? new File([b], 'pasted.jpg', { type: 'image/jpeg' }) : file), 'image/jpeg', 0.9);
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); resolve(file); };
+    img.src = url;
+  });
+
+  const addPastedImage = async (file: File) => {
+    const slot = imageFiles.findIndex(f => !f);
+    if (slot === -1) { setImgMsg({ ok: false, text: 'All 3 "Add New Images" slots are full — remove one first.' }); return; }
+    const small = await shrinkPasted(file);
+    setImageFiles(prev => { const n = [...prev]; n[slot] = small; return n; });
+    setImagePreviews(prev => { const n = [...prev]; n[slot] = URL.createObjectURL(small); return n; });
+    setShowMore(true);
+    setImgMsg({ ok: true, text: 'Pasted picture added — press Save to keep it.' });
+  };
+
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent) => {
+      const file = Array.from(e.clipboardData?.items || []).find(i => i.kind === 'file' && i.type.startsWith('image/'))?.getAsFile();
+      if (file) { e.preventDefault(); addPastedImage(file); }
+    };
+    window.addEventListener('paste', onPaste);
+    return () => window.removeEventListener('paste', onPaste);
+  }, [imageFiles]);
+
   const parentCategories = categories.filter((c: any) => !c.parentId);
 
   useEffect(() => {
@@ -447,6 +505,23 @@ function EditModal({
                     ))}
                   </div>
                   <p className="text-[10px] text-gray-400 mt-1.5">⭐ First image is main display image</p>
+
+                  {/* Add by link / paste */}
+                  <div className="mt-3 space-y-1.5">
+                    <label className="block text-[10px] font-black uppercase tracking-widest text-gray-500">Add image by link</label>
+                    <div className="flex gap-2">
+                      <input type="url" value={imgLink} onChange={e => setImgLink(e.target.value)} disabled={linkBusy}
+                        onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addImageFromLink(); } }}
+                        placeholder="Paste an image link (or product page link)"
+                        className="flex-1 border-2 border-gray-200 focus:border-[#FA5600] rounded-xl px-3 py-2 text-xs font-bold outline-none transition" />
+                      <button type="button" onClick={addImageFromLink} disabled={linkBusy || !imgLink.trim()}
+                        className="px-3 py-2 bg-[#FA5600] text-white text-[10px] font-black uppercase tracking-widest rounded-xl disabled:opacity-50">
+                        {linkBusy ? 'Adding…' : 'Add'}
+                      </button>
+                    </div>
+                    <p className="text-[10px] text-gray-400">Or copy a picture anywhere and press <b>Ctrl+V</b> in this window to paste it into the next free slot above.</p>
+                    {imgMsg && <p className={`text-[11px] font-bold ${imgMsg.ok ? 'text-green-600' : 'text-red-500'}`}>{imgMsg.text}</p>}
+                  </div>
                 </div>
 
                 {/* Video URL */}
