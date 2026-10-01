@@ -1020,6 +1020,7 @@ export default async function handler(req, res) {
     const dbClient = await getClient();
     const db = dbClient.db('tagsdb');
     const collection = db.collection('products');
+    const appSettings = db.collection('appSettings');
     const inventory = db.collection('inventory');
     // Referenced only when a product's name/sku changes, to cascade that
     // change into any purchase orders / sales that reference this product (see PUT)
@@ -1050,6 +1051,26 @@ export default async function handler(req, res) {
         const now = new Date();
         await shareLog.insertMany(ids.map(id => ({ productId: id, channel: String(channel || 'unknown'), sharedAt: now })));
         return res.status(200).json({ ok: true, recorded: ids.length });
+      }
+    }
+
+    // ── Music library for Product Videos — GET/POST /api/products?musicLibrary=true ────────────
+    // The admin uploads their OWN royalty-free tracks here (YouTube Audio Library, Pixabay Music,
+    // Incompetech, etc.) — nothing is bundled or guessed on our end, since getting a license wrong
+    // is a real risk we're not going to take on the admin's behalf.
+    if (req.query.musicLibrary === 'true') {
+      if (req.method === 'GET') {
+        const doc = await appSettings.findOne({ _id: 'musicLibrary' });
+        return res.status(200).json({ tracks: doc?.tracks || [] });
+      }
+      if (req.method === 'POST') {
+        const { tracks } = req.body || {};
+        if (!Array.isArray(tracks)) return res.status(400).json({ error: 'tracks must be an array' });
+        const clean = tracks
+          .filter(t => t && t.url)
+          .map(t => ({ id: String(t.id || t.url), name: String(t.name || 'Untitled track').slice(0, 80), url: String(t.url) }));
+        await appSettings.updateOne({ _id: 'musicLibrary' }, { $set: { tracks: clean, updatedAt: new Date() } }, { upsert: true });
+        return res.status(200).json({ success: true, tracks: clean });
       }
     }
 
