@@ -5,6 +5,10 @@ import { ArrowLeft, ShoppingBag, Check, Star, ChevronLeft, ChevronRight, ZoomIn 
 import { cn } from '../lib/utils';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
+// A video FILE (e.g. the animated .mp4 made in the admin Video section, hosted on Cloudinary) plays directly in a <video> tag
+const isDirectVideo = (url: string): boolean =>
+  /\.(mp4|webm|mov|m4v)(\?|#|$)/i.test(url) || (/res\.cloudinary\.com/i.test(url) && /\/video\/upload\//i.test(url));
+
 const getEmbedUrl = (url: string): string | null => {
   if (!url) return null;
   const yt = url.match(/youtube\.com\/watch\?v=([\w-]+)/)
@@ -177,7 +181,10 @@ export function ProductDetail() {
     : product.image                ? [product.image]
     : [];
 
-  const embedUrl = product.videoUrl ? getEmbedUrl(product.videoUrl) : null;
+  // Either an embeddable link (YouTube etc.) or a direct video file
+  const embedUrl = product.videoUrl
+    ? (getEmbedUrl(product.videoUrl) || (isDirectVideo(product.videoUrl) ? product.videoUrl : null))
+    : null;
 
   const slides: { type: 'image' | 'video'; src: string }[] = [
     ...allImages.map(src => ({ type: 'image' as const, src })),
@@ -268,9 +275,15 @@ export function ProductDetail() {
 
                 {slides[selectedIdx]?.type === 'video' && (
                   <div className="relative w-full h-full">
-                    <iframe src={slides[selectedIdx].src} className="absolute inset-0 w-full h-full"
-                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                      allowFullScreen frameBorder="0" />
+                    {isDirectVideo(slides[selectedIdx].src) ? (
+                      <video key={slides[selectedIdx].src} src={slides[selectedIdx].src} poster={allImages[0]}
+                        className="absolute inset-0 w-full h-full object-contain bg-white"
+                        controls autoPlay muted loop playsInline preload="metadata" />
+                    ) : (
+                      <iframe src={slides[selectedIdx].src} className="absolute inset-0 w-full h-full"
+                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                        allowFullScreen frameBorder="0" />
+                    )}
                   </div>
                 )}
 
