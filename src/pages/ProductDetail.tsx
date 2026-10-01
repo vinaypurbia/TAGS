@@ -3,6 +3,7 @@ import { useCart } from '../context/CartContext';
 import { useState, useEffect, useRef } from 'react';
 import { ArrowLeft, ShoppingBag, Check, Star, ChevronLeft, ChevronRight, ZoomIn } from 'lucide-react';
 import { cn } from '../lib/utils';
+import MarketPrices from '../components/MarketPrices';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 const getEmbedUrl = (url: string): string | null => {
@@ -357,6 +358,8 @@ export function ProductDetail() {
                 </>
               )}
             </div>
+
+            <MarketPrices marketPrices={product.marketPrices} ourPrice={Number(displayPrice)} variant="detail" />
 
             <div className="border border-[#25D366]/30 rounded-xl bg-[#25D366]/5 divide-x divide-[#25D366]/20 flex overflow-hidden">
               {perks.map((perk, i) => (
