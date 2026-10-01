@@ -3,6 +3,7 @@ import { useSearchParams, Link } from 'react-router-dom';
 import { useCart } from '../context/CartContext';
 import { ChevronRight, Check, SlidersHorizontal, X, ChevronDown, ChevronUp } from 'lucide-react';
 import { cn } from '../lib/utils';
+import MarketPrices from '../components/MarketPrices';
 
 const PAGE_SIZE = 20;
 
@@ -703,6 +704,7 @@ export function Catalog() {
                                 : '✓ Avail'}
                             </span>
                           </div>
+                          <MarketPrices marketPrices={product.marketPrices} ourPrice={displayPrice} />
                           <button
                             onClick={e => handleAddItem(e, { ...product, id })}
                             disabled={isRecentlyAdded || isOutOfStock}
