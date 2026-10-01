@@ -96,6 +96,10 @@ export function AddProductFormEmbed() {
     if (imageInputRefs[index].current) imageInputRefs[index].current!.value = '';
   };
 
+  // A video FILE (e.g. the animated .mp4 made in the admin Video section, hosted on Cloudinary) plays directly — it is not an embed link
+  const isDirectVideo = (url: string): boolean =>
+    /\.(mp4|webm|mov|m4v)(\?|#|$)/i.test(url) || (/res\.cloudinary\.com/i.test(url) && /\/video\/upload\//i.test(url));
+
   const getEmbedUrl = (url: string): string | null => {
     if (!url) return null;
     const ytMatch =
@@ -117,17 +121,19 @@ export function AddProductFormEmbed() {
     if (url.includes('facebook.com') || url.includes('fb.watch')) return { label: 'Facebook', icon: '📘' };
     if (url.includes('instagram.com')) return { label: 'Instagram', icon: '📸' };
     if (url.includes('tiktok.com')) return { label: 'TikTok', icon: '🎵' };
+    if (isDirectVideo(url)) return { label: 'Video file', icon: '🎬' };
     return null;
   };
 
   const handlePreviewVideo = () => {
     const url = formData.videoUrl.trim();
     if (!url) { setVideoUrlError('Please enter a video URL first.'); return; }
-    const embed = getEmbedUrl(url);
+    const embed = getEmbedUrl(url) || (isDirectVideo(url) ? url : null);
     if (!embed) {
-      setVideoUrlError('Could not embed this URL. Supported: YouTube, Facebook, Instagram, TikTok.');
+      setVideoUrlError('Could not embed this URL. Supported: YouTube, Facebook, Instagram, TikTok, or a direct video file (.mp4).');
       return;
     }
+    setVideoUrlError('');
     setEmbedUrl(embed);
   };
 
@@ -147,8 +153,8 @@ export function AddProductFormEmbed() {
       alert('Please fill in Name, Category and Original Price.');
       return;
     }
-    if (formData.videoUrl && !getEmbedUrl(formData.videoUrl)) {
-      setVideoUrlError('Could not embed this URL. Supported: YouTube, Facebook, Instagram, TikTok.');
+    if (formData.videoUrl && !getEmbedUrl(formData.videoUrl) && !isDirectVideo(formData.videoUrl)) {
+      setVideoUrlError('Could not embed this URL. Supported: YouTube, Facebook, Instagram, TikTok, or a direct video file (.mp4).');
       return;
     }
 
@@ -380,7 +386,7 @@ export function AddProductFormEmbed() {
           <div className="flex gap-2">
             <div className="relative flex-1">
               <input type="url" name="videoUrl" value={formData.videoUrl} onChange={handleChange}
-                placeholder="Paste a YouTube, Facebook, Instagram or TikTok link..."
+                placeholder="Paste a YouTube, Facebook, Instagram, TikTok link or a video file (.mp4)..."
                 className={`block w-full border rounded-lg p-3 pr-32 focus:ring-2 focus:ring-blue-500 outline-none ${videoUrlError ? 'border-red-400' : 'border-gray-300'}`} />
               {detectedPlatform && (
                 <span className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-1 bg-gray-100 text-gray-600 text-xs font-medium px-2 py-1 rounded-full pointer-events-none">
@@ -406,11 +412,15 @@ export function AddProductFormEmbed() {
                 <button onClick={() => { setEmbedUrl(null); setFormData(f => ({ ...f, videoUrl: '' })); }}
                   className="text-gray-400 hover:text-white ml-4">✕ Remove</button>
               </div>
-              <div className="relative w-full" style={{ paddingTop: '56.25%' }}>
-                <iframe src={embedUrl} className="absolute top-0 left-0 w-full h-full"
-                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                  allowFullScreen frameBorder="0" />
-              </div>
+              {isDirectVideo(embedUrl) ? (
+                <video src={embedUrl} controls loop playsInline className="w-full max-h-[420px] bg-black" />
+              ) : (
+                <div className="relative w-full" style={{ paddingTop: '56.25%' }}>
+                  <iframe src={embedUrl} className="absolute top-0 left-0 w-full h-full"
+                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                    allowFullScreen frameBorder="0" />
+                </div>
+              )}
             </div>
           )}
         </div>
