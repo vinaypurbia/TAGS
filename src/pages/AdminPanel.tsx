@@ -1930,9 +1930,23 @@ function drawProductVideoFrame(
   ctx.clearRect(0, 0, W, H);
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, W, H);
+  ctx.imageSmoothingEnabled = true;
+  (ctx as any).imageSmoothingQuality = 'high'; // browsers default to low-quality resampling otherwise
 
   const iw = img.naturalWidth || img.width, ih = img.naturalHeight || img.height;
-  const baseScale = Math.max(W / iw, H / ih);
+  const coverScale = Math.max(W / iw, H / ih);
+  // Never stretch the real product more than 1.5x its native resolution — beyond that it looks
+  // pixelated. If the photo is too small to cover the frame at that cap, a softly blurred, full-bleed
+  // copy fills the background instead (the same trick Instagram Stories uses for small/odd-shaped photos).
+  const baseScale = Math.min(coverScale, 1.5);
+  if (coverScale > 1.5) {
+    ctx.save();
+    ctx.filter = 'blur(28px) brightness(0.9)';
+    ctx.translate(W / 2, H / 2);
+    ctx.scale(coverScale * 1.08, coverScale * 1.08); // slightly over-cover so the blur softens right to the edges
+    ctx.drawImage(img, -iw / 2, -ih / 2, iw, ih);
+    ctx.restore();
+  }
   const e = easeInOut(t);
 
   // "Zoom Appear": held invisible for a beat, then pops to full size with a spring overshoot —
