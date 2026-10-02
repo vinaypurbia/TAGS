@@ -284,6 +284,21 @@ export function ProductDetail() {
                         allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
                         allowFullScreen frameBorder="0" />
                     )}
+                    {/* Live price badge — reads straight from the product's current price, same as the
+                        price shown below. Unlike text baked into the video file, this always matches
+                        the real price with zero video regeneration needed when it changes. */}
+                    {displayPrice > 0 && (
+                      <div className="absolute top-3 left-3 flex items-center gap-2 pointer-events-none">
+                        <span className="bg-white/95 backdrop-blur-sm text-gray-900 text-base font-black px-3 py-1.5 rounded-full shadow-lg">
+                          &#8377;{Number(displayPrice).toLocaleString('en-IN')}
+                        </span>
+                        {hasDiscount && (
+                          <span className="bg-[#FA5600] text-white text-xs font-black px-2.5 py-1.5 rounded-full shadow-lg">
+                            -{discountPct}%
+                          </span>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
 
