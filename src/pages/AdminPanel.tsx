@@ -1907,10 +1907,13 @@ function drawGlitter(ctx: CanvasRenderingContext2D, W: number, H: number, t: num
 
 
 // Draws one frame (t = 0..1 progress through the clip) for the given style.
+type VideoTextStyle = { textColor: string; bgColor: string; fontFamily: string };
+const DEFAULT_TEXT_STYLE: VideoTextStyle = { textColor: '#1a1a1a', bgColor: '#ffffff', fontFamily: 'system-ui, sans-serif' };
+
 function drawProductVideoFrame(
   ctx: CanvasRenderingContext2D, img: HTMLImageElement, style: VideoStyle, t: number,
   W: number, H: number, name: string, description: string,
-  glitter: boolean,
+  glitter: boolean, textStyle: VideoTextStyle = DEFAULT_TEXT_STYLE,
 ) {
   ctx.clearRect(0, 0, W, H);
   ctx.fillStyle = '#ffffff';
@@ -1997,7 +2000,7 @@ function drawProductVideoFrame(
     const alpha = Math.min(1, np * 2.2);
 
     const label = name.length > 30 ? name.slice(0, 30) + '…' : name;
-    ctx.font = `800 ${Math.round(W * 0.062)}px system-ui, sans-serif`;
+    ctx.font = `800 ${Math.round(W * 0.062)}px ${textStyle.fontFamily}`;
     const textW = ctx.measureText(label).width;
     const padX = W * 0.045, padY = H * 0.022;
     const pillW = textW + padX * 2, pillH = H * 0.09;
@@ -2005,7 +2008,7 @@ function drawProductVideoFrame(
 
     ctx.save();
     ctx.globalAlpha = alpha * 0.92;
-    ctx.fillStyle = '#ffffff';
+    ctx.fillStyle = textStyle.bgColor;
     ctx.shadowColor = 'rgba(0,0,0,0.25)'; ctx.shadowBlur = 18; ctx.shadowOffsetY = 6;
     const r = pillH / 2;
     ctx.beginPath();
@@ -2020,7 +2023,7 @@ function drawProductVideoFrame(
 
     ctx.save();
     ctx.globalAlpha = alpha;
-    ctx.fillStyle = '#1a1a1a';
+    ctx.fillStyle = textStyle.textColor;
     ctx.textBaseline = 'middle';
     ctx.textAlign = 'center';
     ctx.fillText(label, W / 2, pillY + pillH / 2 + padY * 0.1);
@@ -2034,7 +2037,7 @@ function drawProductVideoFrame(
     const slide = (1 - Math.min(1, dp * 1.4)) * 20;
     const label = description.length > 54 ? description.slice(0, 54) + '…' : description;
 
-    ctx.font = `600 ${Math.round(W * 0.028)}px system-ui, sans-serif`;
+    ctx.font = `600 ${Math.round(W * 0.028)}px ${textStyle.fontFamily}`;
     const textW = ctx.measureText(label).width;
     const padX = W * 0.03, padY = H * 0.014;
     const pillW = textW + padX * 2, pillH = H * 0.05;
@@ -2044,7 +2047,7 @@ function drawProductVideoFrame(
     // legible regardless of how busy the photo underneath it is.
     ctx.save();
     ctx.globalAlpha = alpha * 0.85;
-    ctx.fillStyle = '#1a1a1a';
+    ctx.fillStyle = textStyle.textColor;
     const r = pillH / 2;
     ctx.beginPath();
     ctx.moveTo(pillX + r, pillY);
@@ -2058,7 +2061,7 @@ function drawProductVideoFrame(
 
     ctx.save();
     ctx.globalAlpha = alpha;
-    ctx.fillStyle = '#ffffff';
+    ctx.fillStyle = textStyle.bgColor;
     ctx.textBaseline = 'middle';
     ctx.textAlign = 'center';
     ctx.fillText(label, W / 2, pillY + pillH / 2 + padY * 0.1);
@@ -2108,7 +2111,7 @@ async function buildMusicSource(ctx: AudioContext, destination: AudioNode, url: 
 // mixing in a music track and/or the synthesized pop sound effect (for the "Zoom Appear" style).
 function recordProductVideo(
   img: HTMLImageElement, style: VideoStyle, name: string, description: string,
-  glitter: boolean, musicUrl: string | null,
+  glitter: boolean, musicUrl: string | null, textStyle: VideoTextStyle = DEFAULT_TEXT_STYLE,
 ): Promise<Blob> {
   return new Promise(async (resolve, reject) => {
     const canvas = document.createElement('canvas');
@@ -2150,7 +2153,7 @@ function recordProductVideo(
     let raf = 0;
     const frame = (now: number) => {
       const t = Math.min(1, (now - t0) / (PRODUCT_VIDEO_DURATION_S * 1000));
-      drawProductVideoFrame(ctx, img, style, t, PRODUCT_VIDEO_SIZE, PRODUCT_VIDEO_SIZE, name, description, glitter);
+      drawProductVideoFrame(ctx, img, style, t, PRODUCT_VIDEO_SIZE, PRODUCT_VIDEO_SIZE, name, description, glitter, textStyle);
       if (t < 1) raf = requestAnimationFrame(frame);
       else rec.stop();
     };
@@ -2183,6 +2186,14 @@ async function uploadProductVideo(blob: Blob, baseName: string): Promise<string>
 
 type VideoProduct = { _id: string; name: string; image: string; description?: string; videoUrl?: string; discountedPrice?: number; originalPrice?: number };
 
+const FONT_OPTIONS = [
+  { label: 'Default (Clean)',  value: 'system-ui, sans-serif' },
+  { label: 'Bold Poster',      value: 'Impact, sans-serif' },
+  { label: 'Playful',          value: '"Comic Sans MS", cursive, sans-serif' },
+  { label: 'Classic Serif',    value: 'Georgia, serif' },
+  { label: 'Friendly Rounded', value: '"Trebuchet MS", sans-serif' },
+];
+
 function ProductVideoSection() {
   const [mode, setMode] = useState<'individual' | 'batch'>('individual');
   const [products, setProducts] = useState<VideoProduct[]>([]);
@@ -2201,6 +2212,11 @@ function ProductVideoSection() {
   const [selectedId, setSelectedId] = useState('');
   const [style, setStyle] = useState<VideoStyle>('zoom');
   const [glitter, setGlitter] = useState(false);
+  const [nameOverride, setNameOverride] = useState('');
+  const [captionOverride, setCaptionOverride] = useState('');
+  const [textColor, setTextColor] = useState(DEFAULT_TEXT_STYLE.textColor);
+  const [bgColor, setBgColor] = useState(DEFAULT_TEXT_STYLE.bgColor);
+  const [fontFamily, setFontFamily] = useState(DEFAULT_TEXT_STYLE.fontFamily);
   const [musicChoice, setMusicChoice] = useState<string>('none'); // 'none' | 'random' | track.id
   const [working, setWorking] = useState(false);
   const [resultUrl, setResultUrl] = useState('');
@@ -2209,6 +2225,10 @@ function ProductVideoSection() {
   const [batchSelected, setBatchSelected] = useState<Set<string>>(new Set());
   const [batchStyle, setBatchStyle] = useState<VideoStyle>('zoom');
   const [batchGlitter, setBatchGlitter] = useState(false);
+  const [batchCaptionOverride, setBatchCaptionOverride] = useState(''); // blank = use each product's own description
+  const [batchTextColor, setBatchTextColor] = useState(DEFAULT_TEXT_STYLE.textColor);
+  const [batchBgColor, setBatchBgColor] = useState(DEFAULT_TEXT_STYLE.bgColor);
+  const [batchFontFamily, setBatchFontFamily] = useState(DEFAULT_TEXT_STYLE.fontFamily);
   const [batchMusicChoice, setBatchMusicChoice] = useState<string>('none'); // 'none' | 'random' | track.id
   const [batchWorking, setBatchWorking] = useState(false);
   const [batchProgress, setBatchProgress] = useState({ current: 0, total: 0 });
@@ -2286,11 +2306,14 @@ function ProductVideoSection() {
     return stripped.replace('/upload/', '/upload/q_auto:best,f_auto,w_1400,c_limit/');
   };
 
-  const generateOne = async (p: VideoProduct, useStyle: VideoStyle, useGlitter: boolean, musicUrl: string | null) => {
+  const generateOne = async (
+    p: VideoProduct, useStyle: VideoStyle, useGlitter: boolean, musicUrl: string | null,
+    videoName: string, videoCaption: string, style_: VideoTextStyle,
+  ) => {
     if (!p.image) throw new Error('No image on this product');
     const { im, release } = await loadImageElement(highQualityImageUrl(p.image));
     try {
-      const blob = await recordProductVideo(im, useStyle, p.name, p.description || '', useGlitter, musicUrl);
+      const blob = await recordProductVideo(im, useStyle, videoName, videoCaption, useGlitter, musicUrl, style_);
       const safeName = p.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40) || 'product';
       const url = await uploadProductVideo(blob, `pv-${safeName}`);
       const putRes = await fetch('/api/products', {
@@ -2307,7 +2330,7 @@ function ProductVideoSection() {
     if (!p) return;
     setWorking(true); setError(''); setResultUrl('');
     try {
-      const url = await generateOne(p, style, glitter, pickMusicUrl(musicChoice));
+      const url = await generateOne(p, style, glitter, pickMusicUrl(musicChoice), nameOverride.trim() || p.name, captionOverride, { textColor, bgColor, fontFamily });
       setResultUrl(url);
       setProducts(ps => ps.map(x => x._id === p._id ? { ...x, videoUrl: url } : x));
     } catch (e: any) {
@@ -2326,7 +2349,14 @@ function ProductVideoSection() {
     setBatchWorking(true); setBatchResults([]); setBatchProgress({ current: 0, total: list.length });
     const results: { name: string; ok: boolean; error?: string }[] = [];
     for (let i = 0; i < list.length; i++) {
-      try { await generateOne(list[i], batchStyle, batchGlitter, pickMusicUrl(batchMusicChoice)); results.push({ name: list[i].name, ok: true }); }
+      try {
+        await generateOne(
+          list[i], batchStyle, batchGlitter, pickMusicUrl(batchMusicChoice),
+          list[i].name, batchCaptionOverride.trim() || (list[i].description || ''),
+          { textColor: batchTextColor, bgColor: batchBgColor, fontFamily: batchFontFamily },
+        );
+        results.push({ name: list[i].name, ok: true });
+      }
       catch (e: any) { results.push({ name: list[i].name, ok: false, error: e.message }); }
       setBatchProgress({ current: i + 1, total: list.length });
       setBatchResults([...results]);
@@ -2370,6 +2400,31 @@ function ProductVideoSection() {
         {tracks.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
       </select>
       {tracks.length === 0 && !loadingTracks && <p className="text-[10px] text-gray-400 mt-1">No tracks yet — add some in "Manage library" below.</p>}
+    </div>
+  );
+
+  const StyleCustomizer = ({ tColor, setTColor, bColor, setBColor, font, setFont, disabled }: {
+    tColor: string; setTColor: (v: string) => void; bColor: string; setBColor: (v: string) => void;
+    font: string; setFont: (v: string) => void; disabled?: boolean;
+  }) => (
+    <div className="grid grid-cols-3 gap-2">
+      <div>
+        <label className="text-[10px] font-black uppercase tracking-widest text-gray-500 block mb-1">Text Color</label>
+        <input type="color" value={tColor} onChange={e => setTColor(e.target.value)} disabled={disabled}
+          className="w-full h-9 rounded-lg border border-gray-200 cursor-pointer disabled:opacity-50" />
+      </div>
+      <div>
+        <label className="text-[10px] font-black uppercase tracking-widest text-gray-500 block mb-1">Pill Color</label>
+        <input type="color" value={bColor} onChange={e => setBColor(e.target.value)} disabled={disabled}
+          className="w-full h-9 rounded-lg border border-gray-200 cursor-pointer disabled:opacity-50" />
+      </div>
+      <div className="col-span-1">
+        <label className="text-[10px] font-black uppercase tracking-widest text-gray-500 block mb-1">Font</label>
+        <select value={font} onChange={e => setFont(e.target.value)} disabled={disabled}
+          className="w-full h-9 border border-gray-200 rounded-lg px-1.5 text-xs disabled:opacity-50">
+          {FONT_OPTIONS.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}
+        </select>
+      </div>
     </div>
   );
 
@@ -2437,7 +2492,7 @@ function ProductVideoSection() {
           <div className="max-h-56 overflow-y-auto divide-y divide-gray-100 border border-gray-100 rounded-xl">
             {filtered.slice(0, 200).map(p => (
               <label key={p._id} className="flex items-center gap-3 px-3 py-2 text-xs font-bold text-gray-700 cursor-pointer hover:bg-gray-50">
-                <input type="radio" name="pv-pick" checked={selectedId === p._id} onChange={() => { setSelectedId(p._id); setResultUrl(''); setError(''); }} className="w-4 h-4 accent-[#FA5600]" />
+                <input type="radio" name="pv-pick" checked={selectedId === p._id} onChange={() => { setSelectedId(p._id); setResultUrl(''); setError(''); setNameOverride(p.name); setCaptionOverride(p.description || ''); }} className="w-4 h-4 accent-[#FA5600]" />
                 <div className="w-9 h-9 rounded-lg bg-gray-50 border border-gray-100 shrink-0 overflow-hidden flex items-center justify-center">
                   {p.image ? <img src={p.image} alt="" className="w-full h-full object-cover" /> : <Package className="w-4 h-4 text-gray-300" />}
                 </div>
@@ -2449,8 +2504,19 @@ function ProductVideoSection() {
 
           {selectedId && (
             <>
+              <div>
+                <label className="text-[10px] font-black uppercase tracking-widest text-gray-500 block mb-1">Name shown in video</label>
+                <input value={nameOverride} onChange={e => setNameOverride(e.target.value)} disabled={working}
+                  placeholder="Product name" className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm disabled:opacity-50" />
+              </div>
+              <div>
+                <label className="text-[10px] font-black uppercase tracking-widest text-gray-500 block mb-1">Caption (optional)</label>
+                <input value={captionOverride} onChange={e => setCaptionOverride(e.target.value)} disabled={working}
+                  placeholder="A short line under the name — leave blank for none" className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm disabled:opacity-50" />
+              </div>
               <StylePicker value={style} onChange={setStyle} disabled={working} />
               <EffectToggles glitterOn={glitter} setGlitterOn={setGlitter} disabled={working} />
+              <StyleCustomizer tColor={textColor} setTColor={setTextColor} bColor={bgColor} setBColor={setBgColor} font={fontFamily} setFont={setFontFamily} disabled={working} />
               <MusicPicker value={musicChoice} onChange={setMusicChoice} disabled={working} />
               <button onClick={handleGenerateIndividual} disabled={working}
                 className="w-full py-3 bg-[#FA5600] text-white font-black uppercase tracking-widest text-sm rounded-xl hover:bg-[#E04A00] transition flex items-center justify-center gap-2 disabled:opacity-50">
@@ -2491,7 +2557,14 @@ function ProductVideoSection() {
             ))}
           </div>
 
+          <div>
+            <label className="text-[10px] font-black uppercase tracking-widest text-gray-500 block mb-1">Caption for all videos (optional)</label>
+            <input value={batchCaptionOverride} onChange={e => setBatchCaptionOverride(e.target.value)} disabled={batchWorking}
+              placeholder="e.g. New Arrival! — leave blank to use each product's own description" className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm disabled:opacity-50" />
+            <p className="text-[10px] text-gray-400 mt-1">Each video still shows its own product name — only the caption line can be shared across the batch.</p>
+          </div>
           <StylePicker value={batchStyle} onChange={setBatchStyle} disabled={batchWorking} />
+          <StyleCustomizer tColor={batchTextColor} setTColor={setBatchTextColor} bColor={batchBgColor} setBColor={setBatchBgColor} font={batchFontFamily} setFont={setBatchFontFamily} disabled={batchWorking} />
           <EffectToggles glitterOn={batchGlitter} setGlitterOn={setBatchGlitter} disabled={batchWorking} />
           <MusicPicker value={batchMusicChoice} onChange={setBatchMusicChoice} disabled={batchWorking} />
           {batchMusicChoice === 'random' && <p className="text-[10px] text-gray-400 -mt-2">A different random track from your library is picked for each video.</p>}
