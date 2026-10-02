@@ -2034,13 +2034,34 @@ function drawProductVideoFrame(
     const slide = (1 - Math.min(1, dp * 1.4)) * 20;
     const label = description.length > 54 ? description.slice(0, 54) + '…' : description;
 
+    ctx.font = `600 ${Math.round(W * 0.028)}px system-ui, sans-serif`;
+    const textW = ctx.measureText(label).width;
+    const padX = W * 0.03, padY = H * 0.014;
+    const pillW = textW + padX * 2, pillH = H * 0.05;
+    const pillX = (W - pillW) / 2, pillY = H * 0.86 + slide;
+
+    // Solid backdrop behind the description, same treatment as the name pill, so it's always
+    // legible regardless of how busy the photo underneath it is.
     ctx.save();
     ctx.globalAlpha = alpha * 0.85;
+    ctx.fillStyle = '#1a1a1a';
+    const r = pillH / 2;
+    ctx.beginPath();
+    ctx.moveTo(pillX + r, pillY);
+    ctx.arcTo(pillX + pillW, pillY, pillX + pillW, pillY + pillH, r);
+    ctx.arcTo(pillX + pillW, pillY + pillH, pillX, pillY + pillH, r);
+    ctx.arcTo(pillX, pillY + pillH, pillX, pillY, r);
+    ctx.arcTo(pillX, pillY, pillX + pillW, pillY, r);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+
+    ctx.save();
+    ctx.globalAlpha = alpha;
     ctx.fillStyle = '#ffffff';
-    ctx.font = `500 ${Math.round(W * 0.028)}px system-ui, sans-serif`;
+    ctx.textBaseline = 'middle';
     ctx.textAlign = 'center';
-    ctx.shadowColor = 'rgba(0,0,0,0.55)'; ctx.shadowBlur = 8;
-    ctx.fillText(label, W / 2, H * 0.885 + slide);
+    ctx.fillText(label, W / 2, pillY + pillH / 2 + padY * 0.1);
     ctx.restore();
     ctx.textAlign = 'left';
   }
