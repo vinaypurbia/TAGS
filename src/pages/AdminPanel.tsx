@@ -2278,6 +2278,19 @@ async function uploadProductVideo(blob: Blob, baseName: string): Promise<string>
   return mp4Url;
 }
 
+// The customer-facing catalog treats imageUrls[0] as a product's main picture. These admin tools used to
+// read `image` first, which still holds the OLD photo after a picture is changed — so they kept using it.
+// Same order as the catalog: imageUrls → imageUrl → image → images.
+const productImageList = (p: any): string[] => {
+  const out: string[] = [];
+  const add = (u: any) => { const v = typeof u === 'string' ? u.trim() : ''; if (v && !out.includes(v)) out.push(v); };
+  if (Array.isArray(p?.imageUrls)) p.imageUrls.forEach(add);
+  add(p?.imageUrl);
+  add(p?.image);
+  if (Array.isArray(p?.images)) p.images.forEach(add);
+  return out;
+};
+
 type VideoProduct = { _id: string; name: string; image: string; description?: string; category?: string; videoUrl?: string; discountedPrice?: number; originalPrice?: number };
 
 const FONT_OPTIONS = [
@@ -2332,15 +2345,28 @@ function ProductVideoSection() {
   const [batchResults, setBatchResults] = useState<{ name: string; ok: boolean; error?: string }[]>([]);
 
   useEffect(() => {
-    fetch('/api/products?adminView=true&limit=1000')
-      .then(r => r.json())
-      .then(data => setProducts((data.products || []).map((p: any) => ({
-        _id: p._id, name: p.name || '(no name)', image: p.image || p.imageUrl || '',
-        description: p.description || '', category: p.category || '', videoUrl: p.videoUrl || '',
-        discountedPrice: p.discountedPrice, originalPrice: p.originalPrice,
-      }))))
-      .catch(() => setError('Could not load your product list.'))
-      .finally(() => setLoadingList(false));
+    // The API returns at most 100 products per request, so page through all of them
+    // (a single limit=1000 call silently dropped everything past the first 100).
+    (async () => {
+      try {
+        let all: any[] = [];
+        let page = 1;
+        let hasMore = true;
+        while (hasMore && page <= 60) {
+          const r = await fetch(`/api/products?page=${page}&limit=100&adminView=true`, { cache: 'no-store' });
+          const d = await r.json();
+          all = all.concat(d.products || []);
+          hasMore = !!d.hasMore;
+          page++;
+        }
+        setProducts(all.map((p: any) => ({
+          _id: p._id, name: p.name || '(no name)', image: productImageList(p)[0] || '',
+          description: p.description || '', category: p.category || '', videoUrl: p.videoUrl || '',
+          discountedPrice: p.discountedPrice, originalPrice: p.originalPrice,
+        })));
+      } catch { setError('Could not load your product list.'); }
+      finally { setLoadingList(false); }
+    })();
 
     fetch('/api/products?musicLibrary=true').then(r => r.json())
       .then(data => setTracks(data.tracks || []))
@@ -3912,6 +3938,8 @@ type OnShared = (ids: string[], channel: string) => void;
 const RECENT_SHARE_DAYS = 15;
 const SHARE_CHANNEL_LABELS: Record<string, string> = {
   whatsapp: 'WhatsApp', 'whatsapp-status': 'WhatsApp Status', telegram: 'Telegram', instagram: 'Instagram story', facebook: 'Facebook story',
+  'whatsapp-video': 'WhatsApp video', 'telegram-video': 'Telegram video', 'instagram-reel': 'Instagram Reel', 'facebook-reel': 'Facebook Reel',
+  'instagram-video-story': 'Instagram video story', 'facebook-video-story': 'Facebook video story',
 };
 
 // calendar-day difference (0 = today), in the viewer's local time
@@ -5079,6 +5107,277 @@ function BulkWhatsAppModal({ items, onClose, guard, onShared }: { items: BulkIte
   );
 }
 
+// ── Video sharing: WhatsApp, Telegram, Instagram/Facebook Reels, Instagram/Facebook video stories ──
+type VidTarget = 'whatsapp' | 'telegram' | 'instagram_reel' | 'facebook_reel' | 'instagram_story' | 'facebook_story';
+type VidState = { state: 'idle' | 'working' | 'ok' | 'error'; text?: string };
+const VIDEO_CHANNEL: Record<VidTarget, string> = {
+  whatsapp: 'whatsapp-video', telegram: 'telegram-video', instagram_reel: 'instagram-reel',
+  facebook_reel: 'facebook-reel', instagram_story: 'instagram-video-story', facebook_story: 'facebook-video-story',
+};
+const IDLE_VID: Record<VidTarget, VidState> = {
+  whatsapp: { state: 'idle' }, telegram: { state: 'idle' }, instagram_reel: { state: 'idle' },
+  facebook_reel: { state: 'idle' }, instagram_story: { state: 'idle' }, facebook_story: { state: 'idle' },
+};
+const MAX_VIDEO_MB = 100;   // Cloudinary's direct-upload limit on most plans
+const sleepMs = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+// XMLHttpRequest (not fetch) so upload progress can be shown. The file goes straight to Cloudinary,
+// never through the Vercel function, so its ~4.5MB body limit doesn't apply.
+const uploadVideoFile = (file: File, onPct: (n: number) => void): Promise<string> => new Promise(async (resolve, reject) => {
+  try {
+    const sig = await (await fetch('/api/products?cloudinarySign=true&resourceType=video')).json();
+    if (!sig.signature) throw new Error('Could not get an upload permission from the server.');
+    const form = new FormData();
+    form.append('file', file);
+    form.append('api_key', sig.apiKey);
+    form.append('timestamp', String(sig.timestamp));
+    form.append('signature', sig.signature);
+    form.append('folder', sig.folder);
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `https://api.cloudinary.com/v1_1/${sig.cloudName}/video/upload`);
+    xhr.upload.onprogress = (ev) => { if (ev.lengthComputable) onPct(Math.round((ev.loaded / ev.total) * 100)); };
+    xhr.onload = () => {
+      try {
+        const data = JSON.parse(xhr.responseText);
+        if (xhr.status >= 200 && xhr.status < 300 && data.secure_url) resolve(data.secure_url);
+        else reject(new Error(data.error?.message || 'Cloudinary upload failed.'));
+      } catch { reject(new Error('Cloudinary returned an unexpected response.')); }
+    };
+    xhr.onerror = () => reject(new Error('Upload failed — check your connection.'));
+    xhr.send(form);
+  } catch (e: any) { reject(e); }
+});
+
+async function videoApi(body: any) {
+  const r = await fetch('/api/products', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.error || `Request failed (${r.status})`);
+  return d;
+}
+
+function VideoSharePanel({ product, caption, guard, onShared }: {
+  product: any; caption: string; guard: ShareGuard; onShared: OnShared;
+}) {
+  const [file, setFile]             = useState<File | null>(null);
+  const [previewUrl, setPreviewUrl] = useState('');
+  const [duration, setDuration]     = useState<number | null>(null);
+  const [uploadPct, setUploadPct]   = useState<number | null>(null);
+  const [fileError, setFileError]   = useState('');
+  const [status, setStatus]         = useState<Record<VidTarget, VidState>>(IDLE_VID);
+  const [waLink, setWaLink]         = useState('');
+  const uploaded = useRef<{ file: File; url: string } | null>(null);
+  const derived  = useRef<{ meta?: string; plain?: string }>({});
+  const busy = Object.values(status).some(s => s.state === 'working');
+  const tooShort = duration !== null && duration < 3;
+  const productId = String(product._id);
+
+  useEffect(() => () => { if (previewUrl) URL.revokeObjectURL(previewUrl); }, [previewUrl]);
+
+  const setTarget = (t: VidTarget, s: VidState) => setStatus(prev => ({ ...prev, [t]: s }));
+
+  const pickFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    e.target.value = '';
+    if (!f) return;
+    if (!f.type.startsWith('video/')) { setFileError('That file is not a video.'); return; }
+    if (f.size > MAX_VIDEO_MB * 1024 * 1024) { setFileError(`That video is ${(f.size / 1048576).toFixed(0)} MB. The limit is ${MAX_VIDEO_MB} MB — trim or compress it first.`); return; }
+    setFileError(''); setDuration(null); setWaLink(''); setStatus(IDLE_VID);
+    uploaded.current = null; derived.current = {};
+    setFile(f); setPreviewUrl(URL.createObjectURL(f));
+  };
+  const clearFile = () => {
+    setFile(null); setPreviewUrl(''); setDuration(null); setFileError(''); setWaLink(''); setStatus(IDLE_VID);
+    uploaded.current = null; derived.current = {};
+  };
+
+  const ensureUploaded = async (): Promise<string> => {
+    if (!file) throw new Error('Choose a video first.');
+    if (uploaded.current?.file === file) return uploaded.current.url;
+    setUploadPct(0);
+    try {
+      const url = await uploadVideoFile(file, setUploadPct);
+      uploaded.current = { file, url };
+      return url;
+    } finally { setUploadPct(null); }
+  };
+
+  // Asks Cloudinary for an MP4 copy (9:16 for Meta, original shape for Telegram) and waits until it exists
+  const prepare = async (kind: 'meta' | 'plain', original: string, report: (t: string) => void): Promise<string> => {
+    if (derived.current[kind]) return derived.current[kind]!;
+    for (let i = 0; i < 45; i++) {
+      const d = await videoApi({ videoAction: 'prepare', videoUrl: original, kind });
+      if (d.error) throw new Error(d.error);
+      if (d.ready) { derived.current[kind] = d.url; return d.url; }
+      report('Converting the video…');
+      await sleepMs(4000);
+    }
+    throw new Error('Converting the video is taking too long — try a shorter or smaller video.');
+  };
+
+  const runMeta = async (target: 'instagram_reel' | 'facebook_reel' | 'instagram_story' | 'facebook_story') => {
+    setTarget(target, { state: 'working', text: 'Uploading…' });
+    try {
+      const original = await ensureUploaded();
+      const url = await prepare('meta', original, t => setTarget(target, { state: 'working', text: t }));
+      setTarget(target, { state: 'working', text: 'Sending…' });
+      const started = await videoApi({ videoAction: 'start', target, videoUrl: url, caption: igCaptionText(caption) });
+      let ready = false;
+      for (let i = 0; i < 70 && !ready; i++) {
+        await sleepMs(3000);
+        const s = await videoApi({ videoAction: 'status', target, containerId: started.containerId, videoId: started.videoId });
+        if (s.state === 'error') throw new Error(`Rejected: ${s.detail || 'unknown reason'}`);
+        if (s.state === 'ready') ready = true;
+        else setTarget(target, { state: 'working', text: 'Processing…' });
+      }
+      if (!ready) throw new Error('Still processing after 3½ minutes — check the app in a few minutes before trying again.');
+      if (target.startsWith('instagram')) {
+        setTarget(target, { state: 'working', text: 'Publishing…' });
+        await videoApi({ videoAction: 'publish', target, containerId: started.containerId });
+      }
+      setTarget(target, { state: 'ok', text: 'Posted!' });
+      onShared([productId], VIDEO_CHANNEL[target]);
+    } catch (e: any) { setTarget(target, { state: 'error', text: e.message || 'Failed' }); }
+  };
+
+  const runTelegram = async () => {
+    setTarget('telegram', { state: 'working', text: 'Uploading…' });
+    try {
+      const original = await ensureUploaded();
+      const url = await prepare('plain', original, t => setTarget('telegram', { state: 'working', text: t }));
+      setTarget('telegram', { state: 'working', text: 'Posting…' });
+      await videoApi({ videoAction: 'telegram', videoUrl: url, caption });
+      setTarget('telegram', { state: 'ok', text: 'Posted to channel!' });
+      onShared([productId], VIDEO_CHANNEL.telegram);
+    } catch (e: any) { setTarget('telegram', { state: 'error', text: e.message || 'Failed' }); }
+  };
+
+  // WhatsApp has no posting API. Phone: native share sheet with the video attached.
+  // Desktop: upload, then open WhatsApp with the caption plus a link to the video.
+  const runWhatsApp = async () => {
+    setWaLink('');
+    setTarget('whatsapp', { state: 'working', text: 'Opening…' });
+    try {
+      if (file && isMobileDevice() && navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], text: waLinkText(caption) });
+        setTarget('whatsapp', { state: 'ok', text: 'Shared!' });
+        onShared([productId], VIDEO_CHANNEL.whatsapp);
+        return;
+      }
+      setTarget('whatsapp', { state: 'working', text: 'Uploading…' });
+      const original = await ensureUploaded();
+      const link = `https://wa.me/?text=${encodeURIComponent(`${waLinkText(caption)}\n\n▶ Watch the video:\n${original}`)}`;
+      setWaLink(link);
+      window.open(link, '_blank');
+      setTarget('whatsapp', { state: 'ok', text: 'WhatsApp opened with a link to the video' });
+      onShared([productId], VIDEO_CHANNEL.whatsapp);
+    } catch (e: any) {
+      if (e?.name === 'AbortError') setTarget('whatsapp', { state: 'idle' });
+      else setTarget('whatsapp', { state: 'error', text: e.message || 'Failed' });
+    }
+  };
+
+  const go = (t: VidTarget) => {
+    if (!file || busy) return;
+    guard([productId], () => {
+      if (t === 'whatsapp') runWhatsApp();
+      else if (t === 'telegram') runTelegram();
+      else runMeta(t);
+    });
+  };
+
+  const storyWarn = duration !== null && duration > 60;
+  const reelWarn  = duration !== null && duration > 90;
+
+  const renderBtn = ({ t, label, sub, cls }: { t: VidTarget; label: string; sub: string; cls: string }) => {
+    const s = status[t];
+    return (
+      <div key={t}>
+        <button onClick={() => go(t)} disabled={!file || busy || (t !== 'whatsapp' && t !== 'telegram' && tooShort)}
+          className={`w-full flex flex-col items-center justify-center font-black py-3 rounded-xl transition-all shadow-sm text-xs uppercase tracking-widest disabled:opacity-40 ${
+            s.state === 'ok' ? 'bg-green-500 text-white' : cls
+          }`}>
+          <span className="flex items-center gap-2">
+            {s.state === 'working' && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
+            {s.state === 'ok' && <Check className="w-4 h-4" />}
+            {label}
+          </span>
+          <span className="text-[9px] font-bold normal-case tracking-normal opacity-80 mt-0.5">
+            {s.state === 'working' || s.state === 'ok' ? s.text : sub}
+          </span>
+        </button>
+        {s.state === 'error' && <p className="text-[10px] font-bold text-red-500 mt-1 leading-snug">{s.text}</p>}
+      </div>
+    );
+  };
+
+  return (
+    <div className="p-4 space-y-4">
+      {!file ? (
+        <label className="flex flex-col items-center justify-center gap-1 border-2 border-dashed border-gray-300 text-gray-500 font-black py-6 rounded-xl hover:border-[#FA5600] hover:text-[#FA5600] transition cursor-pointer text-xs uppercase tracking-widest">
+          <span className="flex items-center gap-2"><Upload className="w-4 h-4" /> Choose a video from your device</span>
+          <span className="text-[9px] font-bold normal-case tracking-normal text-gray-400">MP4 or MOV · up to {MAX_VIDEO_MB} MB · vertical 9:16 works best</span>
+          <input type="file" accept="video/*" onChange={pickFile} className="hidden" />
+        </label>
+      ) : (
+        <div className="space-y-2">
+          <div className="flex items-center gap-3">
+            <video src={previewUrl} controls playsInline preload="metadata"
+              onLoadedMetadata={e => setDuration(e.currentTarget.duration)}
+              className="w-24 h-32 rounded-lg object-contain bg-black shrink-0" />
+            <div className="flex-1 min-w-0">
+              <p className="text-xs font-black text-gray-800 truncate">{file.name}</p>
+              <p className="text-[10px] text-gray-400 font-bold">
+                {(file.size / 1048576).toFixed(1)} MB{duration !== null ? ` · ${Math.round(duration)}s` : ''}
+              </p>
+              {uploadPct !== null && (
+                <div className="mt-2">
+                  <div className="w-full h-1.5 bg-gray-100 rounded-full overflow-hidden"><div className="h-full bg-[#FA5600] transition-all" style={{ width: `${uploadPct}%` }} /></div>
+                  <p className="text-[10px] font-bold text-gray-400 mt-1">Uploading {uploadPct}%</p>
+                </div>
+              )}
+            </div>
+            {!busy && <button onClick={clearFile} className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-400 shrink-0"><X className="w-4 h-4" /></button>}
+          </div>
+          {tooShort && <p className="text-[10px] font-bold text-red-500">Instagram and Facebook need at least 3 seconds of video.</p>}
+          {reelWarn && <p className="text-[10px] font-bold text-yellow-600">Over 90 seconds — Facebook Reels may reject it. Instagram usually accepts longer.</p>}
+          {storyWarn && !reelWarn && <p className="text-[10px] font-bold text-yellow-600">Over 60 seconds — video stories may be rejected. Reels are fine.</p>}
+          {storyWarn && reelWarn && <p className="text-[10px] font-bold text-yellow-600">Over 60 seconds — video stories may be rejected.</p>}
+        </div>
+      )}
+      {fileError && <p className="text-[11px] font-bold text-red-500">{fileError}</p>}
+
+      <div className="space-y-3">
+        <div>
+          <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-1.5">Chat apps</p>
+          <div className="grid grid-cols-2 gap-2">
+            {renderBtn({ t: 'whatsapp', label: 'WhatsApp', sub: isMobileDevice() ? 'Share sheet with the video' : 'Caption + link to video', cls: 'bg-[#25D366] hover:bg-[#20bd5a] text-white' })}
+            {renderBtn({ t: 'telegram', label: 'Telegram', sub: 'Post to channel', cls: 'bg-[#2AABEE] hover:bg-[#229ED9] text-white' })}
+          </div>
+          {waLink && <a href={waLink} target="_blank" rel="noopener noreferrer" className="block mt-1.5 text-[10px] font-black text-[#25D366] underline">Didn't open? Tap here to open WhatsApp</a>}
+        </div>
+        <div>
+          <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-1.5">Feed — posted as a Reel</p>
+          <div className="grid grid-cols-2 gap-2">
+            {renderBtn({ t: 'instagram_reel', label: 'Instagram', sub: 'Reel + feed', cls: 'bg-gradient-to-r from-[#F58529] via-[#DD2A7B] to-[#8134AF] hover:opacity-90 text-white' })}
+            {renderBtn({ t: 'facebook_reel', label: 'Facebook', sub: 'Reel on your Page', cls: 'bg-[#1877F2] hover:bg-[#1568d6] text-white' })}
+          </div>
+        </div>
+        <div>
+          <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-1.5">Stories</p>
+          <div className="grid grid-cols-2 gap-2">
+            {renderBtn({ t: 'instagram_story', label: 'Instagram', sub: 'Video story', cls: 'bg-gradient-to-r from-[#F58529] via-[#DD2A7B] to-[#8134AF] hover:opacity-90 text-white' })}
+            {renderBtn({ t: 'facebook_story', label: 'Facebook', sub: 'Video story', cls: 'bg-[#1877F2] hover:bg-[#1568d6] text-white' })}
+          </div>
+        </div>
+      </div>
+      <p className="text-[9px] text-gray-400 font-semibold leading-relaxed">
+        The caption comes from the Message Post tab — edit it there first. Videos are converted to vertical 9:16 MP4 for Reels and stories (black bars are added, nothing is cropped).
+        Reels and stories can take a minute or two to process, so keep this tab open until it says Posted.
+      </p>
+    </div>
+  );
+}
+
 // ── Broadcast Section ──────────────────────────────────────────────────────
 function BroadcastSection() {
   const [products, setProducts]             = useState<any[]>([]);
@@ -5106,14 +5405,7 @@ function BroadcastSection() {
   const [fbPostSending, setFbPostSending]     = useState(false);
   const [fbPostSuccess, setFbPostSuccess]     = useState(false);
 
-  // Facebook feed video (uploaded straight to Cloudinary from the browser, then posted as the feed item)
-  const [fbVideoFile, setFbVideoFile]         = useState<File | null>(null);
-  const [fbVideoPreviewUrl, setFbVideoPreviewUrl] = useState('');
-  const [fbVideoUploadPct, setFbVideoUploadPct]   = useState<number | null>(null);
-  const [fbVideoPosting, setFbVideoPosting]       = useState(false);
-  const [fbVideoSuccess, setFbVideoSuccess]       = useState(false);
-  const [fbVideoError, setFbVideoError]           = useState('');
-  const [rightTab, setRightTab]           = useState<'message' | 'story'>('message');
+  const [rightTab, setRightTab]           = useState<'message' | 'story' | 'video'>('message');
   const [showBulkWA, setShowBulkWA]         = useState(false);
 
   // Share history: which products were broadcast, when, and where (stored on the server so it's the same on every device)
@@ -5210,11 +5502,7 @@ function BroadcastSection() {
   };
 
   const getProductImages = (p: any): string[] => {
-    const imgs: string[] = [];
-    if (p.image) imgs.push(p.image);
-    if (p.imageUrl && p.imageUrl !== p.image) imgs.push(p.imageUrl);
-    if (Array.isArray(p.images)) p.images.forEach((img: string) => { if (img && !imgs.includes(img)) imgs.push(img); });
-    return imgs;
+    return productImageList(p);
   };
 
   const filtered = products.filter(p => {
@@ -5384,88 +5672,6 @@ function BroadcastSection() {
   const handleFacebookPost = () => {
     if (!preview) return;
     guard([String(preview._id)], () => { sendFacebookPost(); });
-  };
-
-  // ── Facebook feed video: pick a file, upload it straight to Cloudinary, then post it ──
-  const handleVideoFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    e.target.value = '';   // lets the same file be picked again later
-    if (!file) return;
-    if (!file.type.startsWith('video/')) { setFbVideoError('That file is not a video.'); return; }
-    if (fbVideoPreviewUrl) URL.revokeObjectURL(fbVideoPreviewUrl);
-    setFbVideoFile(file);
-    setFbVideoPreviewUrl(URL.createObjectURL(file));
-    setFbVideoError('');
-    setFbVideoSuccess(false);
-  };
-
-  const clearVideo = () => {
-    if (fbVideoPreviewUrl) URL.revokeObjectURL(fbVideoPreviewUrl);
-    setFbVideoFile(null);
-    setFbVideoPreviewUrl('');
-    setFbVideoUploadPct(null);
-    setFbVideoError('');
-  };
-
-  // XMLHttpRequest (not fetch) so upload progress can be shown — the file goes straight to
-  // Cloudinary, never through the Vercel function, so its ~4.5MB body limit doesn't apply.
-  const uploadVideoToCloudinary = (file: File): Promise<string> => new Promise(async (resolve, reject) => {
-    try {
-      const sigRes = await fetch('/api/products?cloudinarySign=true&resourceType=video');
-      const sig = await sigRes.json();
-      if (!sig.signature) throw new Error('Could not get an upload permission from the server.');
-      const form = new FormData();
-      form.append('file', file);
-      form.append('api_key', sig.apiKey);
-      form.append('timestamp', String(sig.timestamp));
-      form.append('signature', sig.signature);
-      form.append('folder', sig.folder);
-      const xhr = new XMLHttpRequest();
-      xhr.open('POST', `https://api.cloudinary.com/v1_1/${sig.cloudName}/video/upload`);
-      xhr.upload.onprogress = (ev) => { if (ev.lengthComputable) setFbVideoUploadPct(Math.round((ev.loaded / ev.total) * 100)); };
-      xhr.onload = () => {
-        try {
-          const data = JSON.parse(xhr.responseText);
-          if (xhr.status >= 200 && xhr.status < 300 && data.secure_url) resolve(data.secure_url);
-          else reject(new Error(data.error?.message || 'Cloudinary upload failed.'));
-        } catch { reject(new Error('Cloudinary returned an unexpected response.')); }
-      };
-      xhr.onerror = () => reject(new Error('Upload failed — check your connection.'));
-      xhr.send(form);
-    } catch (e: any) { reject(e); }
-  });
-
-  const doPostFacebookVideo = async () => {
-    if (!preview || !fbVideoFile) return;
-    setFbVideoPosting(true);
-    setFbVideoError('');
-    setFbVideoSuccess(false);
-    setFbVideoUploadPct(0);
-    try {
-      const videoUrl = await uploadVideoToCloudinary(fbVideoFile);
-      const allImages = getProductImages(preview);
-      const thumbUrl  = allImages[selectedImageIndex] || allImages[0] || '';
-      const res = await fetch('/api/products', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ facebookVideoPost: true, videoUrl, caption: igCaptionText(customMsg), thumbUrl }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to post video');
-      recordShare([String(preview._id)], 'facebook');
-      setFbVideoSuccess(true);
-      setTimeout(() => { setFbVideoSuccess(false); clearVideo(); }, 4000);
-    } catch (err: any) {
-      setFbVideoError(err.message || 'Something went wrong.');
-    } finally {
-      setFbVideoPosting(false);
-      setFbVideoUploadPct(null);
-    }
-  };
-
-  const handlePostFacebookVideo = () => {
-    if (!preview || !fbVideoFile) return;
-    guard([String(preview._id)], () => { doPostFacebookVideo(); });
   };
 
   // ── Multi-select batch Telegram ────────────────────────────────────────
@@ -5684,8 +5890,8 @@ function BroadcastSection() {
                   </button>
                   {/* Thumbnail — click to preview */}
                   <button onClick={() => selectPreview(p)} className="w-12 h-12 rounded-lg overflow-hidden bg-gray-100 shrink-0 border border-gray-200 hover:border-[#FA5600] transition">
-                    {p.image || p.imageUrl ? (
-                      <img src={p.image || p.imageUrl} alt={p.name} className="w-full h-full object-cover"/>
+                    {productImageList(p)[0] ? (
+                      <img src={productImageList(p)[0]} alt={p.name} className="w-full h-full object-cover"/>
                     ) : (
                       <div className="w-full h-full flex items-center justify-center text-gray-300"><Package className="w-5 h-5"/></div>
                     )}
@@ -5766,7 +5972,7 @@ function BroadcastSection() {
 
                 {/* Tabs: Message vs Story */}
                 <div className="px-4 py-3 border-b border-gray-100 flex gap-2">
-                  {([['message', 'Message Post'], ['story', 'Story']] as const).map(([id, label]) => (
+                  {([['message', 'Message Post'], ['story', 'Story'], ['video', 'Video']] as const).map(([id, label]) => (
                     <button key={id} onClick={() => setRightTab(id)}
                       className={`flex-1 text-[10px] font-black uppercase tracking-widest py-2 rounded-xl border-2 transition-all ${
                         rightTab === id ? 'bg-[#FA5600] text-white border-[#FA5600]' : 'border-gray-200 text-gray-400 bg-white hover:border-[#FA5600]/50'
@@ -5786,6 +5992,11 @@ function BroadcastSection() {
                     onShared={recordShare}
                   />
                 )}
+
+                {/* Video: WhatsApp, Telegram, Instagram/Facebook Reels, Instagram/Facebook video stories */}
+                <div className={rightTab === 'video' ? '' : 'hidden'}>
+                  <VideoSharePanel key={String(preview._id)} product={preview} caption={customMsg} guard={guard} onShared={recordShare} />
+                </div>
 
                 {/* Editable message */}
                 {rightTab === 'message' && (
@@ -5859,51 +6070,6 @@ function BroadcastSection() {
                     Post to Facebook Feed</>
                   )}
                 </button>
-
-                {/* Facebook feed video — pick a video, upload it, post it with the product caption */}
-                <div className="border-2 border-dashed border-gray-200 rounded-xl p-3 space-y-2">
-                  <p className="text-[10px] font-black uppercase tracking-widest text-gray-500">Or post a video to Facebook</p>
-                  {!fbVideoFile ? (
-                    <label className="flex items-center justify-center gap-2 border-2 border-gray-200 text-gray-600 font-black py-2.5 rounded-xl hover:border-[#1877F2] hover:text-[#1877F2] transition-all text-xs uppercase tracking-widest cursor-pointer">
-                      <Upload className="w-4 h-4" /> Choose a video from your device
-                      <input type="file" accept="video/*" onChange={handleVideoFileSelect} className="hidden" />
-                    </label>
-                  ) : (
-                    <div className="space-y-2">
-                      <div className="flex items-center gap-2">
-                        <video src={fbVideoPreviewUrl} className="w-20 h-20 rounded-lg object-cover bg-black shrink-0" muted />
-                        <div className="flex-1 min-w-0">
-                          <p className="text-xs font-black text-gray-800 truncate">{fbVideoFile.name}</p>
-                          <p className="text-[10px] text-gray-400 font-bold">{(fbVideoFile.size / (1024 * 1024)).toFixed(1)} MB</p>
-                        </div>
-                        {!fbVideoPosting && (
-                          <button onClick={clearVideo} className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-400 shrink-0"><X className="w-4 h-4" /></button>
-                        )}
-                      </div>
-                      {fbVideoUploadPct !== null && (
-                        <div className="w-full h-1.5 bg-gray-100 rounded-full overflow-hidden">
-                          <div className="h-full bg-[#1877F2] transition-all" style={{ width: `${fbVideoUploadPct}%` }} />
-                        </div>
-                      )}
-                      {fbVideoError && <p className="text-[11px] font-bold text-red-500">{fbVideoError}</p>}
-                      <button onClick={handlePostFacebookVideo} disabled={fbVideoPosting}
-                        className={`w-full flex items-center justify-center gap-2 font-black py-2.5 rounded-xl transition-all text-xs uppercase tracking-widest disabled:opacity-60 ${
-                          fbVideoSuccess ? 'bg-green-500 text-white' : 'bg-[#1877F2] hover:bg-[#1568d6] text-white'
-                        }`}>
-                        {fbVideoPosting ? (
-                          <>{fbVideoUploadPct !== null && fbVideoUploadPct < 100 ? `Uploading ${fbVideoUploadPct}%...` : 'Posting...'}</>
-                        ) : fbVideoSuccess ? (
-                          <><Check className="w-4 h-4" /> Posted!</>
-                        ) : (
-                          <>Post this video to Facebook</>
-                        )}
-                      </button>
-                      <p className="text-[9px] text-gray-400 font-semibold">
-                        The video becomes the Facebook post itself, with the product's name, price and link as the caption underneath — Facebook doesn't support a separate photo attached to a video post.
-                      </p>
-                    </div>
-                  )}
-                </div>
 
                 {/* Copy */}
                 <button onClick={handleCopy}
