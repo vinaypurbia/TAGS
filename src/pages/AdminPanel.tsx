@@ -1905,15 +1905,87 @@ function drawGlitter(ctx: CanvasRenderingContext2D, W: number, H: number, t: num
   }
 }
 
+// Soft, slow-drifting snowflakes — straight fall with a gentle sway, no twinkle.
+function drawSnow(ctx: CanvasRenderingContext2D, W: number, H: number, t: number, seedBase = 2) {
+  const rnd = (i: number) => { const x = Math.sin(i * 713.91 + seedBase * 11.3) * 43758.5453; return x - Math.floor(x); };
+  for (let i = 0; i < 28; i++) {
+    const colX = rnd(i) * W;
+    const speed = 0.25 + rnd(i + 50) * 0.3; // slower than glitter — snow drifts, it doesn't sparkle-fall
+    const fall = ((t * speed + rnd(i + 100)) % 1);
+    const y = fall * H * 1.2 - H * 0.1;
+    const x = colX + Math.sin((t * 1.5 + i * 0.7) * Math.PI) * 18;
+    if (y < 0 || y > H) continue;
+    const r = 2.5 + rnd(i + 150) * 4;
+    ctx.save();
+    ctx.globalAlpha = 0.55 + rnd(i + 200) * 0.35;
+    ctx.fillStyle = '#FFFFFF';
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
+}
+
+// Small autumn leaves tumbling down with horizontal drift and rotation.
+function drawLeaves(ctx: CanvasRenderingContext2D, W: number, H: number, t: number, seedBase = 3) {
+  const rnd = (i: number) => { const x = Math.sin(i * 451.77 + seedBase * 13.9) * 43758.5453; return x - Math.floor(x); };
+  const colors = ['#D2691E', '#E25822', '#F4A460', '#C1440E', '#DAA520'];
+  for (let i = 0; i < 20; i++) {
+    const colX = rnd(i) * W;
+    const speed = 0.3 + rnd(i + 50) * 0.35;
+    const fall = ((t * speed + rnd(i + 100)) % 1);
+    const y = fall * H * 1.2 - H * 0.1;
+    const drift = Math.sin((t * 2.2 + i) * Math.PI) * 50 + (t - 0.5) * 60 * (rnd(i + 300) - 0.5);
+    const x = colX + drift;
+    if (y < 0 || y > H) continue;
+    const size = 9 + rnd(i + 150) * 7;
+    const rot = (t * (1 + rnd(i + 250)) * 4 + i) * Math.PI;
+    ctx.save();
+    ctx.globalAlpha = 0.75 + rnd(i + 200) * 0.2;
+    ctx.translate(x, y);
+    ctx.rotate(rot);
+    ctx.fillStyle = colors[i % colors.length];
+    // Simple leaf silhouette: two curved lobes meeting at a point, plus a short stem.
+    ctx.beginPath();
+    ctx.moveTo(0, -size);
+    ctx.quadraticCurveTo(size * 0.8, -size * 0.2, 0, size);
+    ctx.quadraticCurveTo(-size * 0.8, -size * 0.2, 0, -size);
+    ctx.fill();
+    ctx.strokeStyle = colors[i % colors.length]; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(0, size); ctx.lineTo(0, size + 4); ctx.stroke();
+    ctx.restore();
+  }
+}
+
+// Glowing embers rising from the bottom edge, flickering as they fade near the top.
+function drawFireEmbers(ctx: CanvasRenderingContext2D, W: number, H: number, t: number, seedBase = 4) {
+  const rnd = (i: number) => { const x = Math.sin(i * 283.54 + seedBase * 9.1) * 43758.5453; return x - Math.floor(x); };
+  for (let i = 0; i < 24; i++) {
+    const colX = rnd(i) * W;
+    const speed = 0.35 + rnd(i + 50) * 0.4;
+    const rise = ((t * speed + rnd(i + 100)) % 1); // 0 at bottom, 1 at top
+    const y = H - rise * H * 1.1;
+    const x = colX + Math.sin((t * 5 + i * 1.3) * Math.PI) * 14;
+    if (y < 0 || y > H) continue;
+    const fadeNearTop = 1 - Math.max(0, (H * 0.15 - y) / (H * 0.15)); // fades out in the top 15%
+    const flicker = 0.5 + 0.5 * Math.abs(Math.sin((t * 10 + i) * Math.PI));
+    const r = (1.5 + rnd(i + 150) * 3) * (1 - rise * 0.4);
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, flicker * fadeNearTop * 0.9);
+    ctx.fillStyle = i % 2 === 0 ? '#FF7A00' : '#FFD447';
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
+}
 
 // Draws one frame (t = 0..1 progress through the clip) for the given style.
 type VideoTextStyle = { textColor: string; bgColor: string; fontFamily: string };
 const DEFAULT_TEXT_STYLE: VideoTextStyle = { textColor: '#1a1a1a', bgColor: '#ffffff', fontFamily: 'system-ui, sans-serif' };
 
+type ParticleEffect = 'none' | 'glitter' | 'snow' | 'leaves' | 'fire';
+
 function drawProductVideoFrame(
   ctx: CanvasRenderingContext2D, img: HTMLImageElement, style: VideoStyle, t: number,
   W: number, H: number, name: string, description: string,
-  glitter: boolean, textStyle: VideoTextStyle = DEFAULT_TEXT_STYLE,
+  particleEffect: ParticleEffect, textStyle: VideoTextStyle = DEFAULT_TEXT_STYLE,
 ) {
   ctx.clearRect(0, 0, W, H);
   ctx.fillStyle = '#ffffff';
@@ -1985,7 +2057,10 @@ function drawProductVideoFrame(
     ctx.fillRect(0, 0, W, H);
   }
 
-  if (glitter) drawGlitter(ctx, W, H, t);
+  if (particleEffect === 'glitter') drawGlitter(ctx, W, H, t);
+  else if (particleEffect === 'snow') drawSnow(ctx, W, H, t);
+  else if (particleEffect === 'leaves') drawLeaves(ctx, W, H, t);
+  else if (particleEffect === 'fire') drawFireEmbers(ctx, W, H, t);
 
   // Name + description reveal AFTER the product has appeared — sliding up and fading in so it
   // reads as "product arrives, then its name introduces it," rather than a bar that's just always
@@ -2111,7 +2186,7 @@ async function buildMusicSource(ctx: AudioContext, destination: AudioNode, url: 
 // mixing in a music track and/or the synthesized pop sound effect (for the "Zoom Appear" style).
 function recordProductVideo(
   img: HTMLImageElement, style: VideoStyle, name: string, description: string,
-  glitter: boolean, musicUrl: string | null, textStyle: VideoTextStyle = DEFAULT_TEXT_STYLE,
+  particleEffect: ParticleEffect, musicUrl: string | null, textStyle: VideoTextStyle = DEFAULT_TEXT_STYLE,
 ): Promise<Blob> {
   return new Promise(async (resolve, reject) => {
     const canvas = document.createElement('canvas');
@@ -2153,7 +2228,7 @@ function recordProductVideo(
     let raf = 0;
     const frame = (now: number) => {
       const t = Math.min(1, (now - t0) / (PRODUCT_VIDEO_DURATION_S * 1000));
-      drawProductVideoFrame(ctx, img, style, t, PRODUCT_VIDEO_SIZE, PRODUCT_VIDEO_SIZE, name, description, glitter, textStyle);
+      drawProductVideoFrame(ctx, img, style, t, PRODUCT_VIDEO_SIZE, PRODUCT_VIDEO_SIZE, name, description, particleEffect, textStyle);
       if (t < 1) raf = requestAnimationFrame(frame);
       else rec.stop();
     };
@@ -2211,7 +2286,7 @@ function ProductVideoSection() {
 
   const [selectedId, setSelectedId] = useState('');
   const [style, setStyle] = useState<VideoStyle>('zoom');
-  const [glitter, setGlitter] = useState(false);
+  const [particleEffect, setParticleEffect] = useState<ParticleEffect>('none');
   const [nameOverride, setNameOverride] = useState('');
   const [captionOverride, setCaptionOverride] = useState('');
   const [textColor, setTextColor] = useState(DEFAULT_TEXT_STYLE.textColor);
@@ -2224,7 +2299,7 @@ function ProductVideoSection() {
 
   const [batchSelected, setBatchSelected] = useState<Set<string>>(new Set());
   const [batchStyle, setBatchStyle] = useState<VideoStyle>('zoom');
-  const [batchGlitter, setBatchGlitter] = useState(false);
+  const [batchParticleEffect, setBatchParticleEffect] = useState<ParticleEffect>('none');
   const [batchCaptionOverride, setBatchCaptionOverride] = useState(''); // blank = use each product's own description
   const [batchTextColor, setBatchTextColor] = useState(DEFAULT_TEXT_STYLE.textColor);
   const [batchBgColor, setBatchBgColor] = useState(DEFAULT_TEXT_STYLE.bgColor);
@@ -2307,13 +2382,13 @@ function ProductVideoSection() {
   };
 
   const generateOne = async (
-    p: VideoProduct, useStyle: VideoStyle, useGlitter: boolean, musicUrl: string | null,
+    p: VideoProduct, useStyle: VideoStyle, useParticles: ParticleEffect, musicUrl: string | null,
     videoName: string, videoCaption: string, style_: VideoTextStyle,
   ) => {
     if (!p.image) throw new Error('No image on this product');
     const { im, release } = await loadImageElement(highQualityImageUrl(p.image));
     try {
-      const blob = await recordProductVideo(im, useStyle, videoName, videoCaption, useGlitter, musicUrl, style_);
+      const blob = await recordProductVideo(im, useStyle, videoName, videoCaption, useParticles, musicUrl, style_);
       const safeName = p.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40) || 'product';
       const url = await uploadProductVideo(blob, `pv-${safeName}`);
       const putRes = await fetch('/api/products', {
@@ -2330,7 +2405,7 @@ function ProductVideoSection() {
     if (!p) return;
     setWorking(true); setError(''); setResultUrl('');
     try {
-      const url = await generateOne(p, style, glitter, pickMusicUrl(musicChoice), nameOverride.trim() || p.name, captionOverride, { textColor, bgColor, fontFamily });
+      const url = await generateOne(p, style, particleEffect, pickMusicUrl(musicChoice), nameOverride.trim() || p.name, captionOverride, { textColor, bgColor, fontFamily });
       setResultUrl(url);
       setProducts(ps => ps.map(x => x._id === p._id ? { ...x, videoUrl: url } : x));
     } catch (e: any) {
@@ -2351,7 +2426,7 @@ function ProductVideoSection() {
     for (let i = 0; i < list.length; i++) {
       try {
         await generateOne(
-          list[i], batchStyle, batchGlitter, pickMusicUrl(batchMusicChoice),
+          list[i], batchStyle, batchParticleEffect, pickMusicUrl(batchMusicChoice),
           list[i].name, batchCaptionOverride.trim() || (list[i].description || ''),
           { textColor: batchTextColor, bgColor: batchBgColor, fontFamily: batchFontFamily },
         );
@@ -2376,13 +2451,18 @@ function ProductVideoSection() {
     </div>
   );
 
-  const EffectToggles = ({ glitterOn, setGlitterOn, disabled }: {
-    glitterOn: boolean; setGlitterOn: (v: boolean) => void; disabled?: boolean;
-  }) => (
-    <label className="flex items-center gap-2 text-xs font-bold text-gray-700 border border-gray-200 rounded-xl px-3 py-2.5 cursor-pointer">
-      <input type="checkbox" checked={glitterOn} onChange={e => setGlitterOn(e.target.checked)} disabled={disabled} className="w-4 h-4 accent-[#FA5600]" />
-      ✨ Falling glitter
-    </label>
+  const ParticlePicker = ({ value, onChange, disabled }: { value: ParticleEffect; onChange: (v: ParticleEffect) => void; disabled?: boolean }) => (
+    <div>
+      <label className="text-[10px] font-black uppercase tracking-widest text-gray-500 block mb-1">Particle Effect</label>
+      <select value={value} onChange={e => onChange(e.target.value as ParticleEffect)} disabled={disabled}
+        className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm disabled:opacity-50">
+        <option value="none">None</option>
+        <option value="glitter">✨ Glitter</option>
+        <option value="snow">❄️ Snowflakes</option>
+        <option value="leaves">🍁 Maple Leaves</option>
+        <option value="fire">🔥 Fire Embers</option>
+      </select>
+    </div>
   );
 
   const MusicPicker = ({ value, onChange, disabled }: { value: string; onChange: (v: string) => void; disabled?: boolean }) => (
@@ -2515,7 +2595,7 @@ function ProductVideoSection() {
                   placeholder="A short line under the name — leave blank for none" className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm disabled:opacity-50" />
               </div>
               <StylePicker value={style} onChange={setStyle} disabled={working} />
-              <EffectToggles glitterOn={glitter} setGlitterOn={setGlitter} disabled={working} />
+              <ParticlePicker value={particleEffect} onChange={setParticleEffect} disabled={working} />
               <StyleCustomizer tColor={textColor} setTColor={setTextColor} bColor={bgColor} setBColor={setBgColor} font={fontFamily} setFont={setFontFamily} disabled={working} />
               <MusicPicker value={musicChoice} onChange={setMusicChoice} disabled={working} />
               <button onClick={handleGenerateIndividual} disabled={working}
@@ -2565,7 +2645,7 @@ function ProductVideoSection() {
           </div>
           <StylePicker value={batchStyle} onChange={setBatchStyle} disabled={batchWorking} />
           <StyleCustomizer tColor={batchTextColor} setTColor={setBatchTextColor} bColor={batchBgColor} setBColor={setBatchBgColor} font={batchFontFamily} setFont={setBatchFontFamily} disabled={batchWorking} />
-          <EffectToggles glitterOn={batchGlitter} setGlitterOn={setBatchGlitter} disabled={batchWorking} />
+          <ParticlePicker value={batchParticleEffect} onChange={setBatchParticleEffect} disabled={batchWorking} />
           <MusicPicker value={batchMusicChoice} onChange={setBatchMusicChoice} disabled={batchWorking} />
           {batchMusicChoice === 'random' && <p className="text-[10px] text-gray-400 -mt-2">A different random track from your library is picked for each video.</p>}
 
