@@ -7,10 +7,13 @@
 
     <!-- PWA Meta Tags -->
     <meta name="description" content="Toys · Adventure · Gadgets · Sports" />
-    <meta name="theme-color" content="#FA5600" />
+    <meta name="theme-color" content="#FFFFFF" />
+    <!-- Force light theme everywhere (stops browsers auto-darkening the site) -->
+    <meta name="color-scheme" content="light only" />
+    <meta name="supported-color-schemes" content="light" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <meta name="apple-mobile-web-app-title" content="TAGS" />
     <meta name="msapplication-TileColor" content="#FA5600" />
     <meta name="msapplication-tap-highlight" content="no" />
@@ -34,9 +37,10 @@
 
     <!-- Splash screen background while app loads -->
     <style>
-      body {
+      :root { color-scheme: light only; }
+      html, body {
         margin: 0;
-        background-color: #1A1A1A;
+        background-color: #FFFFFF;
       }
     </style>
   </head>
