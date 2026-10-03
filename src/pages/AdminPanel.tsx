@@ -1,6 +1,6 @@
 import { StockVisibilityPanel } from '../components/StockVisibilityPanel';
 import AdminPushSetup from '../components/AdminPushSetup';
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, Fragment } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { ProductManagerEmbed } from './ProductManagerEmbed';
@@ -3907,7 +3907,9 @@ type ShareInfo = { lastAt: string; channel: string; count: number };
 type ShareGuard = (ids: string[], action: () => void, opts?: { onlyNew?: (newIds: string[]) => void }) => void;
 type OnShared = (ids: string[], channel: string) => void;
 
-const RECENT_SHARE_DAYS = 30;
+// A shared product lives in the "Shared" tab for 15 days after its LAST share,
+// then it automatically goes back to "To Share".
+const RECENT_SHARE_DAYS = 15;
 const SHARE_CHANNEL_LABELS: Record<string, string> = {
   whatsapp: 'WhatsApp', 'whatsapp-status': 'WhatsApp Status', telegram: 'Telegram', instagram: 'Instagram story', facebook: 'Facebook story',
 };
@@ -3918,6 +3920,15 @@ const shareDaysAgo = (iso: string) => {
   const b = new Date(iso); b.setHours(0, 0, 0, 0);
   return Math.round((a.getTime() - b.getTime()) / 86400000);
 };
+const isRecentShare = (info?: ShareInfo) => !!info && shareDaysAgo(info.lastAt) < RECENT_SHARE_DAYS;
+const shareLocalDay = (iso: string) => {
+  const d = new Date(iso);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+const shareBackInLabel = (iso: string) => {
+  const left = RECENT_SHARE_DAYS - shareDaysAgo(iso);
+  return left <= 1 ? 'back in To Share tomorrow' : `back in To Share in ${left} days`;
+};
 const shareDateLabel = (iso: string) => new Date(iso).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
 const shareAgoLabel = (iso: string) => {
   const d = shareDaysAgo(iso);
@@ -3927,7 +3938,7 @@ const shareAgoLabel = (iso: string) => {
 function ShareBadge({ info }: { info?: ShareInfo }) {
   if (!info) return null;
   const d = shareDaysAgo(info.lastAt);
-  const tone = d <= 0 ? 'bg-green-100 text-green-700' : d <= RECENT_SHARE_DAYS ? 'bg-orange-100 text-orange-600' : 'bg-gray-100 text-gray-400';
+  const tone = d <= 0 ? 'bg-green-100 text-green-700' : isRecentShare(info) ? 'bg-orange-100 text-orange-600' : 'bg-gray-100 text-gray-400';
   return (
     <span title={`Last shared on ${SHARE_CHANNEL_LABELS[info.channel] || info.channel} · ${info.count}× in the last 90 days`}
       className={`inline-flex items-center gap-1 text-[9px] font-black px-1.5 py-0.5 rounded-full ${tone}`}>
@@ -5107,7 +5118,10 @@ function BroadcastSection() {
 
   // Share history: which products were broadcast, when, and where (stored on the server so it's the same on every device)
   const [shareHistory, setShareHistory]     = useState<Record<string, ShareInfo>>({});
-  const [shareFilter, setShareFilter]       = useState<'all' | 'fresh'>('all');
+  const [shareTab, setShareTab]             = useState<'toshare' | 'shared'>('toshare');
+  const [shareDate, setShareDate]           = useState<'any' | 'today' | 'yesterday' | '7d' | 'custom'>('any');
+  const [customDate, setCustomDate]         = useState('');
+  const previewPanelRef = useRef<HTMLDivElement>(null);
   const [pendingShare, setPendingShare]     = useState<null | {
     hits: { id: string; name: string; info: ShareInfo }[]; action: () => void; onlyNew?: () => void;
   }>(null);
@@ -5142,7 +5156,7 @@ function BroadcastSection() {
   const guard: ShareGuard = (ids, action, opts) => {
     const uniq = Array.from(new Set(ids.map(String)));
     const hits = uniq
-      .filter(id => shareHistory[id] && shareDaysAgo(shareHistory[id].lastAt) <= RECENT_SHARE_DAYS)
+      .filter(id => isRecentShare(shareHistory[id]))
       .map(id => ({ id, name: products.find(p => String(p._id) === id)?.name || 'Product', info: shareHistory[id] }));
     if (hits.length === 0) { action(); return; }
     const hitIds = new Set(hits.map(h => h.id));
@@ -5212,12 +5226,27 @@ function BroadcastSection() {
     if (priceMax && price > parseFloat(priceMax)) return false;
     if (stockFilter === 'instock'    && stock !== null && stock <= 0) return false;
     if (stockFilter === 'outofstock' && stock !== null && stock > 0)  return false;
-    if (shareFilter === 'fresh') {
-      const h = shareHistory[String(p._id)];
-      if (h && shareDaysAgo(h.lastAt) <= RECENT_SHARE_DAYS) return false;
+    const h = shareHistory[String(p._id)];
+    const inShared = isRecentShare(h);
+    if (shareTab === 'toshare' && inShared) return false;
+    if (shareTab === 'shared') {
+      if (!inShared || !h) return false;
+      const d = shareDaysAgo(h.lastAt);
+      if (shareDate === 'today'     && d !== 0) return false;
+      if (shareDate === 'yesterday' && d !== 1) return false;
+      if (shareDate === '7d'        && d > 6)   return false;
+      if (shareDate === 'custom' && customDate && shareLocalDay(h.lastAt) !== customDate) return false;
     }
     return true;
   });
+  // Shared tab: newest share first, so everything shared on the same day sits together
+  if (shareTab === 'shared') {
+    filtered.sort((a, b) => new Date(shareHistory[String(b._id)]?.lastAt || 0).getTime() - new Date(shareHistory[String(a._id)]?.lastAt || 0).getTime());
+  }
+  const toShareCount = products.filter(p => !isRecentShare(shareHistory[String(p._id)])).length;
+  const sharedCount  = products.length - toShareCount;
+  const sharedPerDay: Record<string, number> = {};
+  if (shareTab === 'shared') filtered.forEach(p => { const k = shareLocalDay(shareHistory[String(p._id)].lastAt); sharedPerDay[k] = (sharedPerDay[k] || 0) + 1; });
 
   const generateMessage = (p: any) => {
     const price     = resolvePrice(p);
@@ -5243,6 +5272,9 @@ function BroadcastSection() {
   // ── Single product actions ─────────────────────────────────────────────
   const selectPreview = (p: any) => {
     setPreview(p);
+    if (typeof window !== 'undefined' && window.innerWidth < 1024) {
+      setTimeout(() => previewPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 60);
+    }
     setCustomMsg(generateMessage(p));
     setCopied(false);
     setSelectedImageIndex(0);
@@ -5489,7 +5521,7 @@ function BroadcastSection() {
       <SectionHeader icon={Megaphone} title="Product Broadcast" desc="Send promo messages via WhatsApp or Telegram, or post product stories to Instagram, Facebook & WhatsApp Status" />
 
       {/* ── Sticky Send Bar ── */}
-      <div className="sticky top-0 z-20 bg-white border border-gray-100 rounded-2xl shadow-md px-4 py-3 flex items-center gap-3 flex-wrap">
+      <div className="bg-white border border-gray-100 rounded-2xl shadow-md px-4 py-3 flex items-center gap-3 flex-wrap">
         <div className="flex items-center gap-2 flex-1 min-w-0">
           <div className={`w-8 h-8 rounded-xl flex items-center justify-center font-black text-sm shrink-0 transition-all ${selectedCount > 0 ? 'bg-[#FA5600] text-white' : 'bg-gray-100 text-gray-400'}`}>
             {selectedCount}
@@ -5542,6 +5574,16 @@ function BroadcastSection() {
         {/* LEFT — Filters + Product List */}
         <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
 
+          {/* To Share / Shared folders */}
+          <div className="flex gap-2 p-3 border-b border-gray-100 bg-white">
+            {([['toshare', 'To Share', toShareCount], ['shared', `Shared · last ${RECENT_SHARE_DAYS}d`, sharedCount]] as const).map(([id, label, n]) => (
+              <button key={id} onClick={() => { setShareTab(id); setSelectedIds(new Set()); }}
+                className={`flex-1 text-[10px] font-black uppercase tracking-widest py-2.5 rounded-xl border-2 transition-all ${
+                  shareTab === id ? 'bg-[#FA5600] text-white border-[#FA5600]' : 'border-gray-200 text-gray-500 bg-white hover:border-[#FA5600]/50'
+                }`}>{label} ({n})</button>
+            ))}
+          </div>
+
           {/* Filters */}
           <div className="p-4 border-b border-gray-100 space-y-3 bg-gray-50">
             <p className="text-[10px] font-black uppercase tracking-widest text-gray-400">Filters</p>
@@ -5549,7 +5591,7 @@ function BroadcastSection() {
               placeholder="Search products..."
               className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none transition bg-white" />
             {/* Category */}
-            <div className="flex gap-2 overflow-x-auto no-scrollbar pb-1">
+            <div className="flex flex-wrap gap-2">
               {categories.map(cat => (
                 <button key={cat} onClick={() => setCategoryFilter(cat)}
                   className={`shrink-0 text-[10px] font-black uppercase tracking-widest px-3 py-1.5 rounded-full border-2 transition-all ${
@@ -5557,6 +5599,23 @@ function BroadcastSection() {
                   }`}>{cat}</button>
               ))}
             </div>
+            {/* Shared-date filter (Shared tab only) */}
+            {shareTab === 'shared' && (
+              <div className="flex gap-2 flex-wrap items-center">
+                <span className="text-[10px] font-black text-gray-400 uppercase shrink-0">Shared</span>
+                {([['any', 'Any day'], ['today', 'Today'], ['yesterday', 'Yesterday'], ['7d', 'Last 7 days']] as const).map(([id, label]) => (
+                  <button key={id} onClick={() => { setShareDate(id); setCustomDate(''); }}
+                    className={`text-[10px] font-black uppercase px-2.5 py-1.5 rounded-full border-2 transition-all ${
+                      shareDate === id ? 'bg-gray-800 text-white border-gray-800' : 'border-gray-200 text-gray-500 bg-white hover:border-gray-400'
+                    }`}>{label}</button>
+                ))}
+                <input type="date" value={customDate}
+                  min={shareLocalDay(new Date(Date.now() - (RECENT_SHARE_DAYS - 1) * 86400000).toISOString())}
+                  max={shareLocalDay(new Date().toISOString())}
+                  onChange={e => { setCustomDate(e.target.value); setShareDate(e.target.value ? 'custom' : 'any'); }}
+                  className={`text-[10px] font-black uppercase px-2 py-1 rounded-lg border-2 outline-none bg-white ${shareDate === 'custom' ? 'border-gray-800 text-gray-800' : 'border-gray-200 text-gray-500'}`} />
+              </div>
+            )}
             {/* Price + Stock */}
             <div className="flex gap-3 flex-wrap items-center">
               <div className="flex items-center gap-2">
@@ -5584,11 +5643,6 @@ function BroadcastSection() {
                   </button>
                 ))}
               </div>
-              <button onClick={() => setShareFilter(v => v === 'fresh' ? 'all' : 'fresh')}
-                title={`Hide products shared in the last ${RECENT_SHARE_DAYS} days`}
-                className={`text-[10px] font-black uppercase px-2 py-1.5 rounded-lg border-2 transition-all ${
-                  shareFilter === 'fresh' ? 'bg-[#FA5600] text-white border-[#FA5600]' : 'border-gray-200 text-gray-400 bg-white hover:border-[#FA5600]/50'
-                }`}>Not shared in {RECENT_SHARE_DAYS}d</button>
               <span className="text-[10px] font-black text-gray-400 ml-auto">{filtered.length} products</span>
             </div>
           </div>
@@ -5600,15 +5654,28 @@ function BroadcastSection() {
             ) : filtered.length === 0 ? (
               <div className="p-12 text-center text-gray-400">
                 <Package className="w-10 h-10 mx-auto mb-3 opacity-30"/>
-                <p className="font-black text-sm uppercase tracking-widest">No products match filters</p>
+                <p className="font-black text-sm uppercase tracking-widest">
+                  {shareTab === 'shared' && sharedCount === 0 ? `Nothing shared in the last ${RECENT_SHARE_DAYS} days` : 'No products match filters'}
+                </p>
               </div>
-            ) : filtered.map(p => {
+            ) : filtered.map((p, idx) => {
               const price      = resolvePrice(p);
               const stock      = getStock(p);
               const isChecked  = selectedIds.has(p._id);
               const isPreviewed = preview?._id === p._id;
+              const sInfo      = shareHistory[String(p._id)];
+              const dayKey     = shareTab === 'shared' && sInfo ? shareLocalDay(sInfo.lastAt) : '';
+              const prevInfo   = idx > 0 ? shareHistory[String(filtered[idx - 1]._id)] : undefined;
+              const showDayHeader = !!dayKey && (!prevInfo || shareLocalDay(prevInfo.lastAt) !== dayKey);
               return (
-                <div key={p._id}
+                <Fragment key={p._id}>
+                {showDayHeader && (
+                  <div className="px-4 py-1.5 bg-gray-100 border-b border-gray-200 flex items-center justify-between text-[10px] font-black uppercase tracking-widest text-gray-600">
+                    <span>{shareDateLabel(sInfo!.lastAt)} · {shareAgoLabel(sInfo!.lastAt)}</span>
+                    <span className="text-gray-400">{sharedPerDay[dayKey]} product{sharedPerDay[dayKey] > 1 ? 's' : ''}</span>
+                  </div>
+                )}
+                <div
                   className={`flex items-center gap-3 px-4 py-3 border-b border-gray-50 transition ${isPreviewed ? 'bg-orange-50' : 'hover:bg-gray-50'} ${isChecked ? 'border-l-4 border-l-[#FA5600]' : ''}`}>
                   {/* Checkbox for batch */}
                   <button onClick={() => toggleSelect(p._id)}
@@ -5627,7 +5694,12 @@ function BroadcastSection() {
                   <button onClick={() => selectPreview(p)} className="flex-1 min-w-0 text-left">
                     <p className="font-black text-sm text-gray-900 truncate">{p.name}</p>
                     <p className="text-[10px] text-gray-400 uppercase tracking-widest">{p.category}</p>
-                    {shareHistory[String(p._id)] && <span className="block mt-0.5"><ShareBadge info={shareHistory[String(p._id)]} /></span>}
+                    {sInfo && (
+                      <span className="flex items-center gap-1.5 flex-wrap mt-0.5">
+                        <ShareBadge info={sInfo} />
+                        {shareTab === 'shared' && <span className="text-[9px] font-bold text-gray-400">{shareBackInLabel(sInfo.lastAt)}</span>}
+                      </span>
+                    )}
                   </button>
                   {/* Price + Stock */}
                   <div className="text-right shrink-0 space-y-0.5">
@@ -5641,13 +5713,14 @@ function BroadcastSection() {
                     )}
                   </div>
                 </div>
+                </Fragment>
               );
             })}
           </div>
         </div>
 
         {/* RIGHT — Single product preview + WhatsApp/Telegram/Copy */}
-        <div className="flex flex-col gap-4">
+        <div ref={previewPanelRef} className="flex flex-col gap-4 scroll-mt-24">
           {!preview ? (
             <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-12 text-center text-gray-400">
               <Megaphone className="w-10 h-10 mx-auto mb-3 opacity-30"/>
@@ -5733,7 +5806,7 @@ function BroadcastSection() {
 
               {/* Send buttons */}
               {rightTab === 'message' && (
-              <div className="sticky bottom-4 z-10 bg-white/95 backdrop-blur-sm rounded-2xl p-3 shadow-xl border border-gray-100 grid grid-cols-1 gap-2">
+              <div className="bg-white rounded-2xl p-3 shadow-sm border border-gray-100 grid grid-cols-1 gap-2">
                 {/* WhatsApp */}
                 <button onClick={handleWhatsApp} disabled={sending}
                   className="w-full flex items-center justify-center gap-3 bg-[#25D366] text-white font-black py-3.5 rounded-xl hover:bg-[#20bd5a] transition-all shadow-md text-sm uppercase tracking-widest disabled:opacity-60">
