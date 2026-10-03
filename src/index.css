@@ -14,6 +14,15 @@
   --color-wa-dark: #E04A00;
 }
 
+/* Always light: never let the browser/OS auto-darken the site */
+:root {
+  color-scheme: light only;
+}
+html {
+  background-color: #FFFFFF;
+  -webkit-text-size-adjust: 100%;
+}
+
 * {
   box-sizing: border-box;
 }
