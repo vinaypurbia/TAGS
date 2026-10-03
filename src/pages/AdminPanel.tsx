@@ -644,7 +644,7 @@ export function AdminPanel() {
 
   // ── MAIN LAYOUT ───────────────────────────────────────────────────────────
   return (
-    <div className="h-screen bg-[#F0F2F5] flex overflow-hidden">
+    <div className="h-dvh bg-[#F0F2F5] flex overflow-hidden">
 
       {idleWarning && (
         <div className="fixed top-0 left-0 right-0 z-[200] bg-yellow-400 text-yellow-900 text-xs font-black uppercase tracking-widest px-4 py-2 flex items-center justify-center gap-3 shadow-lg">
@@ -738,7 +738,8 @@ export function AdminPanel() {
       {/* ── MAIN CONTENT ── */}
       <div className={`flex-1 flex flex-col transition-all duration-300 overflow-y-auto ${sidebarOpen ? 'lg:ml-60' : 'lg:ml-[72px]'}`}>
 
-        <header className="bg-white border-b border-gray-200 px-4 py-3 flex items-center gap-4 sticky top-0 z-30 shadow-sm">
+        <div className="sticky top-0 z-30 bg-white shadow-sm">
+        <header className="bg-white border-b border-gray-200 px-4 py-3 flex items-center gap-4">
           <button onClick={() => setSidebarOpen(!sidebarOpen)}
             className="w-9 h-9 flex items-center justify-center rounded-xl hover:bg-gray-100 transition text-gray-600">
             {sidebarOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
@@ -762,6 +763,24 @@ export function AdminPanel() {
             <span className="text-white font-black text-xs">T</span>
           </div>
         </header>
+
+        {/* Mobile tab strip: every menu visible and swipeable on small screens */}
+        <nav className="lg:hidden flex gap-2 overflow-x-auto no-scrollbar px-3 py-2 border-b border-gray-100 bg-white">
+          {visibleModules.map(item => {
+            const isActive = activeSection === item.id;
+            const badge = item.id === 'business' && pendingOrders.length > 0;
+            return (
+              <button key={item.id} onClick={() => setActiveSection(item.id)}
+                className={`shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-black uppercase tracking-wide whitespace-nowrap transition
+                  ${isActive ? 'bg-[#FA5600] text-white shadow' : 'bg-gray-100 text-gray-600 active:bg-orange-50'}`}>
+                <item.icon className="w-3.5 h-3.5" />
+                {item.label}
+                {badge && <span className="bg-red-500 text-white text-[9px] font-black px-1.5 rounded-full">{pendingOrders.length}</span>}
+              </button>
+            );
+          })}
+        </nav>
+        </div>
 
         <main className="flex-1 p-4 md:p-6 overflow-x-hidden">
 
