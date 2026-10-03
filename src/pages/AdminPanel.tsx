@@ -2259,7 +2259,7 @@ async function uploadProductVideo(blob: Blob, baseName: string): Promise<string>
   return mp4Url;
 }
 
-type VideoProduct = { _id: string; name: string; image: string; description?: string; videoUrl?: string; discountedPrice?: number; originalPrice?: number };
+type VideoProduct = { _id: string; name: string; image: string; description?: string; category?: string; videoUrl?: string; discountedPrice?: number; originalPrice?: number };
 
 const FONT_OPTIONS = [
   { label: 'Default (Clean)',  value: 'system-ui, sans-serif' },
@@ -2274,6 +2274,9 @@ function ProductVideoSection() {
   const [products, setProducts] = useState<VideoProduct[]>([]);
   const [loadingList, setLoadingList] = useState(true);
   const [search, setSearch] = useState('');
+  const [categoryFilter, setCategoryFilter] = useState('all');
+  const [priceMin, setPriceMin] = useState('');
+  const [priceMax, setPriceMax] = useState('');
 
   const [tracks, setTracks] = useState<MusicTrack[]>([]);
   const [loadingTracks, setLoadingTracks] = useState(true);
@@ -2314,7 +2317,7 @@ function ProductVideoSection() {
       .then(r => r.json())
       .then(data => setProducts((data.products || []).map((p: any) => ({
         _id: p._id, name: p.name || '(no name)', image: p.image || p.imageUrl || '',
-        description: p.description || '', videoUrl: p.videoUrl || '',
+        description: p.description || '', category: p.category || '', videoUrl: p.videoUrl || '',
         discountedPrice: p.discountedPrice, originalPrice: p.originalPrice,
       }))))
       .catch(() => setError('Could not load your product list.'))
@@ -2367,8 +2370,19 @@ function ProductVideoSection() {
     return tracks.find(t => t.id === choice)?.url || null;
   };
 
-  const filtered = products.filter(p => p.name.toLowerCase().includes(search.toLowerCase()));
-  const priceOf = (p: VideoProduct) => { const v = Number(p.discountedPrice || p.originalPrice || 0); return v > 0 ? `₹${v}` : ''; };
+  const priceValueOf = (p: VideoProduct) => Number(p.discountedPrice || p.originalPrice || 0);
+  const priceOf = (p: VideoProduct) => { const v = priceValueOf(p); return v > 0 ? `₹${v}` : ''; };
+  const categories = Array.from(new Set(products.map(p => p.category).filter(Boolean))) as string[];
+  const minVal = priceMin.trim() === '' ? null : Number(priceMin);
+  const maxVal = priceMax.trim() === '' ? null : Number(priceMax);
+  const filtered = products.filter(p => {
+    if (!p.name.toLowerCase().includes(search.toLowerCase())) return false;
+    if (categoryFilter !== 'all' && p.category !== categoryFilter) return false;
+    const price = priceValueOf(p);
+    if (minVal !== null && price < minVal) return false;
+    if (maxVal !== null && price > maxVal) return false;
+    return true;
+  });
 
   // Whatever transformation happens to be baked into the stored image URL (e.g. a small thumbnail
   // crop) is stripped, then a large, best-quality version is requested fresh from Cloudinary's
@@ -2564,6 +2578,21 @@ function ProductVideoSection() {
 
       <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search products..."
         className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm" />
+
+      <div className="grid grid-cols-3 gap-2">
+        <select value={categoryFilter} onChange={e => setCategoryFilter(e.target.value)}
+          className="border border-gray-200 rounded-xl px-2 py-2.5 text-xs">
+          <option value="all">All Categories</option>
+          {categories.map(c => <option key={c} value={c}>{c}</option>)}
+        </select>
+        <input value={priceMin} onChange={e => setPriceMin(e.target.value)} type="number" placeholder="Min ₹"
+          className="border border-gray-200 rounded-xl px-2 py-2.5 text-xs" />
+        <input value={priceMax} onChange={e => setPriceMax(e.target.value)} type="number" placeholder="Max ₹"
+          className="border border-gray-200 rounded-xl px-2 py-2.5 text-xs" />
+      </div>
+      {(categoryFilter !== 'all' || priceMin || priceMax) && (
+        <p className="text-[11px] text-gray-400 -mt-2">Showing {filtered.length} of {products.length} products{categoryFilter !== 'all' ? ` in "${categoryFilter}"` : ''}{(priceMin || priceMax) ? ` priced ${priceMin || '0'}–${priceMax || '∞'}` : ''}.</p>
+      )}
 
       {loadingList && <div className="text-center text-xs text-gray-400 font-bold py-6">Loading products...</div>}
 
