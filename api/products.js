@@ -596,6 +596,105 @@ async function postFacebookVideo(videoUrl, caption, thumbUrl, { pageId, pageToke
   return vid.id;
 }
 
+// ── Video broadcast helpers (Reels, video stories, Telegram video) ──────────
+// The browser uploads the video straight to Cloudinary. Meta needs MP4 (H.264 + AAC) and, for Reels /
+// Stories, a vertical 9:16 frame, so Cloudinary makes a converted copy on demand ("prepare"). The browser
+// then polls "status" itself, so no single request here ever has to wait out Meta's processing time
+// (this function is capped at 60s).
+function cloudVideoUrl(raw) {
+  const clean = String(raw || '').replace(/\?.*$/, '');
+  if (!clean.startsWith(`https://res.cloudinary.com/${process.env.CLOUDINARY_CLOUD_NAME}/video/upload/`)) return '';
+  return clean;
+}
+
+// kind 'meta'  → 1080x1920 (9:16), padded with black bars, never cropped
+// kind 'plain' → original shape, max 1280px (keeps Telegram's 20MB link limit comfortable)
+function deriveVideoUrl(clean, kind) {
+  const t = kind === 'plain'
+    ? 'c_limit,w_1280,h_1280,f_mp4,vc_h264,ac_aac,q_auto:good'
+    : 'c_pad,w_1080,h_1920,b_black,f_mp4,vc_h264,ac_aac,q_auto:good';
+  return clean.replace('/video/upload/', `/video/upload/${t}/`).replace(/\.[a-z0-9]+$/i, '.mp4');
+}
+
+async function checkDerivedVideo(url) {
+  try {
+    const r = await fetch(url, { headers: { Range: 'bytes=0-1' }, signal: AbortSignal.timeout(40000) });
+    if (r.status === 200 || r.status === 206) return { ready: true };
+    if (r.status === 400 || r.status === 404) return { ready: false, error: `Cloudinary could not convert this video (HTTP ${r.status}).` };
+    return { ready: false };   // 423 etc. = still being generated
+  } catch { return { ready: false }; }
+}
+
+const VIDEO_TARGETS = ['instagram_reel', 'instagram_story', 'facebook_reel', 'facebook_story'];
+
+async function igVideoStart(target, videoUrl, caption, { igId, pageToken }) {
+  if (!igId) throw new Error('No Instagram Business/Creator account is linked to this Page (or set IG_USER_ID)');
+  const params = { video_url: videoUrl, access_token: pageToken };
+  if (target === 'instagram_reel') {
+    params.media_type = 'REELS';
+    params.caption = caption || '';
+    params.share_to_feed = 'true';   // a Reel that also shows on the normal feed grid
+  } else {
+    params.media_type = 'STORIES';
+  }
+  const c = await metaCall(`${igId}/media`, params);
+  return c.id;
+}
+
+// Facebook Reels / video stories: start → Facebook fetches the file from our public URL → finish
+async function fbVideoStart(target, videoUrl, caption, { pageId, pageToken }) {
+  const edge = target === 'facebook_reel' ? 'video_reels' : 'video_stories';
+  const st = await metaCall(`${pageId}/${edge}`, { upload_phase: 'start', access_token: pageToken });
+  const up = await fetch(st.upload_url || `https://rupload.facebook.com/video-upload/v25.0/${st.video_id}`, {
+    method: 'POST',
+    headers: { Authorization: `OAuth ${pageToken}`, file_url: videoUrl },
+  });
+  const uj = await up.json().catch(() => ({}));
+  if (!up.ok || uj.success === false || uj.error) {
+    throw new Error(uj.error?.message || uj.debug_info?.message || `Facebook could not fetch the video (${up.status})`);
+  }
+  const fin = { upload_phase: 'finish', video_id: st.video_id, access_token: pageToken };
+  if (target === 'facebook_reel') { fin.video_state = 'PUBLISHED'; fin.description = caption || ''; }
+  await metaCall(`${pageId}/${edge}`, fin);
+  return st.video_id;
+}
+
+async function videoStatus(target, { containerId, videoId }, { pageToken }) {
+  if (target.startsWith('instagram')) {
+    const s = await metaCall(containerId, { fields: 'status_code,status', access_token: pageToken }, 'GET');
+    if (s.status_code === 'FINISHED') return { state: 'ready' };
+    if (s.status_code === 'ERROR' || s.status_code === 'EXPIRED') return { state: 'error', detail: s.status || s.status_code };
+    return { state: 'processing', detail: s.status_code || 'IN_PROGRESS' };
+  }
+  const s = await metaCall(videoId, { fields: 'status', access_token: pageToken }, 'GET');
+  const vs = s.status?.video_status;
+  const pub = s.status?.publishing_phase?.status;
+  if (vs === 'error' || pub === 'error') {
+    const why = s.status?.processing_phase?.errors || s.status?.publishing_phase?.errors || s.status?.uploading_phase?.errors;
+    return { state: 'error', detail: why ? JSON.stringify(why).slice(0, 200) : 'Facebook rejected the video' };
+  }
+  if (vs === 'ready' || pub === 'complete') return { state: 'ready' };
+  return { state: 'processing', detail: vs || 'processing' };
+}
+
+async function telegramSendVideo(videoUrl, caption) {
+  const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+  const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+  if (!TOKEN || !CHAT_ID) throw new Error('Telegram credentials missing — check TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID env vars');
+  const send = async (extra) => {
+    const r = await fetch(`https://api.telegram.org/bot${TOKEN}/sendVideo`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: CHAT_ID, video: videoUrl, caption: String(caption || '').slice(0, 1024), supports_streaming: true, ...extra }),
+    });
+    return r.json().catch(() => ({}));
+  };
+  let d = await send({ parse_mode: 'Markdown' });
+  if (!d.ok && /parse/i.test(d.description || '')) d = await send({});   // caption markdown rejected → plain text
+  if (!d.ok) throw new Error(`Telegram error: ${d.description || 'could not send the video'}`);
+  return d.result?.message_id;
+}
+
 let client;
 
 async function getClient() {
@@ -1566,6 +1665,55 @@ export default async function handler(req, res) {
         return res.status(200).json({ ok: true, id });
       } catch (err) {
         console.error('[FacebookVideoPost] error:', err.message);
+        return res.status(500).json({ error: err.message });
+      }
+    }
+
+    // ── Video broadcast (Reels, video stories, Telegram video) ───────────────
+    // POST /api/products  body: { videoAction, ... }
+    //   prepare  { videoUrl, kind: 'meta'|'plain' }                     → { ready, url }   (Cloudinary converts the video)
+    //   telegram { videoUrl, caption }                                   → posts the video to the Telegram channel
+    //   start    { target, videoUrl, caption }                           → { containerId } (Instagram) | { videoId } (Facebook)
+    //   status   { target, containerId?, videoId? }                      → { state: 'processing'|'ready'|'error' }
+    //   publish  { target, containerId }                                 → Instagram only: publishes the finished container
+    // target: instagram_reel | instagram_story | facebook_reel | facebook_story
+    if (req.method === 'POST' && req.body?.videoAction) {
+      const { videoAction, target, kind, caption, containerId, videoId } = req.body;
+      try {
+        if (videoAction === 'prepare') {
+          const clean = cloudVideoUrl(req.body.videoUrl);
+          if (!clean) return res.status(400).json({ error: 'videoUrl must be one of your Cloudinary videos' });
+          const derived = deriveVideoUrl(clean, kind === 'plain' ? 'plain' : 'meta');
+          const chk = await checkDerivedVideo(derived);
+          return res.status(200).json({ ready: !!chk.ready, url: derived, error: chk.error });
+        }
+        if (videoAction === 'telegram') {
+          const clean = cloudVideoUrl(req.body.videoUrl);
+          if (!clean) return res.status(400).json({ error: 'videoUrl must be one of your Cloudinary videos' });
+          const id = await telegramSendVideo(clean, caption);
+          return res.status(200).json({ ok: true, id });
+        }
+        if (!VIDEO_TARGETS.includes(target)) return res.status(400).json({ error: 'Unknown target' });
+        const acct = await resolveStoryAccounts();
+        if (videoAction === 'start') {
+          const clean = cloudVideoUrl(req.body.videoUrl);
+          if (!clean) return res.status(400).json({ error: 'videoUrl must be one of your Cloudinary videos' });
+          if (target.startsWith('instagram')) {
+            return res.status(200).json({ containerId: await igVideoStart(target, clean, caption, acct) });
+          }
+          return res.status(200).json({ videoId: await fbVideoStart(target, clean, caption, acct) });
+        }
+        if (videoAction === 'status') {
+          return res.status(200).json(await videoStatus(target, { containerId, videoId }, acct));
+        }
+        if (videoAction === 'publish') {
+          if (!target.startsWith('instagram') || !containerId) return res.status(400).json({ error: 'Nothing to publish' });
+          const pub = await metaCall(`${acct.igId}/media_publish`, { creation_id: containerId, access_token: acct.pageToken });
+          return res.status(200).json({ ok: true, id: pub.id });
+        }
+        return res.status(400).json({ error: 'Unknown videoAction' });
+      } catch (err) {
+        console.error(`[Video:${videoAction}:${target || ''}]`, err.message);
         return res.status(500).json({ error: err.message });
       }
     }
