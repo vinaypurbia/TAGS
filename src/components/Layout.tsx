@@ -1,6 +1,6 @@
 import { ReactNode, useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { ShoppingBag, Phone, Mail, MapPin, Search, Lock } from 'lucide-react';
 import { useCart } from '../context/CartContext';
 import { CustomerRegistrationModal } from './CustomerRegistrationModal';
@@ -14,7 +14,13 @@ export function Layout({ children }: { children: ReactNode }) {
   const { categories, banner, isLoaded } = useAppData();
   const { user, isDeliveryBoy } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
   const [searchQuery, setSearchQuery] = useState('');
+
+  // Keep the search box in sync with the URL (?search=...)
+  useEffect(() => {
+    setSearchQuery(new URLSearchParams(location.search).get('search') || '');
+  }, [location.search]);
   const [showStaffModal, setShowStaffModal] = useState(false);
   const [staffForm, setStaffForm] = useState({ name: '', password: '' });
   const [staffError, setStaffError] = useState('');
@@ -165,6 +171,24 @@ export function Layout({ children }: { children: ReactNode }) {
           </button>
         </div>
       </header>
+
+      {/* Mobile / app search bar (desktop has its own inside the header) */}
+      <form onSubmit={handleSearch} className="md:hidden bg-white px-4 py-2.5 border-b border-gray-200">
+        <div className="relative w-full">
+          <input
+            type="search"
+            enterKeyHint="search"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search toys, gear, gadgets, sports..."
+            className="w-full border-2 border-[#FA5600] rounded-full pl-4 pr-12 py-2 text-base outline-none bg-white text-[#1A1A1A]"
+          />
+          <button type="submit" aria-label="Search"
+            className="absolute right-0 top-0 h-full bg-[#FA5600] text-white px-4 rounded-full active:bg-[#E04A00] transition">
+            <Search className="w-4 h-4" />
+          </button>
+        </div>
+      </form>
 
       {/* Category Strip — skeleton until BOTH APIs loaded */}
       <div className="bg-white border-b border-gray-200 px-6 py-2 flex gap-4 overflow-x-auto no-scrollbar items-center">
