@@ -3453,8 +3453,10 @@ function ImportProductsSection() {
 }
 
 // ── Invoice Import (AI) ──────────────────────────────────────────────────
-// Upload a supplier invoice (PDF or photo). Claude reads the line items, then each
-// item gets a picture (a real web photo first, an AI-generated one if none is found).
+// Upload a supplier invoice (PDF or photo). Gemini reads the line items and crops each item's
+// own real photo straight out of the invoice page — no AI-generated pictures. If an item has no
+// photo on the invoice (and no match on the optional supplier site), it's left for you to add
+// a picture yourself from the viewer (paste a link from the supplier, or any photo URL).
 // Everything lands in an editable table for review before the actual import.
 type InvoiceRow = {
   id: string;
@@ -3505,31 +3507,6 @@ function InvoiceImportSection() {
     const parent = mainCats.find((c: any) => (c.name || '').toLowerCase() === categoryName.trim().toLowerCase());
     if (!parent) return [];
     return allCats.filter((c: any) => c.parentId && String(c.parentId) === String(parent._id)).map((c: any) => c.name).filter(Boolean);
-  };
-
-  // Free AI-generated picture (used when the invoice had no real photo for this item, or on "try a different picture")
-  const fetchImageFor = async (id: string, name: string, prompt: string) => {
-    setRows(rs => rs.map(r => r.id === id ? { ...r, imageStatus: 'loading' } : r));
-    try {
-      const r = await fetch('/api/products?invoiceImage=true', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, prompt }),
-      });
-      const data = await r.json();
-      if (!r.ok || !data.imageUrl) throw new Error(data.error || 'Image generation failed');
-      setRows(rs => rs.map(row => row.id === id ? { ...row, imageUrl: data.imageUrl, imageSource: 'ai', imageStatus: 'done' } : row));
-    } catch {
-      setRows(rs => rs.map(row => row.id === id ? { ...row, imageStatus: 'error' } : row));
-    }
-  };
-
-  // Fetches images with a small concurrency cap so we don't fire many requests at once
-  const fetchAllImages = async (list: InvoiceRow[]) => {
-    const queue = [...list];
-    const worker = async () => {
-      let item;
-      while ((item = queue.shift())) await fetchImageFor(item.id, item.name, item.imagePrompt);
-    };
-    await Promise.all(Array.from({ length: 3 }, worker));
   };
 
   // Writes a shop-ready description from the item's name + its final picture (editable afterwards)
@@ -3613,7 +3590,7 @@ function InvoiceImportSection() {
   };
 
   // Looks each item up on the supplier's website. Found → that photo replaces the invoice crop.
-  // Not found → keep the invoice crop if there is one, otherwise the AI picture.
+  // Not found → keep the invoice crop if there is one, otherwise it's left for you to add manually.
   const fetchSupplierImages = async (list: InvoiceRow[], site: string) => {
     const queue = [...list];
     const worker = async () => {
@@ -3631,8 +3608,7 @@ function InvoiceImportSection() {
             continue;
           }
         } catch {}
-        if (it.imageUrl) setRows(rs => rs.map(row => row.id === it.id ? { ...row, imageStatus: 'done' } : row));
-        else await fetchImageFor(it.id, it.name, it.imagePrompt);
+        setRows(rs => rs.map(row => row.id === it.id ? { ...row, imageStatus: row.imageUrl ? 'done' : 'error' } : row));
       }
     };
     await Promise.all(Array.from({ length: 3 }, worker));
@@ -3675,10 +3651,10 @@ function InvoiceImportSection() {
       const site = normalizeSite(supplierSite);
       if (site) {
         rememberSupplier(site);
-        fetchSupplierImages(newRows, site); // supplier photo first, then invoice crop, then AI
+        fetchSupplierImages(newRows, site); // supplier photo first, keep the invoice crop otherwise
       } else {
-        // Only items with no real invoice photo need the (free, AI-generated) fallback picture
-        fetchAllImages(newRows.filter(r => !r.imageUrl));
+        // No supplier site given — items with no real invoice photo are left for you to add one manually
+        setRows(rs => rs.map(r => r.imageUrl ? r : { ...r, imageStatus: 'error' }));
       }
     } catch (e: any) {
       setError(e.message || 'Could not read this invoice'); setStage('idle');
@@ -3768,13 +3744,11 @@ function InvoiceImportSection() {
               <div key={row.id} className="p-4 flex gap-3">
                 <input type="checkbox" checked={row.include} onChange={e => updateRow(row.id, { include: e.target.checked })} className="mt-1.5 w-4 h-4 accent-[#FA5600] shrink-0" disabled={stage !== 'review'} />
 
-                <div className="w-16 h-16 rounded-xl bg-gray-50 border border-gray-100 shrink-0 relative overflow-hidden">
+                <div className="w-16 h-16 rounded-xl bg-gray-50 border border-gray-100 shrink-0 relative overflow-hidden cursor-pointer"
+                  onClick={() => openViewer(row.id)} title={row.imageUrl ? 'Click to view large / replace' : 'Click to add a picture'}>
                   {row.imageStatus === 'loading' && <div className="w-full h-full flex items-center justify-center"><RefreshCw className="w-4 h-4 text-gray-300 animate-spin" /></div>}
-                  {row.imageStatus === 'error' && <div className="w-full h-full flex items-center justify-center text-red-400 text-[9px] font-bold text-center px-1">No image</div>}
-                  {row.imageUrl && (
-                    <img src={row.imageUrl} alt={row.name} onClick={() => openViewer(row.id)} title="Click to view large / replace"
-                      className="w-full h-full object-cover cursor-zoom-in" />
-                  )}
+                  {row.imageStatus === 'error' && !row.imageUrl && <div className="w-full h-full flex items-center justify-center text-red-400 text-[9px] font-bold text-center px-1">No photo<br/>— add one</div>}
+                  {row.imageUrl && <img src={row.imageUrl} alt={row.name} className="w-full h-full object-cover" />}
                   {row.imageSource && (
                     <span className={`absolute bottom-0 left-0 right-0 text-[7px] font-black uppercase tracking-wider text-center py-0.5 ${row.imageSource === 'supplier' || row.imageSource === 'link' ? 'bg-blue-600/90 text-white' : row.imageSource === 'invoice' ? 'bg-green-600/90 text-white' : 'bg-purple-500/90 text-white'}`}>
                       {row.imageSource === 'supplier' ? 'From supplier' : row.imageSource === 'link' ? 'From link' : row.imageSource === 'invoice' ? 'From invoice' : 'AI approx.'}
@@ -3817,9 +3791,6 @@ function InvoiceImportSection() {
 
                 {stage === 'review' && (
                   <div className="flex flex-col gap-1.5 shrink-0">
-                    <button onClick={() => fetchImageFor(row.id, row.name, row.imagePrompt)} title="Generate a different picture" className="w-7 h-7 flex items-center justify-center bg-gray-100 hover:bg-gray-200 text-gray-500 rounded-lg transition">
-                      <RefreshCw className="w-3.5 h-3.5" />
-                    </button>
                     <button onClick={() => removeRow(row.id)} title="Remove this item" className="w-7 h-7 flex items-center justify-center bg-gray-100 hover:bg-red-500 hover:text-white text-gray-500 rounded-lg transition">
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
@@ -3876,7 +3847,7 @@ function InvoiceImportSection() {
               <div className="min-w-0">
                 <p className="text-xs font-black uppercase tracking-widest text-gray-700 truncate">{viewRow.name}</p>
                 <p className="text-[11px] text-gray-400 mt-0.5">
-                  {viewRow.imageSource === 'invoice' ? 'Cropped from the invoice' : viewRow.imageSource === 'link' ? 'From a link you pasted' : viewRow.imageSource === 'supplier' ? 'From the supplier website' : 'AI-generated'}
+                  {viewRow.imageSource === 'invoice' ? 'Cropped from the invoice' : viewRow.imageSource === 'link' ? 'From a link you pasted' : viewRow.imageSource === 'supplier' ? 'From the supplier website' : viewRow.imageSource === 'ai' ? 'AI-generated (older import)' : 'No picture yet — paste a link below'}
                   {viewSize && <> · {viewSize}</>}
                 </p>
               </div>
