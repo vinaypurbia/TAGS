@@ -908,6 +908,15 @@ async function enrichWithStock(p, inventory) {
 }
 
 // ── Helper: strip Cloudinary transformation params from URL ──────────────────
+// Pulls the Cloudinary public_id (folder/filename, no extension) out of a delivery URL, so we can
+// ask Cloudinary's Admin API for the image's real pixel dimensions without downloading it.
+function extractCloudinaryPublicId(url) {
+  if (!url || !url.includes('res.cloudinary.com')) return null;
+  const clean = cleanCloudinaryUrl(url);
+  const m = clean.match(/\/upload\/(?:v\d+\/)?(.+?)\.[a-zA-Z0-9]+(?:\?.*)?$/);
+  return m ? m[1] : null;
+}
+
 function cleanCloudinaryUrl(url) {
   if (!url) return '';
   try {
@@ -1171,6 +1180,81 @@ export default async function handler(req, res) {
         await appSettings.updateOne({ _id: 'musicLibrary' }, { $set: { tracks: clean, updatedAt: new Date() } }, { upsert: true });
         return res.status(200).json({ success: true, tracks: clean });
       }
+    }
+
+    // ── Image quality scan — GET /api/products?imageQuality=true ────────────────────────────────
+    // Asks Cloudinary for each image's real pixel dimensions (no downloading, just metadata) and
+    // sorts products into "too small to fix" vs "sharpening could genuinely help" vs fine.
+    if (req.method === 'GET' && req.query.imageQuality === 'true') {
+      const LOW = 500, BORDERLINE = 900; // px, shorter side
+
+      const allProducts = await collection.find({})
+        .project({ name: 1, category: 1, image: 1, imageUrl: 1 }).toArray();
+
+      const withIds = allProducts.map(p => {
+        const raw = p.image || p.imageUrl || '';
+        return { ...p, _imgUrl: raw, _publicId: extractCloudinaryPublicId(raw) };
+      });
+      const cloudinaryOnes = withIds.filter(p => p._publicId);
+      const unknownCount = withIds.filter(p => p._imgUrl && !p._publicId).length; // has a photo, just not on Cloudinary
+      const noImageCount = withIds.filter(p => !p._imgUrl).length;
+
+      const dimMap = new Map();
+      for (let i = 0; i < cloudinaryOnes.length; i += 100) {
+        const batch = cloudinaryOnes.slice(i, i + 100);
+        try {
+          const result = await cloudinary.api.resources_by_ids(batch.map(p => p._publicId));
+          for (const r of result.resources || []) dimMap.set(r.public_id, r);
+        } catch { /* this batch failed to look up — those products are simply skipped, not flagged wrongly */ }
+      }
+
+      const low = [], borderline = [];
+      for (const p of cloudinaryOnes) {
+        const r = dimMap.get(p._publicId);
+        if (!r || !r.width || !r.height) continue;
+        const minSide = Math.min(r.width, r.height);
+        const entry = { _id: p._id, name: p.name || '(no name)', category: p.category || '', image: p._imgUrl, width: r.width, height: r.height };
+        if (minSide < LOW) low.push(entry);
+        else if (minSide < BORDERLINE) borderline.push(entry);
+      }
+
+      return res.status(200).json({ low, borderline, unknownCount, noImageCount, totalScanned: allProducts.length });
+    }
+
+    // ── Image enhance — POST /api/products?enhanceImage=true  { id } ────────────────────────────
+    // Applies Cloudinary's standard (free-tier) sharpen/improve/quality delivery transform — this is
+    // NOT AI super-resolution and can't invent missing detail, so genuinely tiny images are refused
+    // here with a message instead, rather than quietly producing a result that still looks bad.
+    if (req.method === 'POST' && req.query.enhanceImage === 'true') {
+      const { id } = req.body || {};
+      if (!id) return res.status(400).json({ error: 'id is required' });
+      let product;
+      try { product = await collection.findOne({ _id: new ObjectId(id) }); }
+      catch { return res.status(400).json({ error: 'Invalid product id' }); }
+      if (!product) return res.status(404).json({ error: 'Product not found' });
+
+      const rawUrl = product.image || product.imageUrl || '';
+      const publicId = extractCloudinaryPublicId(rawUrl);
+      if (!publicId) {
+        return res.status(400).json({ error: "This image isn't hosted on Cloudinary, so it can't be enhanced here — try re-uploading it instead." });
+      }
+
+      let resource;
+      try { resource = await cloudinary.api.resource(publicId); }
+      catch { return res.status(404).json({ error: 'Could not find this image on Cloudinary' }); }
+
+      const minSide = Math.min(resource.width || 0, resource.height || 0);
+      if (minSide > 0 && minSide < 500) {
+        return res.status(422).json({
+          error: `This photo is only ${resource.width}×${resource.height}px — sharpening won't meaningfully fix that. Please upload a higher-resolution photo instead.`,
+          tooSmall: true,
+        });
+      }
+
+      const clean = cleanCloudinaryUrl(rawUrl);
+      const enhancedUrl = clean.replace('/upload/', '/upload/e_improve,e_sharpen:60,q_auto:best/');
+      await collection.updateOne({ _id: new ObjectId(id) }, { $set: { image: enhancedUrl, imageEnhancedAt: new Date() } });
+      return res.status(200).json({ success: true, imageUrl: enhancedUrl });
     }
 
     // ── Data cleanup audit — GET /api/products?audit=true ──────────────────────────────────────
