@@ -3,6 +3,9 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 
 const uri = process.env.TAGS_MONGO;
+
+// Cash on Delivery rule (keep in step with OrderSummary.tsx): only Udaipur, only orders of ₹1,000 or more
+const COD_RULES = { city: 'udaipur', pinPrefix: '313', minOrder: 1000 };
 const JWT_SECRET = process.env.JWT_SECRET || 'tags-customer-secret-2026';
 const GMAIL_USER = 'tags.udr@gmail.com';
 const GMAIL_PASS = process.env.GMAIL_APP_PASSWORD; // Gmail App Password in Vercel env
@@ -349,16 +352,41 @@ export default async function handler(req, res) {
       if (req.method === 'POST') {
         const {
           orderId, customerName, customerPhone, customerEmail,
-          deliveryAddress, items, totalAmount, status
+          deliveryAddress, items, totalAmount, status,
+          paymentMethod, courierCharge, itemsTotal, addressLine,
+          deliveryCity, deliveryState, deliveryPincode,
+          estimatedDeliveryFrom, estimatedDeliveryTo,
         } = req.body;
         if (!customerPhone || !items?.length) {
           return res.status(400).json({ error: 'Phone and items required' });
         }
 
+        // ── Checkout rules, enforced here too so they cannot be bypassed from the browser ──
+        const itemsSum = items.reduce((sum, i) => sum + (Number(i.price) || 0) * (Number(i.quantity) || 1), 0);
+        if (paymentMethod === 'cod') {
+          const inUdaipur = String(deliveryCity || '').toLowerCase().includes(COD_RULES.city)
+            && String(deliveryPincode || '').startsWith(COD_RULES.pinPrefix);
+          if (!inUdaipur) return res.status(400).json({ error: 'Cash on Delivery is only available in Udaipur. Please pay in advance for other locations.' });
+          if (itemsSum < COD_RULES.minOrder) return res.status(400).json({ error: `Cash on Delivery needs an order of ₹${COD_RULES.minOrder} or more.` });
+        }
+
+        // ── Stock check (stock itself is still deducted on delivery, as before) ──
+        {
+          const inventoryCol = db.collection('inventory');
+          for (const it of items) {
+            if (!it.productId) continue;
+            const inv = await inventoryCol.findOne({ productId: it.productId });
+            if (inv && inv.trackInventory !== false && inv.availableStock != null && inv.availableStock < (Number(it.quantity) || 1)) {
+              const left = Math.max(0, inv.availableStock);
+              return res.status(409).json({ error: `Sorry, only ${left} of "${it.productName || it.name || 'an item'}" ${left === 1 ? 'is' : 'are'} in stock. Please reduce the quantity.` });
+            }
+          }
+        }
+
         const cu = await customers.findOneAndUpdate(
           { phone: customerPhone },
           {
-            $set: { name: customerName, email: customerEmail || '', address: deliveryAddress || '', updatedAt: new Date() },
+            $set: { name: customerName, email: customerEmail || '', address: addressLine || deliveryAddress || '', updatedAt: new Date() },
             $setOnInsert: { phone: customerPhone, tags: [], createdAt: new Date() },
           },
           { upsert: true, returnDocument: 'after' }
@@ -370,7 +398,16 @@ export default async function handler(req, res) {
           customerId, customerName, customerPhone,
           customerEmail: customerEmail || '',
           deliveryAddress: deliveryAddress || '',
+          deliveryCity: deliveryCity || '', deliveryState: deliveryState || '', deliveryPincode: deliveryPincode || '',
           items, totalAmount: Number(totalAmount) || 0,
+          // New checkout fields. COD orders get paymentMode 'cod' so the driver flow collects the cash on delivery;
+          // advance-payment orders keep no paymentMode, so they are confirmed as paid/partial in the Orders tab as before.
+          paymentMethod: paymentMethod === 'cod' ? 'cod' : 'advance',
+          ...(paymentMethod === 'cod' ? { paymentMode: 'cod' } : {}),
+          itemsTotal: Number(itemsTotal) || itemsSum,
+          courierCharge: courierCharge === null || courierCharge === undefined ? null : Number(courierCharge) || 0,
+          estimatedDeliveryFrom: estimatedDeliveryFrom ? new Date(estimatedDeliveryFrom) : null,
+          estimatedDeliveryTo: estimatedDeliveryTo ? new Date(estimatedDeliveryTo) : null,
           status: status || 'pending',
           createdAt: new Date(), updatedAt: new Date(),
         });
@@ -411,7 +448,7 @@ export default async function handler(req, res) {
           }).catch(() => {});
         }
 
-        return res.status(201).json({ success: true, _id: result.insertedId, customerId });
+        return res.status(201).json({ success: true, _id: result.insertedId, customerId, orderId: newOrderId });
       }
 
       if (req.method === 'PUT') {
