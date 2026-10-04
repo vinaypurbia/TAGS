@@ -975,6 +975,17 @@ async function enrichWithStock(p, inventory) {
 // ── Helper: strip Cloudinary transformation params from URL ──────────────────
 // Pulls the Cloudinary public_id (folder/filename, no extension) out of a delivery URL, so we can
 // ask Cloudinary's Admin API for the image's real pixel dimensions without downloading it.
+// Mirrors the frontend's productImageList() priority exactly, so both modules agree on which
+// photo is "current": imageUrls[] (the multi-photo gallery, if the editor writes there) first,
+// then the legacy singular fields, then a fourth possible images[] field as a last resort.
+function resolveProductImage(p) {
+  if (Array.isArray(p.imageUrls)) { const v = p.imageUrls.find(Boolean); if (v) return v; }
+  if (p.imageUrl) return p.imageUrl;
+  if (p.image) return p.image;
+  if (Array.isArray(p.images)) { const v = p.images.find(Boolean); if (v) return v; }
+  return '';
+}
+
 function extractCloudinaryPublicId(url) {
   if (!url || !url.includes('res.cloudinary.com')) return null;
   const clean = cleanCloudinaryUrl(url);
@@ -1254,10 +1265,13 @@ export default async function handler(req, res) {
       const LOW = 500, BORDERLINE = 900; // px, shorter side
 
       const allProducts = await collection.find({})
-        .project({ name: 1, category: 1, image: 1, imageUrl: 1 }).toArray();
+        .project({ name: 1, category: 1, image: 1, imageUrl: 1, imageUrls: 1, images: 1 }).toArray();
 
+      // Prefer the imageUrls[] gallery's first photo — if the product editor stores edits there
+      // (common when a product supports multiple photos), the singular image/imageUrl fields can
+      // go stale, frozen at whatever was set when the product was first created.
       const withIds = allProducts.map(p => {
-        const raw = p.image || p.imageUrl || '';
+        const raw = resolveProductImage(p);
         return { ...p, _imgUrl: raw, _publicId: extractCloudinaryPublicId(raw) };
       });
       const cloudinaryOnes = withIds.filter(p => p._publicId);
@@ -1298,7 +1312,7 @@ export default async function handler(req, res) {
       catch { return res.status(400).json({ error: 'Invalid product id' }); }
       if (!product) return res.status(404).json({ error: 'Product not found' });
 
-      const rawUrl = product.image || product.imageUrl || '';
+      const rawUrl = resolveProductImage(product);
       const publicId = extractCloudinaryPublicId(rawUrl);
       if (!publicId) {
         return res.status(400).json({ error: "This image isn't hosted on Cloudinary, so it can't be enhanced here — try re-uploading it instead." });
@@ -1318,7 +1332,9 @@ export default async function handler(req, res) {
 
       const clean = cleanCloudinaryUrl(rawUrl);
       const enhancedUrl = clean.replace('/upload/', '/upload/e_improve,e_sharpen:60,q_auto:best/');
-      await collection.updateOne({ _id: new ObjectId(id) }, { $set: { image: enhancedUrl, imageEnhancedAt: new Date() } });
+      const setFields = { image: enhancedUrl, imageUrl: enhancedUrl, imageEnhancedAt: new Date() };
+      if (Array.isArray(product.imageUrls) && product.imageUrls.length > 0) setFields['imageUrls.0'] = enhancedUrl;
+      await collection.updateOne({ _id: new ObjectId(id) }, { $set: setFields });
       return res.status(200).json({ success: true, imageUrl: enhancedUrl });
     }
 
