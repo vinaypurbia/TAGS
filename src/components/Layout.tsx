@@ -256,6 +256,8 @@ export function Layout({ children }: { children: ReactNode }) {
                 </a>
               </li>
               <li><Link to="/contact" className="text-[#FA5600] hover:underline font-bold">Contact Us →</Link></li>
+              <li><Link to="/shipping-policy" className="hover:text-[#FA5600] transition-colors">Shipping &amp; Delivery</Link></li>
+              <li><Link to="/return-policy" className="hover:text-[#FA5600] transition-colors">Returns &amp; Refunds</Link></li>
             </ul>
           </div>
 
@@ -263,10 +265,11 @@ export function Layout({ children }: { children: ReactNode }) {
             <div className="text-[#FA5600] border-b border-white/10 pb-2">Easy Ordering</div>
             <p className="opacity-80 leading-relaxed normal-case font-normal text-xs">
               1. Select items<br />
-              2. Fill your details<br />
-              3. Send on WhatsApp
+              2. Enter your delivery address<br />
+              3. Place your order
             </p>
-            <p className="text-[#FA5600]">No online transactions</p>
+            <p className="text-[#FA5600]">Cash on Delivery in Udaipur (₹1,000+)</p>
+            <p className="opacity-80 normal-case font-normal text-xs">Advance payment + courier for the rest of India. No payment gateway.</p>
           </div>
 
         </div>
