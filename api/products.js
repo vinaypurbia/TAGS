@@ -840,6 +840,71 @@ async function syncMetaToMongo(collection) {
 
 // ── Helper: enrich a product with its live inventory data ────────────────────
 // FULLY linked to inventory — no hardcoded defaults for stock status
+// ── Google Merchant Center product feed ─────────────────────────────────────
+// Merchant Center fetches GET /api/products?googleFeed=true on a schedule. Only products visible on the
+// storefront are included, and prices/availability come from the same live data as the product page.
+const SITE_URL = (process.env.SITE_URL || 'https://ta-gs.online').replace(/\/+$/, ''); // must match the domain claimed in Merchant Center
+
+const xmlEscape = (v) => String(v ?? '')
+  .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '')
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+
+const plainText = (v) => String(v ?? '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+
+// Google's product category (text form). Conservative: only the clear matches, otherwise left out.
+function googleCategoryFor(category = '', subcategory = '') {
+  const c = `${category} ${subcategory}`.toLowerCase();
+  if (/skate|sport|cricket|football|basketball|badminton|fitness|cycl/.test(c)) return 'Sporting Goods';
+  if (/toy|game|puzzle|doll|car|train|plane|tank|remote|rc\b|kids/.test(c)) return 'Toys & Games > Toys';
+  return '';
+}
+
+function buildGoogleFeedItem(p) {
+  const id = String(p._id);
+  const title = plainText(p.name).slice(0, 150);
+  const images = (Array.isArray(p.imageUrls) && p.imageUrls.filter(Boolean).length ? p.imageUrls.filter(Boolean) : [p.imageUrl || p.image]).filter(Boolean);
+  const original = parseFloat(p.originalPrice || p.price || 0);
+  const discounted = parseFloat(p.discountedPrice || 0);
+  if (!title || images.length === 0 || !(original > 0)) return null; // Merchant Center needs a title, an image and a price
+
+  const inStock = (p.stock?.availableStock || 0) > 0;
+  const hasSale = discounted > 0 && discounted < original;
+  const desc = plainText(p.description || p.name).slice(0, 5000) || title;
+  const gcat = googleCategoryFor(p.category, p.subcategory);
+  const ptype = [p.category, p.subcategory].filter(Boolean).join(' > ');
+
+  const lines = [
+    `<g:id>${xmlEscape(id)}</g:id>`,
+    `<g:title>${xmlEscape(title)}</g:title>`,
+    `<g:description>${xmlEscape(desc)}</g:description>`,
+    `<g:link>${xmlEscape(`${SITE_URL}/products/${id}`)}</g:link>`,
+    `<g:image_link>${xmlEscape(images[0])}</g:image_link>`,
+    ...images.slice(1, 11).map(u => `<g:additional_image_link>${xmlEscape(u)}</g:additional_image_link>`),
+    `<g:availability>${inStock ? 'in_stock' : 'out_of_stock'}</g:availability>`,
+    `<g:price>${original.toFixed(2)} INR</g:price>`,
+    ...(hasSale ? [`<g:sale_price>${discounted.toFixed(2)} INR</g:sale_price>`] : []),
+    `<g:condition>new</g:condition>`,
+    `<g:brand>${xmlEscape(plainText(p.brand) || 'TAGS')}</g:brand>`,
+    `<g:identifier_exists>no</g:identifier_exists>`, // no barcode (GTIN/MPN) on these products
+    ...(gcat ? [`<g:google_product_category>${xmlEscape(gcat)}</g:google_product_category>`] : []),
+    ...(ptype ? [`<g:product_type>${xmlEscape(ptype)}</g:product_type>`] : []),
+  ];
+  return `<item>\n      ${lines.join('\n      ')}\n    </item>`;
+}
+
+function buildGoogleFeedXml(itemsXml) {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:g="http://base.google.com/ns/1.0">
+  <channel>
+    <title>TAGS</title>
+    <link>${xmlEscape(SITE_URL)}</link>
+    <description>TAGS — Toys, Adventure, Gadgets &amp; Sports, Udaipur</description>
+    ${itemsXml.join('\n    ')}
+  </channel>
+</rss>
+`;
+}
+
 async function enrichWithStock(p, inventory) {
   const pid = p._id.toString();
   const stock = await inventory.findOne({ productId: pid });
@@ -1433,6 +1498,20 @@ export default async function handler(req, res) {
       } = req.query;
 
       // ── Special ops ───────────────────────────────────────────
+      // ── Google Merchant Center feed ─────────────────────────────
+      // GET /api/products?googleFeed=true  → XML product feed (visible products only)
+      if (req.query.googleFeed === 'true') {
+        const docs = await collection.find({}).sort({ createdAt: -1 }).toArray();
+        const enrichedDocs = await Promise.all(docs.map(d => enrichWithStock(d, inventory)));
+        const feedItems = enrichedDocs
+          .filter(p => p.stock?.frontendStatus !== 'hidden')
+          .map(buildGoogleFeedItem)
+          .filter(Boolean);
+        res.setHeader('Content-Type', 'application/xml; charset=utf-8');
+        res.setHeader('Cache-Control', 's-maxage=900, stale-while-revalidate=3600'); // refresh every ~15 min
+        return res.status(200).send(buildGoogleFeedXml(feedItems));
+      }
+
       // ── One-time migration: re-host all external images to Cloudinary ──────
       if (req.query.migrate_images === 'true') {
         const allProducts = await collection.find({
