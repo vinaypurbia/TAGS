@@ -113,6 +113,42 @@ export function ProductDetail() {
       .finally(() => setReviewsLoading(false));
   }, [id]);
 
+  // ─── Product structured data (JSON-LD) so Google can read the price and stock ───
+  useEffect(() => {
+    if (!product) return;
+    const imgs: string[] = (product.imageUrls?.length > 0 ? product.imageUrls : [product.imageUrl || product.image]).filter(Boolean);
+    const original = Number(product.originalPrice || product.price || 0);
+    const sale = Number(product.discountedPrice || 0);
+    const price = sale > 0 && sale < original ? sale : original;
+    if (!product.name || !(price > 0) || imgs.length === 0) return;
+    const fs = product?.stock?.frontendStatus || 'normal';
+    const inStock = (product?.stock?.availableStock || 0) > 0 && fs !== 'out_of_stock' && fs !== 'hidden';
+    const data = {
+      '@context': 'https://schema.org',
+      '@type': 'Product',
+      name: product.name,
+      description: String(product.description || product.name).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim(),
+      image: imgs,
+      sku: String(product.stock?.sku || product._id || id),
+      brand: { '@type': 'Brand', name: 'TAGS' },
+      offers: {
+        '@type': 'Offer',
+        url: `${window.location.origin}/products/${product._id || id}`,
+        priceCurrency: 'INR',
+        price: price.toFixed(2),
+        itemCondition: 'https://schema.org/NewCondition',
+        availability: inStock ? 'https://schema.org/InStock' : 'https://schema.org/OutOfStock',
+      },
+    };
+    const el = document.createElement('script');
+    el.type = 'application/ld+json';
+    el.id = 'product-jsonld';
+    el.text = JSON.stringify(data);
+    document.getElementById('product-jsonld')?.remove();
+    document.head.appendChild(el);
+    return () => { document.getElementById('product-jsonld')?.remove(); };
+  }, [product, id]);
+
   // ─── Submit a review ─────────────────────────────────────────────────────
   const handleSubmitReview = async () => {
     setFormError('');
