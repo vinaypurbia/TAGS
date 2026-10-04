@@ -20,6 +20,7 @@ import { MyAccount } from './pages/MyAccount';
 import TrackOrder from './pages/TrackOrder';
 import DriverDeliver from './pages/DriverDeliver';
 import DriverPanel from './pages/DriverPanel';
+import { ShippingPolicy, ReturnPolicy } from './pages/PolicyPages';
 
 // ── Role-based route guard ─────────────────────────────────────────────────────
 // Redirects unauthenticated users to /pos-login, and routes each role to their
@@ -336,6 +337,8 @@ function AppShell() {
                 <Route path="/order" element={<OrderSummary />} />
                 <Route path="/manage-categories" element={<ManageCategories />} />
                 <Route path="/contact" element={<Contact />} />
+                <Route path="/shipping-policy" element={<ShippingPolicy />} />
+                <Route path="/return-policy" element={<ReturnPolicy />} />
                 <Route path="/account" element={<MyAccount />} />
                 <Route path="*" element={<Home />} />
               </Routes>
