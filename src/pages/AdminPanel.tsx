@@ -15,14 +15,14 @@ import {
   TrendingUp, TrendingDown, Users, AlertTriangle, DollarSign, IndianRupee,
   KeyRound, EyeOff, MessageSquare, Pencil, Database, Send, Radio, Copy, Download,
   CheckCircle, RefreshCw, FileText, Sparkles, Wand2,
-  Video,
+  Video, ZoomIn,
 } from 'lucide-react';
 
 const VISIBILITY_KEY = 'tagsAdminVisibility';
 
 type Section =
   | 'dashboard' | 'promo' | 'banner' | 'category-images' | 'perks'
-  | 'products' | 'categories' | 'inventory' | 'business' | 'settings' | 'import' | 'reviews' | 'broadcast' | 'backup' | 'cleanup' | 'video';
+  | 'products' | 'categories' | 'inventory' | 'business' | 'settings' | 'import' | 'reviews' | 'broadcast' | 'backup' | 'cleanup' | 'video' | 'imageQuality';
 
 interface BannerSlide { image: string; text: string; description: string; }
 interface Perk        { icon: string; text: string; }
@@ -45,6 +45,7 @@ const ALL_MODULES: { id: Section; label: string; icon: any; desc: string }[] = [
   { id: 'backup',          label: 'Backup',           icon: Database,        desc: 'Download a full database backup' },
   { id: 'cleanup',         label: 'Cleanup',          icon: Trash2,          desc: 'Find and remove junk/orphaned data' },
   { id: 'video',           label: 'Video',            icon: Video,           desc: 'Free animated videos for product cards' },
+  { id: 'imageQuality',    label: 'Image Quality',    icon: ZoomIn,          desc: 'Find low-resolution product photos' },
 ];
 
 // ── Change Password Form (shared between login screen and Settings) ──────────
@@ -1400,6 +1401,7 @@ export function AdminPanel() {
           {activeSection === 'backup'     && <div className="max-w-2xl mx-auto"><BackupSection /></div>}
           {activeSection === 'cleanup'    && <div className="max-w-2xl mx-auto"><CleanupSection /></div>}
           {activeSection === 'video'      && <div className="max-w-2xl mx-auto"><ProductVideoSection /></div>}
+          {activeSection === 'imageQuality' && <div className="max-w-2xl mx-auto"><ImageQualitySection /></div>}
 
           {/* ── REVIEWS ── */}
           {activeSection === 'reviews' && <div className="max-w-4xl mx-auto"><ReviewsSection /></div>}
@@ -2752,6 +2754,191 @@ function ProductVideoSection() {
 }
 
 // ── Backup Section ──────────────────────────────────────────────────────
+// ── Image Quality Section ──────────────────────────────────────────────────
+// "Low" = too small to fix — sharpening can't invent detail that isn't there, so we're honest about
+// that and point toward re-uploading instead. "Borderline" = sharpening/compression cleanup can
+// genuinely help. Dimensions come straight from Cloudinary's stored metadata, not a re-download.
+type QualityEntry = { _id: string; name: string; category: string; image: string; width: number; height: number };
+
+function ImageQualitySection() {
+  const [status, setStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  const [error, setError] = useState('');
+  const [data, setData] = useState<{ low: QualityEntry[]; borderline: QualityEntry[]; unknownCount: number; noImageCount: number; totalScanned: number } | null>(null);
+  const [enhancing, setEnhancing] = useState<Set<string>>(new Set());
+  const [enhanced, setEnhanced] = useState<Record<string, string>>({}); // id -> new image url
+  const [enhanceErrors, setEnhanceErrors] = useState<Record<string, string>>({});
+  const [bulkRunning, setBulkRunning] = useState(false);
+  const [bulkProgress, setBulkProgress] = useState({ current: 0, total: 0 });
+  const replaceFileRef = useRef<HTMLInputElement>(null);
+  const [replacingId, setReplacingId] = useState('');
+
+  const runScan = async () => {
+    setStatus('loading'); setError('');
+    try {
+      const res = await fetch('/api/products?imageQuality=true');
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || `Scan failed (${res.status})`);
+      setData(json);
+      setEnhanced({}); setEnhanceErrors({});
+      setStatus('ready');
+    } catch (e: any) {
+      setError(e.message || 'Scan failed'); setStatus('error');
+    }
+  };
+
+  const enhanceOne = async (id: string) => {
+    setEnhancing(s => new Set(s).add(id));
+    setEnhanceErrors(e => { const n = { ...e }; delete n[id]; return n; });
+    try {
+      const res = await fetch('/api/products?enhanceImage=true', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || `Enhance failed (${res.status})`);
+      setEnhanced(e => ({ ...e, [id]: json.imageUrl }));
+    } catch (e: any) {
+      setEnhanceErrors(err => ({ ...err, [id]: e.message || 'Enhance failed' }));
+    } finally {
+      setEnhancing(s => { const n = new Set(s); n.delete(id); return n; });
+    }
+  };
+
+  const enhanceAllBorderline = async () => {
+    const list = (data?.borderline || []).filter(it => !enhanced[it._id]);
+    if (list.length === 0) return;
+    setBulkRunning(true); setBulkProgress({ current: 0, total: list.length });
+    for (let i = 0; i < list.length; i++) {
+      await enhanceOne(list[i]._id);
+      setBulkProgress({ current: i + 1, total: list.length });
+    }
+    setBulkRunning(false);
+  };
+
+  const handleReplace = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]; if (!file || !replacingId) return;
+    try {
+      const up = await fetch('/api/upload', { method: 'POST', body: file, headers: { 'Content-Type': file.type || 'image/jpeg' } });
+      const upData = await up.json();
+      if (!up.ok || !upData.url) throw new Error(upData.error || 'Upload failed');
+      const putRes = await fetch('/api/products', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: replacingId, image: upData.url }),
+      });
+      if (!putRes.ok) throw new Error('Could not save the new photo to this product');
+      setEnhanced(en => ({ ...en, [replacingId]: upData.url }));
+      setData(d => d ? { ...d, low: d.low.filter(it => it._id !== replacingId) } : d);
+    } catch (e: any) {
+      setEnhanceErrors(err => ({ ...err, [replacingId]: e.message || 'Upload failed' }));
+    } finally {
+      setReplacingId('');
+      if (replaceFileRef.current) replaceFileRef.current.value = '';
+    }
+  };
+
+  const Row = ({ item, children }: { item: QualityEntry; children: React.ReactNode }) => (
+    <div className="flex items-center gap-3 px-4 py-2.5 border-b border-gray-100 last:border-0">
+      <div className="w-10 h-10 rounded-lg bg-gray-50 border border-gray-100 shrink-0 overflow-hidden flex items-center justify-center">
+        {(enhanced[item._id] || item.image) ? <img src={enhanced[item._id] || item.image} alt="" className="w-full h-full object-cover" /> : <Package className="w-4 h-4 text-gray-300" />}
+      </div>
+      <div className="flex-1 min-w-0">
+        <p className="text-xs font-bold text-gray-700 truncate">{item.name}</p>
+        <p className="text-[10px] text-gray-400">{item.category || 'no category'} · {item.width}×{item.height}px</p>
+      </div>
+      {children}
+    </div>
+  );
+
+  return (
+    <div className="space-y-4">
+      <SectionHeader icon={ZoomIn} title="Image Quality" desc="Find product photos that are low-resolution, and either sharpen them or know when to just re-shoot" />
+
+      <div className="bg-blue-50 border border-blue-200 rounded-2xl p-5 flex items-start gap-4">
+        <div className="w-10 h-10 bg-blue-100 rounded-xl flex items-center justify-center shrink-0"><ZoomIn className="w-5 h-5 text-blue-600" /></div>
+        <div className="flex-1">
+          <p className="text-sm font-black text-gray-800">Honest about what sharpening can and can't fix</p>
+          <p className="text-xs text-gray-500 mt-0.5">This checks each photo's real stored resolution. Photos that are only a little soft get a free one-click sharpen. Photos that are genuinely too small are flagged separately with that said plainly — no fake "AI enhance" that can't actually invent missing detail. For those, just upload a better photo right here.</p>
+        </div>
+      </div>
+
+      <button onClick={runScan} disabled={status === 'loading'}
+        className="w-full py-3 bg-[#FA5600] text-white font-black uppercase tracking-widest text-sm rounded-xl hover:bg-[#E04A00] transition flex items-center justify-center gap-2 disabled:opacity-50">
+        {status === 'loading' ? (<><RefreshCw className="w-4 h-4 animate-spin" /> Scanning...</>) : (<><ZoomIn className="w-4 h-4" /> {data ? 'Re-scan' : 'Scan Product Photos'}</>)}
+      </button>
+
+      {error && <div className="rounded-xl p-3 text-sm font-bold text-center bg-red-50 text-red-600 border border-red-200">{error}</div>}
+
+      {data && (
+        <>
+          <p className="text-[11px] text-gray-400 text-center">
+            Scanned {data.totalScanned} products.
+            {data.unknownCount > 0 && ` ${data.unknownCount} have a photo not hosted on Cloudinary (skipped — can't check those here).`}
+            {data.noImageCount > 0 && ` ${data.noImageCount} have no photo at all.`}
+          </p>
+
+          {data.low.length === 0 && data.borderline.length === 0 && (
+            <div className="bg-white rounded-2xl border border-gray-200 p-8 text-center text-sm text-gray-400 font-bold">Every photo checked is a good resolution.</div>
+          )}
+
+          {data.borderline.length > 0 && (
+            <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+              <div className="p-4 border-b border-gray-100 flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs font-black uppercase tracking-widest text-gray-700">Could Be Sharper <span className="text-gray-400">({data.borderline.length})</span></p>
+                  <p className="text-[11px] text-gray-400 mt-0.5">Resolution is on the low side but usable — sharpening can genuinely help here.</p>
+                </div>
+                <button onClick={enhanceAllBorderline} disabled={bulkRunning}
+                  className="shrink-0 text-[10px] font-black uppercase tracking-widest bg-gray-800 text-white px-3 py-2 rounded-lg hover:bg-gray-900 transition disabled:opacity-50">
+                  {bulkRunning ? `${bulkProgress.current}/${bulkProgress.total}...` : 'Enhance All'}
+                </button>
+              </div>
+              <div className="max-h-80 overflow-y-auto">
+                {data.borderline.map(item => (
+                  <Row key={item._id} item={item}>
+                    {enhanced[item._id] ? (
+                      <span className="text-[10px] font-black uppercase text-green-600 shrink-0">✅ Enhanced</span>
+                    ) : (
+                      <button onClick={() => enhanceOne(item._id)} disabled={enhancing.has(item._id)}
+                        className="shrink-0 text-[10px] font-black uppercase tracking-widest bg-orange-50 text-[#FA5600] px-3 py-1.5 rounded-lg hover:bg-orange-100 transition disabled:opacity-50">
+                        {enhancing.has(item._id) ? '...' : 'Enhance'}
+                      </button>
+                    )}
+                    {enhanceErrors[item._id] && <span className="text-[9px] text-red-500 ml-2">{enhanceErrors[item._id]}</span>}
+                  </Row>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {data.low.length > 0 && (
+            <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+              <div className="p-4 border-b border-gray-100">
+                <p className="text-xs font-black uppercase tracking-widest text-gray-700">Too Small to Fix <span className="text-gray-400">({data.low.length})</span></p>
+                <p className="text-[11px] text-gray-400 mt-0.5">Sharpening won't meaningfully help at this resolution — upload a better photo instead.</p>
+              </div>
+              <div className="max-h-80 overflow-y-auto">
+                {data.low.map(item => (
+                  <Row key={item._id} item={item}>
+                    {enhanced[item._id] ? (
+                      <span className="text-[10px] font-black uppercase text-green-600 shrink-0">✅ Replaced</span>
+                    ) : (
+                      <button onClick={() => { setReplacingId(item._id); replaceFileRef.current?.click(); }}
+                        className="shrink-0 text-[10px] font-black uppercase tracking-widest bg-gray-800 text-white px-3 py-1.5 rounded-lg hover:bg-gray-900 transition flex items-center gap-1">
+                        <Upload className="w-3 h-3" /> Replace
+                      </button>
+                    )}
+                    {enhanceErrors[item._id] && <span className="text-[9px] text-red-500 ml-2">{enhanceErrors[item._id]}</span>}
+                  </Row>
+                ))}
+              </div>
+            </div>
+          )}
+          <input ref={replaceFileRef} type="file" accept="image/*" onChange={handleReplace} className="hidden" />
+        </>
+      )}
+    </div>
+  );
+}
+
 function BackupSection() {
   const [status, setStatus] = useState<'idle' | 'working' | 'done' | 'error'>('idle');
   const [message, setMessage] = useState('');
