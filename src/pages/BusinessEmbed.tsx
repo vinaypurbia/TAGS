@@ -3,11 +3,12 @@ import {
   TrendingUp, TrendingDown, DollarSign, ShoppingCart, Package,
   AlertTriangle, BarChart2, Users, FileText, Plus, Trash2,
   Check, X, Search, Phone, Mail, MapPin, ChevronDown, ChevronUp, BookOpen,
-  Edit2, UserX, UserCheck, Eye, EyeOff, Truck
+  Edit2, UserX, UserCheck, Eye, EyeOff, Truck, MessageCircle
 } from 'lucide-react';
 import { useAuth, authHeaders } from '../context/AuthContext';
 import type { UserRole } from '../context/AuthContext';
 import { printSaleInvoicePDF } from '../lib/pdfGenerator';
+import { UPI_ID } from '../lib/storePolicy';
 
 type Module = 'dashboard' | 'orders' | 'sales' | 'purchase-orders' | 'cashflow' | 'expenses' | 'suppliers' | 'customers' | 'reports' | 'users' | 'financing' | 'ledger' | 'regenerate';
 type ReportType = 'stock-shortage' | 'low-performing' | 'best-selling' | 'profit-margin' | 'pnl' | 'stock-valuation';
@@ -719,6 +720,22 @@ function OrdersModule({ showMsg }: any) {
   const [sorryMsgs, setSorryMsgs] = useState<Record<string, string>>({});
   const [paymentStatuses, setPaymentStatuses] = useState<Record<string, string>>({});
   const [partialAmounts, setPartialAmounts] = useState<Record<string, string>>({});
+  // Advance-payment orders: courier charge, amount received, how it was paid, reference
+  const [advanceForms, setAdvanceForms] = useState<Record<string, { courier?: string; amount?: string; mode?: string; ref?: string }>>({});
+  const [advanceBusyId, setAdvanceBusyId] = useState<string | null>(null);
+  const setAdv = (id: string, patch: { courier?: string; amount?: string; mode?: string; ref?: string }) =>
+    setAdvanceForms(f => ({ ...f, [id]: { ...f[id], ...patch } }));
+  const advForm = (order: any) => {
+    const f = advanceForms[order._id] || {};
+    const itemsTotal = Number(order.itemsTotal) || (order.items || []).reduce((s: number, i: any) => s + (Number(i.price) || 0) * (Number(i.quantity) || 1), 0);
+    const courierStr = f.courier ?? (order.courierCharge !== null && order.courierCharge !== undefined ? String(order.courierCharge) : '');
+    const courierNum = courierStr.trim() === '' ? NaN : parseFloat(courierStr);
+    const courierKnown = Number.isFinite(courierNum) && courierNum >= 0;
+    const total = itemsTotal + (courierKnown ? courierNum : 0);
+    const amountStr = f.amount ?? (courierKnown ? total.toFixed(2) : '');
+    const amountNum = amountStr.trim() === '' ? NaN : parseFloat(amountStr);
+    return { itemsTotal, courierStr, courierNum, courierKnown, total, amountStr, amountNum, mode: f.mode || 'upi', ref: f.ref || '' };
+  };
   const [products, setProducts] = useState<any[]>([]);
   const [drivers, setDrivers] = useState<any[]>([]);
   const [assigningOrderId, setAssigningOrderId] = useState<string | null>(null);
@@ -847,10 +864,48 @@ function OrdersModule({ showMsg }: any) {
     window.open(url, '_blank');
   };
 
+  // WhatsApp message asking the customer to pay the advance (items + courier charge)
+  const requestAdvancePayment = (order: any) => {
+    const f = advForm(order);
+    if (!f.courierKnown) { showMsg('Enter the courier charge first (0 if there is none).', 'error'); return; }
+    const message = [
+      `Hello ${order.customerName}! Thank you for your order *${order.orderId}* at TAGS.`,
+      ``,
+      `*Items total:* Rs. ${f.itemsTotal.toFixed(2)}`,
+      `*Courier charge${order.deliveryState ? ` (to ${order.deliveryState})` : ''}:* Rs. ${f.courierNum.toFixed(2)}`,
+      `*Total to pay in advance:* Rs. ${f.total.toFixed(2)}`,
+      ``,
+      UPI_ID ? `Please pay by UPI to: *${UPI_ID}*` : `Reply here and we will share the payment details.`,
+      `After paying, please send the payment screenshot on this chat. We dispatch your order as soon as the payment is received.`,
+    ].join('\n');
+    openWhatsApp(order.customerPhone, message);
+  };
+
+  // Admin confirms the advance payment really arrived — only then does the normal confirm/dispatch flow open up
+  const markAdvanceReceived = async (order: any) => {
+    const f = advForm(order);
+    if (!f.courierKnown) { showMsg('Enter the courier charge first (0 if there is none).', 'error'); return; }
+    if (!(f.amountNum >= f.total - 0.5)) { showMsg(`Amount received must be at least Rs. ${f.total.toFixed(2)}.`, 'error'); return; }
+    if (!confirm(`Please confirm: you have RECEIVED Rs. ${f.amountNum.toFixed(2)} (${f.mode.toUpperCase()}) for order ${order.orderId}?`)) return;
+    setAdvanceBusyId(order._id);
+    try {
+      const res = await fetch('/api/customers?module=orders', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: order._id, action: 'advance_received', courierCharge: f.courierNum, amountReceived: f.amountNum, receivedMode: f.mode, reference: f.ref }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { showMsg(data.error || 'Could not record the payment.', 'error'); return; }
+      showMsg('✅ Advance payment recorded. You can now confirm the order and set the delivery date.', 'success');
+      fetchOrders();
+    } catch { showMsg('Network error.', 'error'); }
+    finally { setAdvanceBusyId(null); }
+  };
+
   const confirmOrder = (order: any) => {
     const deliveryDate = deliveryDates[order._id] || '';
     if (!deliveryDate) { showMsg('Please select a delivery date first.', 'error'); return; }
-    const paymentStatus = paymentStatuses[order._id] || 'pending';
+    const paymentStatus = order.advanceReceived ? 'paid' : (paymentStatuses[order._id] || 'pending');
     const dateFormatted = new Date(deliveryDate).toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
     const itemLines = (order.items || []).map((i: any) => `  - ${i.productName || i.name} x${i.quantity} = Rs. ${((i.price || 0) * i.quantity).toFixed(2)}`).join('\n');
     const partialAmt = parseFloat(partialAmounts[order._id] || '0');
@@ -950,6 +1005,14 @@ function OrdersModule({ showMsg }: any) {
                   <span className={`text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full ${statusColors[order.status] || 'bg-gray-100 text-gray-500'}`}>
                     {order.status || 'pending'}
                   </span>
+                  {order.paymentMethod === 'advance' && (
+                    <span className={`block mt-1 text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full ${order.advanceReceived ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'}`}>
+                      {order.advanceReceived ? 'Advance · Paid' : 'Advance · Awaiting payment'}
+                    </span>
+                  )}
+                  {order.paymentMethod === 'cod' && (
+                    <span className="block mt-1 text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700">Cash on delivery</span>
+                  )}
                 </div>
                 {expandedId === order._id ? <ChevronUp className="w-4 h-4 text-gray-400 shrink-0" /> : <ChevronDown className="w-4 h-4 text-gray-400 shrink-0" />}
               </div>
@@ -983,11 +1046,80 @@ function OrdersModule({ showMsg }: any) {
                     </div>
                   )}
 
+                  {/* Payment method / courier / delivery estimate */}
+                  {(order.paymentMethod === 'advance' || order.paymentMethod === 'cod') && (
+                    <div className={`text-xs rounded-lg px-3 py-2 border space-y-0.5 ${order.paymentMethod === 'advance' ? 'bg-blue-50 border-blue-200 text-blue-800' : 'bg-emerald-50 border-emerald-200 text-emerald-800'}`}>
+                      <p className="font-black uppercase tracking-widest text-[10px]">{order.paymentMethod === 'advance' ? 'Advance payment order · courier delivery' : 'Cash on delivery order · Udaipur'}</p>
+                      <p>Items: Rs. {(Number(order.itemsTotal) || Number(order.totalAmount) || 0).toFixed(2)}
+                        {order.paymentMethod === 'advance' && <> · Courier: {order.courierCharge === null || order.courierCharge === undefined ? <b>not set yet</b> : `Rs. ${Number(order.courierCharge).toFixed(2)}`}</>}</p>
+                      {(order.estimatedDeliveryFrom || order.estimatedDeliveryTo) && (
+                        <p>Customer was told: {order.estimatedDeliveryFrom ? new Date(order.estimatedDeliveryFrom).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) : ''} – {order.estimatedDeliveryTo ? new Date(order.estimatedDeliveryTo).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) : ''}</p>
+                      )}
+                      {order.advanceReceived && order.advancePayment && (
+                        <p className="font-bold text-green-700">✓ Advance received: Rs. {Number(order.advancePayment.amount).toFixed(2)} by {String(order.advancePayment.mode).toUpperCase()}{order.advancePayment.reference ? ` · Ref ${order.advancePayment.reference}` : ''}</p>
+                      )}
+                    </div>
+                  )}
+
                   {/* ── ACTION AREA ── */}
                   {order.status === 'pending' && (
                     <div className="space-y-3 border-t border-gray-100 pt-3">
 
-                      {/* CONFIRM with delivery date */}
+                      {/* ADVANCE PAYMENT — must be received before the order can be confirmed */}
+                      {order.paymentMethod === 'advance' && !order.advanceReceived && (() => {
+                        const f = advForm(order);
+                        return (
+                          <div className="bg-blue-50 border-2 border-blue-300 rounded-xl p-3 space-y-3">
+                            <div>
+                              <p className="text-xs font-black uppercase tracking-widest text-blue-800">Advance payment order — waiting for payment</p>
+                              <p className="text-[11px] text-blue-700 mt-0.5">Do not confirm or dispatch until the customer's payment has reached you. Steps: 1) set the courier charge, 2) ask the customer to pay, 3) record the payment.</p>
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-2">
+                              <div>
+                                <label className="block text-[10px] font-black uppercase tracking-widest text-blue-600 mb-1">1. Courier charge (Rs.)</label>
+                                <input type="number" min="0" step="0.01" value={f.courierStr} placeholder="e.g. 120"
+                                  onChange={e => setAdv(order._id, { courier: e.target.value, amount: undefined })}
+                                  className="w-full border-2 border-blue-200 rounded-lg px-3 py-2 text-sm font-bold focus:border-blue-500 outline-none bg-white" />
+                              </div>
+                              <div className="flex flex-col justify-end">
+                                <p className="text-[10px] font-black uppercase tracking-widest text-blue-600 mb-1">Total to pay</p>
+                                <p className="text-base font-black text-blue-900 py-1.5">{f.courierKnown ? `Rs. ${f.total.toFixed(2)}` : '—'}</p>
+                              </div>
+                            </div>
+
+                            <button onClick={() => requestAdvancePayment(order)}
+                              className="w-full bg-[#25D366] hover:bg-[#20bd5a] text-white font-black text-xs uppercase tracking-widest py-2.5 rounded-lg transition flex items-center justify-center gap-2">
+                              <MessageCircle className="w-4 h-4" /> 2. Ask customer to pay (WhatsApp)
+                            </button>
+
+                            <div className="border-t border-blue-200 pt-3 space-y-2">
+                              <p className="text-[10px] font-black uppercase tracking-widest text-blue-600">3. Payment received? Record it</p>
+                              <div className="grid grid-cols-2 gap-2">
+                                <input type="number" min="0" step="0.01" value={f.amountStr} placeholder="Amount received"
+                                  onChange={e => setAdv(order._id, { amount: e.target.value })}
+                                  className="w-full border-2 border-blue-200 rounded-lg px-3 py-2 text-sm font-bold focus:border-blue-500 outline-none bg-white" />
+                                <select value={f.mode} onChange={e => setAdv(order._id, { mode: e.target.value })}
+                                  className="w-full border-2 border-blue-200 rounded-lg px-3 py-2 text-sm font-bold focus:border-blue-500 outline-none bg-white">
+                                  <option value="upi">UPI</option>
+                                  <option value="bank">Bank transfer</option>
+                                  <option value="cash">Cash</option>
+                                </select>
+                              </div>
+                              <input type="text" value={f.ref} placeholder="UPI / UTR reference (optional)"
+                                onChange={e => setAdv(order._id, { ref: e.target.value })}
+                                className="w-full border-2 border-blue-200 rounded-lg px-3 py-2 text-sm font-bold focus:border-blue-500 outline-none bg-white" />
+                              <button onClick={() => markAdvanceReceived(order)} disabled={advanceBusyId === order._id}
+                                className="w-full bg-blue-600 hover:bg-blue-700 text-white font-black text-xs uppercase tracking-widest py-2.5 rounded-lg transition flex items-center justify-center gap-2 disabled:opacity-50">
+                                <Check className="w-4 h-4" /> {advanceBusyId === order._id ? 'Saving…' : 'I have received the payment'}
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })()}
+
+                      {/* CONFIRM with delivery date (for advance orders: only after the payment is recorded) */}
+                      {!(order.paymentMethod === 'advance' && !order.advanceReceived) && (
                       <div className="bg-green-50 border border-green-200 rounded-xl p-3 space-y-2">
                         <p className="text-xs font-black uppercase tracking-widest text-green-700">Confirm & Set Delivery Date</p>
                         <div className="grid grid-cols-2 gap-2">
@@ -1004,9 +1136,10 @@ function OrdersModule({ showMsg }: any) {
                           <div>
                             <label className="block text-[10px] font-black uppercase tracking-widest text-green-600 mb-1">Payment Status</label>
                             <select
-                              value={paymentStatuses[order._id] || 'pending'}
+                              value={order.advanceReceived ? 'paid' : (paymentStatuses[order._id] || 'pending')}
+                              disabled={!!order.advanceReceived}
                               onChange={e => setPaymentStatuses(p => ({ ...p, [order._id]: e.target.value }))}
-                              className="w-full border-2 border-green-200 rounded-lg px-3 py-2 text-sm font-bold focus:border-green-500 outline-none bg-white">
+                              className="w-full border-2 border-green-200 rounded-lg px-3 py-2 text-sm font-bold focus:border-green-500 outline-none bg-white disabled:bg-green-100">
                               <option value="pending">Pending (COD)</option>
                               <option value="partial">Partial Paid</option>
                               <option value="paid">Fully Paid</option>
@@ -1038,6 +1171,7 @@ function OrdersModule({ showMsg }: any) {
                           <Check className="w-4 h-4" /> Confirm Order & WhatsApp Customer
                         </button>
                       </div>
+                      )}
 
                       {/* SORRY / UNAVAILABLE */}
                       <div className="bg-red-50 border border-red-200 rounded-xl p-3 space-y-2">
