@@ -5583,11 +5583,65 @@ function VideoSharePanel({ product, caption, guard, onShared }: {
   );
 }
 
+// Instant, offline tag suggestions (used on open, and as a fallback if the AI call fails)
+const TAG_STOP = new Set(['the','and','for','with','without','from','this','that','are','you','your','new','set','pack','pcs','piece','pieces','of','in','on','to','a','an','is','it','by','at','as','or','size','color','colour','item','product','type','best','good','high','quality']);
+function localMarketplaceTags(p: any): string[] {
+  const tags: string[] = [];
+  const add = (t: string) => { const v = t.trim().toLowerCase(); if (v.length > 2 && !tags.includes(v)) tags.push(v); };
+  const words = (t: string) => String(t || '').toLowerCase().replace(/[^\p{L}\p{N}\s-]+/gu, ' ').split(/\s+/).filter(w => w.length > 2 && !TAG_STOP.has(w) && !/^\d+$/.test(w));
+  add(String(p.name || ''));
+  if (p.subcategory) add(String(p.subcategory));
+  if (p.category) add(String(p.category));
+  const nameWords = words(p.name);
+  for (let i = 0; i < nameWords.length - 1; i++) add(`${nameWords[i]} ${nameWords[i + 1]}`);
+  nameWords.forEach(add);
+  const freq: Record<string, number> = {};
+  words(String(p.description || '').replace(/\*|~~/g, '')).forEach(w => { freq[w] = (freq[w] || 0) + 1; });
+  Object.keys(freq).sort((a, b) => freq[b] - freq[a]).slice(0, 8).forEach(add);
+  [p.subcategory, p.category].filter(Boolean).forEach((c: string) => { add(`buy ${String(c).toLowerCase()} online`); add(`${String(c).toLowerCase()} for sale`); });
+  add('new'); add('best price'); add('gift');
+  return tags.slice(0, 25);
+}
+
 // ── Marketplace Assist (Facebook Marketplace has no posting API, so this removes the repetitive work) ──
 function MarketplaceAssist({ product, images, price, caption, guard, onShared }: {
   product: any; images: string[]; price: number; caption: string; guard: ShareGuard; onShared: OnShared;
 }) {
   const [copiedKey, setCopiedKey] = useState('');
+  const [tags, setTags] = useState('');
+  const [tagsBusy, setTagsBusy] = useState(false);
+  const [tagsNote, setTagsNote] = useState('');
+
+  // Instant suggestions whenever a different product is opened
+  useEffect(() => {
+    setTags(localMarketplaceTags(product).join(', '));
+    setTagsNote('Quick suggestions — tap "Generate with AI" for smarter tags');
+  }, [product?._id]);
+
+  const generateTagsAI = async () => {
+    setTagsBusy(true);
+    try {
+      const res = await fetch('/api/products', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          generateTags: true,
+          name: product.name || '', category: product.category || '',
+          subcategory: product.subcategory || '', description: igCaptionText(product.description || ''),
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      const list: string[] = Array.isArray(data.tags) ? data.tags : String(data.tags || '').split(',');
+      const clean = Array.from(new Set(list.map(t => String(t).trim().toLowerCase()).filter(Boolean)));
+      if (!res.ok || clean.length === 0) throw new Error(data.error || 'No tags returned');
+      setTags(clean.join(', '));
+      setTagsNote('✨ AI-generated — edit freely before copying');
+    } catch {
+      setTags(localMarketplaceTags(product).join(', '));
+      setTagsNote('AI not available right now — showing quick suggestions instead');
+    } finally {
+      setTagsBusy(false);
+    }
+  };
 
   const title = (product.name || '').slice(0, 100);
   const description = igCaptionText(caption || product.description || '').trim();
@@ -5652,6 +5706,26 @@ function MarketplaceAssist({ product, images, price, caption, guard, onShared }:
       {row('price', 'Price (₹)', price ? String(Math.round(price)) : '')}
       {row('cond', 'Condition', 'New')}
       {row('desc', 'Description', description)}
+
+      {/* Tags — comma separated, ready to paste */}
+      <div>
+        <div className="flex items-center justify-between mb-1.5 gap-2">
+          <p className="text-[10px] font-black uppercase tracking-widest text-gray-400">Tags (comma separated)</p>
+          <div className="flex gap-1.5">
+            <button onClick={generateTagsAI} disabled={tagsBusy}
+              className="text-[10px] font-black uppercase px-2.5 py-1.5 rounded-lg bg-orange-50 text-[#FA5600] hover:bg-[#FA5600] hover:text-white transition disabled:opacity-60">
+              {tagsBusy ? 'Generating…' : '✨ Generate with AI'}
+            </button>
+            <button onClick={() => copy('tags', tags)} disabled={!tags.trim()}
+              className={`text-[10px] font-black uppercase px-2.5 py-1.5 rounded-lg disabled:opacity-50 ${copiedKey === 'tags' ? 'bg-green-100 text-green-600' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
+              {copiedKey === 'tags' ? 'Copied' : 'Copy'}
+            </button>
+          </div>
+        </div>
+        <textarea value={tags} onChange={e => setTags(e.target.value)} rows={3}
+          className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-xs font-mono focus:border-[#FA5600] outline-none resize-none transition" />
+        <p className="text-[9px] text-gray-400 mt-1">{tagsNote}</p>
+      </div>
 
       <div className="grid grid-cols-2 gap-2 pt-1">
         <button onClick={downloadAll} disabled={!images.length}
