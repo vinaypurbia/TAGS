@@ -5680,6 +5680,7 @@ function BroadcastSection() {
   const [loading, setLoading]               = useState(true);
   const [search, setSearch]                 = useState('');
   const [categoryFilter, setCategoryFilter] = useState('All');
+  const [subFilter, setSubFilter]           = useState<Set<string>>(new Set());   // selected sub-categories (empty = all)
   const [priceMin, setPriceMin]             = useState('');
   const [priceMax, setPriceMax]             = useState('');
   const [stockFilter, setStockFilter]       = useState<'all'|'instock'|'outofstock'>('all');
@@ -5756,6 +5757,21 @@ function BroadcastSection() {
   };
 
   const categories = ['All', ...Array.from(new Set(products.map((p:any) => p.category || '').filter(Boolean))).sort()];
+  // Sub-categories that exist inside the selected category (with product counts)
+  const subCategories: { name: string; count: number }[] = categoryFilter === 'All' ? [] : (() => {
+    const counts: Record<string, number> = {};
+    products.forEach((p: any) => {
+      if (p.category !== categoryFilter) return;
+      const sc = String(p.subcategory || '').trim();
+      if (sc) counts[sc] = (counts[sc] || 0) + 1;
+    });
+    return Object.keys(counts).sort((a, b) => a.localeCompare(b)).map(name => ({ name, count: counts[name] }));
+  })();
+  const toggleSub = (name: string) => setSubFilter(prev => {
+    const next = new Set(prev);
+    if (next.has(name)) next.delete(name); else next.add(name);
+    return next;
+  });
   useEffect(() => {
     // NOTE: the API caps `limit` at 100 per request, so a single fetch
     // silently drops anything past product #100 (sorted newest-first).
@@ -5806,7 +5822,12 @@ function BroadcastSection() {
     const price = resolvePrice(p);
     const stock = getStock(p);
     if (categoryFilter !== 'All' && p.category !== categoryFilter) return false;
-    if (search.trim() && !p.name?.toLowerCase().includes(search.toLowerCase())) return false;
+    if (subFilter.size > 0 && !subFilter.has(String(p.subcategory || '').trim())) return false;
+    if (search.trim()) {
+      const q = search.toLowerCase().trim();
+      const hay = `${p.name || ''} ${p.subcategory || ''} ${p.category || ''}`.toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
     if (priceMin && price < parseFloat(priceMin)) return false;
     if (priceMax && price > parseFloat(priceMax)) return false;
     if (stockFilter === 'instock'    && stock !== null && stock <= 0) return false;
@@ -6098,12 +6119,28 @@ function BroadcastSection() {
             {/* Category */}
             <div className="flex flex-wrap gap-2">
               {categories.map(cat => (
-                <button key={cat} onClick={() => setCategoryFilter(cat)}
+                <button key={cat} onClick={() => { setCategoryFilter(cat); setSubFilter(new Set()); }}
                   className={`shrink-0 text-[10px] font-black uppercase tracking-widest px-3 py-1.5 rounded-full border-2 transition-all ${
                     categoryFilter === cat ? 'bg-[#FA5600] text-white border-[#FA5600]' : 'border-gray-200 text-gray-400 bg-white hover:border-[#FA5600]/50'
                   }`}>{cat}</button>
               ))}
             </div>
+            {/* Sub-category (appears once a category with sub-categories is selected; pick one or several) */}
+            {subCategories.length > 0 && (
+              <div className="flex flex-wrap gap-2 items-center">
+                <span className="text-[10px] font-black text-gray-400 uppercase shrink-0">Sub-category</span>
+                <button onClick={() => setSubFilter(new Set())}
+                  className={`shrink-0 text-[10px] font-black uppercase tracking-widest px-3 py-1.5 rounded-full border-2 transition-all ${
+                    subFilter.size === 0 ? 'bg-gray-800 text-white border-gray-800' : 'border-gray-200 text-gray-500 bg-white hover:border-gray-400'
+                  }`}>All</button>
+                {subCategories.map(sc => (
+                  <button key={sc.name} onClick={() => toggleSub(sc.name)}
+                    className={`shrink-0 text-[10px] font-black uppercase tracking-widest px-3 py-1.5 rounded-full border-2 transition-all ${
+                      subFilter.has(sc.name) ? 'bg-gray-800 text-white border-gray-800' : 'border-gray-200 text-gray-500 bg-white hover:border-gray-400'
+                    }`}>{sc.name} ({sc.count})</button>
+                ))}
+              </div>
+            )}
             {/* Shared-date filter (Shared tab only) */}
             {shareTab === 'shared' && (
               <div className="flex gap-2 flex-wrap items-center">
