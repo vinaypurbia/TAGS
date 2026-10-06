@@ -93,12 +93,7 @@ async function extractInvoiceItems(buffer, mimeType) {
     `  "name": string,\n` +
     `  "quantity": number | null,\n` +
     `  "unitCost": number | null,\n` +
-    `  "description": string,\n` +
-    (isImage ?
-      `  "hasPhoto": boolean,        // true ONLY if this invoice page actually shows a real photo/picture of this exact item next to its row\n` +
-      `  "photoBox": {"ymin":0,"xmin":0,"ymax":0,"xmax":0} | null,  // ONLY when hasPhoto is true: the TIGHT bounding box around just that one photo, each value 0-1000 normalized to the full page. Do not include neighboring photos, text or table borders.\n`
-      : '') +
-    `  "imagePrompt": string        // a detailed visual description of the item for generating a matching product photo if no real photo is available: colors, shape, material, packaging, visible text/branding\n` +
+    `  "description": string\n` +
     `}\n\n` +
     `Rules:\n` +
     `- name: the product name as written, cleaned up (title case, no SKU/item codes). Leave out wholesaler words that are not part of the product's name, such as BULK, VIDEO, CARTOON, BOXED, WHOLESALE, and remove brackets that only held those words\n` +
@@ -121,9 +116,6 @@ async function extractInvoiceItems(buffer, mimeType) {
       quantity: Number.isFinite(it.quantity) ? it.quantity : null,
       unitCost: Number.isFinite(it.unitCost) ? it.unitCost : null,
       description: typeof it.description === 'string' ? it.description.trim() : '',
-      hasPhoto: isImage && !!it.hasPhoto && it.photoBox && [it.photoBox.ymin, it.photoBox.xmin, it.photoBox.ymax, it.photoBox.xmax].every(Number.isFinite),
-      photoBox: it.photoBox || null,
-      imagePrompt: typeof it.imagePrompt === 'string' ? it.imagePrompt.trim() : '',
     }));
 }
 
@@ -1096,16 +1088,8 @@ export default async function handler(req, res) {
       try {
         const items = await extractInvoiceItems(buffer, mt);
         if (items.length === 0) return res.status(422).json({ error: 'No line items found in this invoice. Try a clearer scan.' });
-        // Crop each item's real photo now, while we still have the original bytes in memory.
-        const withPhotos = await Promise.all(items.map(async (it) => {
-          if (!it.hasPhoto) return { ...it, imageUrl: '', imageSource: '' };
-          try {
-            const cropped = await cropInvoicePhoto(buffer, it.photoBox);
-            return { ...it, imageUrl: await uploadInvoiceItemImage(cropped), imageSource: 'invoice' };
-          } catch {
-            return { ...it, imageUrl: '', imageSource: '' }; // crop failed → frontend falls back to the AI image
-          }
-        }));
+        // Pictures are added by the admin (upload / supplier site / link) — Gemini is NOT used to crop photos.
+        const withPhotos = items.map(it => ({ ...it, imageUrl: '', imageSource: '' }));
         return res.status(200).json({ success: true, items: withPhotos });
       } catch (error) {
         console.error('Invoice extract error:', error);
@@ -1118,7 +1102,8 @@ export default async function handler(req, res) {
     // clean=true also asks AI to remove wholesaler text/logos; if that model is unavailable the picture is
     // still used as-is and the response says cleaned:false so the admin knows.
     if (req.method === 'POST' && req.query.imageFromLink === 'true') {
-      const { url, name, clean } = req.body || {};
+      const { url, name } = req.body || {};
+      const clean = false; // AI picture cleaning is switched off — pictures are used exactly as they are
       if (!url) return res.status(400).json({ error: 'A link is required' });
       try {
         let buf = await loadImageFromLink(String(url));
@@ -1180,10 +1165,41 @@ export default async function handler(req, res) {
       }
     }
 
+    // ── Marketplace tags (AI) — POST /api/products?generateTags=true  { name, category?, subcategory?, description? } ──
+    // Returns up to 20 short, Facebook-safe tags (letters/numbers/spaces/hyphens only) for the admin panel's Marketplace tab.
+    if (req.method === 'POST' && req.query.generateTags === 'true') {
+      const { name, category, subcategory, description } = req.body || {};
+      if (!name) return res.status(400).json({ error: 'name is required' });
+      try {
+        const out = await callGemini([{ text:
+          `You write search tags for a Facebook Marketplace listing from an Indian toy & gadget shop.\n` +
+          `Product name: "${String(name).slice(0, 150)}"\n` +
+          (category ? `Category: "${String(category).slice(0, 60)}"\n` : '') +
+          (subcategory ? `Sub-category: "${String(subcategory).slice(0, 60)}"\n` : '') +
+          (description ? `Description: "${String(description).slice(0, 500)}"\n` : '') +
+          `Give 20 short tags (1-3 words each) that buyers would type to find this product: the product name and its common spellings, ` +
+          `synonyms, what it is used for, who it is for (kids, boys, girls, return gift, birthday gift) and sensible buyer search phrases.\n` +
+          `Rules: lowercase, only letters, numbers, spaces and hyphens (no brackets, dots, emojis or symbols), no brand names that are not in the product name, no prices.\n` +
+          `Return ONLY JSON: {"tags": string[]}` }]);
+        const raw = Array.isArray(out) ? out : Array.isArray(out?.tags) ? out.tags : String(out?.tags || '').split(',');
+        const tags = [...new Set(raw
+          .map(t => String(t).toLowerCase().replace(/[^\p{L}\p{N}\s-]+/gu, '').replace(/\s+/g, ' ').trim().slice(0, 40).trim())
+          .filter(t => t.length > 2))].slice(0, 20);
+        if (tags.length === 0) return res.status(502).json({ error: 'No tags were returned' });
+        return res.status(200).json({ success: true, tags });
+      } catch (error) {
+        console.error('Generate tags error:', error);
+        return res.status(500).json({ error: error.message || 'Could not generate tags' });
+      }
+    }
+
     // ── Invoice Import (AI) — POST /api/products?invoiceImage=true  { name, prompt? } ──────────
     // Free AI-generated fallback picture: used when the invoice had no real photo for the item,
     // and for the "try a different picture" button.
     if (req.method === 'POST' && req.query.invoiceImage === 'true') {
+      return res.status(410).json({ error: 'AI picture generation is turned off. Upload the picture yourself.' });
+    }
+    if (false && req.method === 'POST' && req.query.invoiceImage === 'true') {
       const { name, prompt } = req.body || {};
       if (!name) return res.status(400).json({ error: 'name is required' });
       try {
