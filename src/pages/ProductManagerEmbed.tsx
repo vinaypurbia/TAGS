@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { Search, Filter, SlidersHorizontal, Image as ImageIcon, Tag, ChevronDown, X, Check, Pencil, Trash2, Plus, Upload, Eye, RotateCcw, Copy, Loader2, AlertTriangle } from 'lucide-react';
+import { Search, Filter, SlidersHorizontal, Image as ImageIcon, Tag, ChevronDown, X, Check, Pencil, Trash2, Plus, Upload, Eye, RotateCcw, Copy, Loader2, AlertTriangle, Download } from 'lucide-react';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -32,6 +32,62 @@ interface EditState {
 
 const getImg = (p: Product): string | null =>
   p.imageUrls?.[0] || p.imageUrl || p.image || null;
+
+// Every image a product has, de-duplicated, main image first
+const getAllImages = (p: Product): string[] => {
+  const list = [...(p.imageUrls || []), p.imageUrl || '', p.image || ''].filter(Boolean);
+  return Array.from(new Set(list));
+};
+
+// Product name -> safe file name, e.g. "Red Kurti (L/XL)" -> "Red_Kurti_L_XL"
+const safeFileName = (name: string): string =>
+  (name || 'product').trim().replace(/[\\/:*?"<>|]+/g, ' ').replace(/[^\p{L}\p{N}\s_-]+/gu, '').replace(/\s+/g, '_').replace(/^_+|_+$/g, '').slice(0, 80) || 'product';
+
+const extFromUrl = (url: string, mime = ''): string => {
+  const m = (mime.split('/')[1] || '').toLowerCase().replace('jpeg', 'jpg').split('+')[0];
+  if (m && /^[a-z0-9]{2,4}$/.test(m)) return m;
+  const u = url.split('?')[0].match(/\.(jpe?g|png|webp|gif|avif)$/i);
+  return u ? u[1].toLowerCase().replace('jpeg', 'jpg') : 'jpg';
+};
+
+// Downloads one image, named after the product. Falls back gracefully if the image host blocks fetch (CORS).
+const downloadImage = async (url: string, baseName: string): Promise<void> => {
+  const save = (href: string, filename: string) => {
+    const a = document.createElement('a');
+    a.href = href; a.download = filename; a.rel = 'noopener';
+    document.body.appendChild(a); a.click(); a.remove();
+  };
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('bad response');
+    const blob = await res.blob();
+    const filename = `${baseName}.${extFromUrl(url, blob.type)}`;
+    const obj = URL.createObjectURL(blob);
+    save(obj, filename);
+    setTimeout(() => URL.revokeObjectURL(obj), 2000);
+  } catch {
+    // Cloudinary can force a named download without CORS
+    if (/res\.cloudinary\.com/.test(url) && url.includes('/upload/') && !url.includes('fl_attachment')) {
+      save(url.replace('/upload/', `/upload/fl_attachment:${encodeURIComponent(baseName)}/`), `${baseName}.${extFromUrl(url)}`);
+    } else {
+      window.open(url, '_blank', 'noopener');
+    }
+  }
+};
+
+// Downloads all of a product's images as  <Product_Name>.jpg  or  <Product_Name>-1.jpg, -2.jpg ...
+const downloadProductImages = async (p: Product, only?: { url: string; index: number }): Promise<void> => {
+  const base = safeFileName(p.name);
+  const all = getAllImages(p);
+  if (only) {
+    await downloadImage(only.url, all.length > 1 ? `${base}-${only.index + 1}` : base);
+    return;
+  }
+  for (let i = 0; i < all.length; i++) {
+    await downloadImage(all[i], all.length > 1 ? `${base}-${i + 1}` : base);
+    if (i < all.length - 1) await new Promise(r => setTimeout(r, 350));
+  }
+};
 
 const getPrice = (p: Product): number =>
   Number(p.discountedPrice || p.originalPrice) || 0;
@@ -122,6 +178,17 @@ function ProductCard({ product, onEdit }: { product: Product; onEdit: () => void
             <Pencil className="w-3.5 h-3.5" /> Edit
           </span>
         </button>
+        {/* Download image(s) — named after the product; does not open edit */}
+        {img && (
+          <button
+            type="button"
+            title={getAllImages(product).length > 1 ? `Download ${getAllImages(product).length} images` : 'Download image'}
+            onClick={(e) => { e.stopPropagation(); e.preventDefault(); downloadProductImages(product); }}
+            className="absolute top-2 right-2 z-10 h-8 min-w-8 px-2 bg-white/95 hover:bg-[#FA5600] text-gray-700 hover:text-white rounded-full shadow-md flex items-center justify-center gap-1 transition-colors">
+            <Download className="w-4 h-4" />
+            {getAllImages(product).length > 1 && <span className="text-[10px] font-black">{getAllImages(product).length}</span>}
+          </button>
+        )}
       </div>
 
       {/* Info */}
@@ -469,6 +536,11 @@ function EditModal({
                           <button onClick={() => removeExistingImage(i)}
                             className="absolute inset-0 bg-black/0 group-hover/img:bg-black/40 transition flex items-center justify-center">
                             <X className="w-4 h-4 text-white opacity-0 group-hover/img:opacity-100 transition" />
+                          </button>
+                          <button type="button" title="Download this image"
+                            onClick={(e) => { e.stopPropagation(); downloadImage(url, existingImageUrls.length > 1 ? `${safeFileName(product.name)}-${i + 1}` : safeFileName(product.name)); }}
+                            className="absolute top-1 left-1 z-10 w-6 h-6 bg-white/90 hover:bg-[#FA5600] text-gray-700 hover:text-white rounded-full shadow flex items-center justify-center transition-colors">
+                            <Download className="w-3 h-3" />
                           </button>
                           {i === 0 && (
                             <span className="absolute bottom-0 left-0 right-0 bg-[#FA5600] text-white text-[8px] font-black text-center py-0.5 uppercase tracking-widest">Main</span>
@@ -1229,6 +1301,13 @@ function ListRow({ product, onEdit }: { product: Product; onEdit: () => void }) 
           <span className="text-sm font-black text-gray-900">{fmt(product.originalPrice)}</span>
         )}
       </div>
+      {img && (
+        <button type="button" title="Download image(s)"
+          onClick={(e) => { e.stopPropagation(); downloadProductImages(product); }}
+          className="shrink-0 w-8 h-8 flex items-center justify-center bg-gray-100 hover:bg-[#FA5600] text-gray-600 hover:text-white rounded-xl transition">
+          <Download className="w-4 h-4" />
+        </button>
+      )}
       <button onClick={onEdit}
         className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 bg-orange-50 hover:bg-[#FA5600] text-[#FA5600] hover:text-white rounded-xl transition text-xs font-black uppercase tracking-widest">
         <Pencil className="w-3 h-3" /> Edit
