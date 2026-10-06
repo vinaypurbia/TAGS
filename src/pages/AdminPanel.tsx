@@ -5583,6 +5583,97 @@ function VideoSharePanel({ product, caption, guard, onShared }: {
   );
 }
 
+// ── Marketplace Assist (Facebook Marketplace has no posting API, so this removes the repetitive work) ──
+function MarketplaceAssist({ product, images, price, caption, guard, onShared }: {
+  product: any; images: string[]; price: number; caption: string; guard: ShareGuard; onShared: OnShared;
+}) {
+  const [copiedKey, setCopiedKey] = useState('');
+
+  const title = (product.name || '').slice(0, 100);
+  const description = igCaptionText(caption || product.description || '').trim();
+
+  const copy = (key: string, text: string) =>
+    navigator.clipboard.writeText(text).then(() => {
+      setCopiedKey(key);
+      setTimeout(() => setCopiedKey(''), 1500);
+    });
+
+  const toFile = async (url: string, i: number) => {
+    const blob = await (await fetch(url)).blob();
+    const ext = (blob.type.split('/')[1] || 'jpg').replace('jpeg', 'jpg');
+    return new File([blob], `${(product.name || 'product').replace(/[^\w-]+/g, '_').slice(0, 30)}-${i + 1}.${ext}`, { type: blob.type });
+  };
+
+  const downloadAll = async () => {
+    for (let i = 0; i < images.length; i++) {
+      try {
+        const f = await toFile(images[i], i);
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(f); a.download = f.name; a.click();
+        URL.revokeObjectURL(a.href);
+        await new Promise(r => setTimeout(r, 300));
+      } catch { window.open(images[i], '_blank'); } // fallback if CORS blocks fetch
+    }
+  };
+
+  const shareImages = async () => {
+    try {
+      const files = await Promise.all(images.slice(0, 10).map(toFile));
+      if ((navigator as any).canShare?.({ files })) {
+        await navigator.share({ files, title, text: description });
+      } else { await downloadAll(); }
+    } catch { /* user cancelled */ }
+  };
+
+  const openMarketplace = () => {
+    const id = String(product._id);
+    guard([id], () => {
+      window.open('https://www.facebook.com/marketplace/create/item', '_blank');
+      onShared([id], 'marketplace');
+    });
+  };
+
+  const row = (k: string, label: string, value: string) => (
+    <div key={k} className="flex items-start gap-2">
+      <div className="flex-1 min-w-0">
+        <p className="text-[10px] font-black uppercase tracking-widest text-gray-400">{label}</p>
+        <p className="text-xs font-bold text-gray-800 line-clamp-3 whitespace-pre-wrap break-words">{value || '—'}</p>
+      </div>
+      <button onClick={() => copy(k, value)}
+        className={`shrink-0 text-[10px] font-black uppercase px-2.5 py-1.5 rounded-lg ${copiedKey === k ? 'bg-green-100 text-green-600' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
+        {copiedKey === k ? 'Copied' : 'Copy'}
+      </button>
+    </div>
+  );
+
+  return (
+    <div className="p-4 space-y-3">
+      {row('title', 'Title', title)}
+      {row('price', 'Price (₹)', price ? String(Math.round(price)) : '')}
+      {row('cond', 'Condition', 'New')}
+      {row('desc', 'Description', description)}
+
+      <div className="grid grid-cols-2 gap-2 pt-1">
+        <button onClick={downloadAll} disabled={!images.length}
+          className="border-2 border-gray-200 text-gray-700 font-black py-2.5 rounded-xl text-xs uppercase tracking-widest hover:border-[#FA5600] hover:text-[#FA5600] disabled:opacity-50">
+          Download {images.length} image{images.length === 1 ? '' : 's'}
+        </button>
+        <button onClick={shareImages} disabled={!images.length}
+          className="border-2 border-gray-200 text-gray-700 font-black py-2.5 rounded-xl text-xs uppercase tracking-widest hover:border-[#FA5600] hover:text-[#FA5600] disabled:opacity-50">
+          Share images (mobile)
+        </button>
+      </div>
+      <button onClick={openMarketplace}
+        className="w-full bg-[#1877F2] hover:bg-[#1568d6] text-white font-black py-3.5 rounded-xl text-sm uppercase tracking-widest shadow-md">
+        Open Marketplace → Create Listing
+      </button>
+      <p className="text-[9px] text-center text-gray-400 font-semibold">
+        Facebook doesn't allow auto-posting to Marketplace, so paste the copied fields and add the images.
+      </p>
+    </div>
+  );
+}
+
 // ── Broadcast Section ──────────────────────────────────────────────────────
 function BroadcastSection() {
   const [products, setProducts]             = useState<any[]>([]);
@@ -5611,7 +5702,7 @@ function BroadcastSection() {
   const [fbPostSending, setFbPostSending]     = useState(false);
   const [fbPostSuccess, setFbPostSuccess]     = useState(false);
 
-  const [rightTab, setRightTab]           = useState<'message' | 'story' | 'video'>('message');
+  const [rightTab, setRightTab]           = useState<'message' | 'story' | 'video' | 'marketplace'>('message');
   const [showBulkWA, setShowBulkWA]         = useState(false);
 
   // Share history: which products were broadcast, when, and where (stored on the server so it's the same on every device)
@@ -6197,7 +6288,7 @@ function BroadcastSection() {
 
                 {/* Tabs: Message vs Story */}
                 <div className="px-4 py-3 border-b border-gray-100 flex gap-2">
-                  {([['message', 'Message Post'], ['story', 'Story'], ['video', 'Video']] as const).map(([id, label]) => (
+                  {([['message', 'Message Post'], ['story', 'Story'], ['video', 'Video'], ['marketplace', 'Marketplace']] as const).map(([id, label]) => (
                     <button key={id} onClick={() => setRightTab(id)}
                       className={`flex-1 text-[10px] font-black uppercase tracking-widest py-2 rounded-xl border-2 transition-all ${
                         rightTab === id ? 'bg-[#FA5600] text-white border-[#FA5600]' : 'border-gray-200 text-gray-400 bg-white hover:border-[#FA5600]/50'
@@ -6213,6 +6304,17 @@ function BroadcastSection() {
                     origPrice={resolveOrigPrice(preview)}
                     caption={customMsg}
                     description={preview.description || ''}
+                    guard={guard}
+                    onShared={recordShare}
+                  />
+                )}
+
+                {rightTab === 'marketplace' && (
+                  <MarketplaceAssist
+                    product={preview}
+                    images={getProductImages(preview)}
+                    price={resolvePrice(preview)}
+                    caption={customMsg}
                     guard={guard}
                     onShared={recordShare}
                   />
