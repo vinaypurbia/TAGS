@@ -5585,9 +5585,12 @@ function VideoSharePanel({ product, caption, guard, onShared }: {
 
 // Instant, offline tag suggestions (used on open, and as a fallback if the AI call fails)
 const TAG_STOP = new Set(['the','and','for','with','without','from','this','that','are','you','your','new','set','pack','pcs','piece','pieces','of','in','on','to','a','an','is','it','by','at','as','or','size','color','colour','item','product','type','best','good','high','quality']);
+// Facebook's tag box is picky: keep only letters, numbers, spaces and hyphens (no brackets, dots, emojis), short tags only
+const sanitizeTag = (t: string): string =>
+  String(t || '').toLowerCase().replace(/[^\p{L}\p{N}\s-]+/gu, '').replace(/\s+/g, ' ').trim().slice(0, 40).trim();
 function localMarketplaceTags(p: any): string[] {
   const tags: string[] = [];
-  const add = (t: string) => { const v = t.trim().toLowerCase(); if (v.length > 2 && !tags.includes(v)) tags.push(v); };
+  const add = (t: string) => { const v = sanitizeTag(t); if (v.length > 2 && !tags.includes(v)) tags.push(v); };
   const words = (t: string) => String(t || '').toLowerCase().replace(/[^\p{L}\p{N}\s-]+/gu, ' ').split(/\s+/).filter(w => w.length > 2 && !TAG_STOP.has(w) && !/^\d+$/.test(w));
   add(String(p.name || ''));
   if (p.subcategory) add(String(p.subcategory));
@@ -5600,7 +5603,7 @@ function localMarketplaceTags(p: any): string[] {
   Object.keys(freq).sort((a, b) => freq[b] - freq[a]).slice(0, 8).forEach(add);
   [p.subcategory, p.category].filter(Boolean).forEach((c: string) => { add(`buy ${String(c).toLowerCase()} online`); add(`${String(c).toLowerCase()} for sale`); });
   add('new'); add('best price'); add('gift');
-  return tags.slice(0, 25);
+  return tags.slice(0, 20);
 }
 
 // ── Marketplace Assist (Facebook Marketplace has no posting API, so this removes the repetitive work) ──
@@ -5611,10 +5614,15 @@ function MarketplaceAssist({ product, images, price, caption, guard, onShared }:
   const [tags, setTags] = useState('');
   const [tagsBusy, setTagsBusy] = useState(false);
   const [tagsNote, setTagsNote] = useState('');
+  const [usedTags, setUsedTags] = useState<Set<string>>(new Set());
+  const tagList = Array.from(new Set(tags.split(',').map(sanitizeTag).filter(t => t.length > 2)));
+  const nextTag = tagList.find(t => !usedTags.has(t));
+  const copyTag = (t: string) => navigator.clipboard.writeText(t).then(() => setUsedTags(prev => new Set(prev).add(t)));
 
   // Instant suggestions whenever a different product is opened
   useEffect(() => {
     setTags(localMarketplaceTags(product).join(', '));
+    setUsedTags(new Set());
     setTagsNote('Quick suggestions — tap "Generate with AI" for smarter tags');
   }, [product?._id]);
 
@@ -5631,9 +5639,10 @@ function MarketplaceAssist({ product, images, price, caption, guard, onShared }:
       });
       const data = await res.json().catch(() => ({}));
       const list: string[] = Array.isArray(data.tags) ? data.tags : String(data.tags || '').split(',');
-      const clean = Array.from(new Set(list.map(t => String(t).trim().toLowerCase()).filter(Boolean)));
+      const clean = Array.from(new Set(list.map(sanitizeTag).filter(t => t.length > 2))).slice(0, 20);
       if (!res.ok || clean.length === 0) throw new Error(data.error || 'No tags returned');
       setTags(clean.join(', '));
+      setUsedTags(new Set());
       setTagsNote('✨ AI-generated — edit freely before copying');
     } catch {
       setTags(localMarketplaceTags(product).join(', '));
@@ -5725,6 +5734,36 @@ function MarketplaceAssist({ product, images, price, caption, guard, onShared }:
         <textarea value={tags} onChange={e => setTags(e.target.value)} rows={3}
           className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-xs font-mono focus:border-[#FA5600] outline-none resize-none transition" />
         <p className="text-[9px] text-gray-400 mt-1">{tagsNote}</p>
+
+        {/* Facebook's tag box takes ONE tag at a time (type/paste, then press Enter) — so copy them one by one */}
+        {tagList.length > 0 && (
+          <div className="mt-2 rounded-xl border border-gray-200 p-2.5 bg-gray-50">
+            <div className="flex items-center justify-between gap-2 mb-2">
+              <p className="text-[10px] font-black uppercase tracking-widest text-gray-500">
+                One-by-one ({usedTags.size}/{tagList.length} copied)
+              </p>
+              <div className="flex gap-1.5">
+                <button onClick={() => nextTag && copyTag(nextTag)} disabled={!nextTag}
+                  className="text-[10px] font-black uppercase px-2.5 py-1.5 rounded-lg bg-[#FA5600] text-white hover:bg-[#e04d00] disabled:opacity-50">
+                  {nextTag ? `Copy next: ${nextTag.length > 18 ? nextTag.slice(0, 18) + '…' : nextTag}` : 'All copied ✓'}
+                </button>
+                {usedTags.size > 0 && (
+                  <button onClick={() => setUsedTags(new Set())}
+                    className="text-[10px] font-black uppercase px-2 py-1.5 rounded-lg bg-gray-200 text-gray-600 hover:bg-gray-300">Reset</button>
+                )}
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {tagList.map(t => (
+                <button key={t} onClick={() => copyTag(t)} title="Click to copy this tag"
+                  className={`text-[10px] font-bold px-2.5 py-1 rounded-full border transition ${
+                    usedTags.has(t) ? 'bg-green-50 border-green-300 text-green-600 line-through' : 'bg-white border-gray-300 text-gray-700 hover:border-[#FA5600] hover:text-[#FA5600]'
+                  }`}>{t}</button>
+              ))}
+            </div>
+            <p className="text-[9px] text-gray-400 mt-2">In Facebook: click the Product tags box → paste → press Enter → come back and tap "Copy next". Brackets, dots and emojis are removed because Facebook rejects them.</p>
+          </div>
+        )}
       </div>
 
       <div className="grid grid-cols-2 gap-2 pt-1">
