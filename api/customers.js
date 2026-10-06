@@ -456,6 +456,7 @@ export default async function handler(req, res) {
           id, status, notes, deliveryDate, whatsappMessage,
           paymentMode, amountCollected, collectedBy, collectorName,
           action, lat, lng, driverName, cashCollected, paymentCollectedMode,
+          amountReceived, receivedMode, reference, courierCharge,
         } = req.body;
         if (!id) return res.status(400).json({ error: 'ID required' });
 
@@ -472,6 +473,53 @@ export default async function handler(req, res) {
             { upsert: true }
           );
           return res.status(200).json({ success: true });
+        }
+
+        // ── ADVANCE PAYMENT RECEIVED (admin confirms the customer's advance payment) ─────────
+        // For advance-payment orders (outside Udaipur / under the COD minimum). Records the money in Cash Flow,
+        // adds the courier charge to the order total, and marks the order PAID so the normal confirm / dispatch /
+        // delivery steps follow — and nobody tries to collect cash again at delivery.
+        if (action === 'advance_received') {
+          const advOrder = await ordersCol.findOne({ _id: new ObjectId(id) });
+          if (!advOrder) return res.status(404).json({ error: 'Order not found' });
+          if (advOrder.paymentMethod !== 'advance') return res.status(400).json({ error: 'This is not an advance-payment order.' });
+          if (advOrder.advanceReceived) return res.status(400).json({ error: 'The advance payment was already recorded for this order.' });
+          if (['cancelled', 'delivered'].includes(advOrder.status)) return res.status(400).json({ error: `This order is already ${advOrder.status}.` });
+
+          const itemsAmt = Number(advOrder.itemsTotal) || (advOrder.items || []).reduce((t, i) => t + (Number(i.price) || 0) * (Number(i.quantity) || 1), 0);
+          const courier = Number(courierCharge);
+          if (courierCharge === undefined || courierCharge === null || courierCharge === '' || !Number.isFinite(courier) || courier < 0) {
+            return res.status(400).json({ error: 'Enter the courier charge first (0 if there is none).' });
+          }
+          const newTotal = Math.round((itemsAmt + courier) * 100) / 100;
+          const received = Number(amountReceived);
+          if (!Number.isFinite(received) || received < newTotal - 0.5) {
+            return res.status(400).json({ error: `The advance payment must cover the full amount of ₹${newTotal.toFixed(2)} (items ₹${itemsAmt.toFixed(2)} + courier ₹${courier.toFixed(2)}).` });
+          }
+          const payVia = ['upi', 'bank', 'cash'].includes(receivedMode) ? receivedMode : 'upi';
+          const orderLabel = advOrder.orderId || id;
+
+          await cashFlow.insertOne({
+            type: 'income', category: 'sales', amount: received,
+            description: `Advance payment received – Order ${orderLabel} (${advOrder.customerName})${reference ? ` · Ref: ${String(reference).slice(0, 60)}` : ''}`,
+            referenceId: id, referenceType: 'order_advance', paymentMode: payVia,
+            orderId: orderLabel, date: new Date(), createdAt: new Date(),
+          });
+
+          await ordersCol.updateOne({ _id: new ObjectId(id) }, { $set: {
+            courierCharge: courier, totalAmount: newTotal,
+            advanceReceived: true,
+            advancePayment: { amount: received, mode: payVia, reference: reference ? String(reference).slice(0, 80) : '', receivedAt: new Date() },
+            paymentMode: 'already_paid',   // not a COD mode, so the driver/admin never collects cash for this order
+            paymentStatus: 'paid', paidAmount: received,
+            updatedAt: new Date(),
+          } });
+
+          // keep the sales record in step (it was created when the order was placed)
+          if (advOrder.orderId) {
+            await sales.updateOne({ orderId: advOrder.orderId }, { $set: { totalAmount: newTotal, paymentMode: 'online', paymentStatus: 'paid', updatedAt: new Date() } });
+          }
+          return res.status(200).json({ success: true, totalAmount: newTotal });
         }
 
         // ── Driver marks delivered (DriverDeliver page) ──────────────────────
@@ -601,7 +649,7 @@ export default async function handler(req, res) {
             const isOnlinePaid = confirmPayMode === 'already_paid' || confirmPayMode === 'online' || confirmPayMode === 'upi' || confirmPayMode === 'card';
             if (isOnlinePaid) {
               const confirmAmount = Number(amountCollected) || confirmOrder.totalAmount || 0;
-              if (confirmAmount > 0) {
+              if (confirmAmount > 0 && !confirmOrder.advanceReceived) { // advance orders were already booked when the payment was recorded
                 await cashFlow.insertOne({
                   type: 'income',
                   category: 'sales',
