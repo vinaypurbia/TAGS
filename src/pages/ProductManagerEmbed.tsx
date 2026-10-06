@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { Search, Filter, SlidersHorizontal, Image as ImageIcon, Tag, ChevronDown, X, Check, Pencil, Trash2, Plus, Upload, Eye, RotateCcw, Copy, Loader2, AlertTriangle, Download } from 'lucide-react';
+import { Search, Filter, SlidersHorizontal, Image as ImageIcon, Tag, ChevronDown, X, Check, Pencil, Trash2, Plus, Upload, Eye, RotateCcw, Copy, Loader2, AlertTriangle, Download, Wand2 } from 'lucide-react';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -916,6 +916,178 @@ function DedupeModal({ onClose, onDeleted }: { onClose: () => void; onDeleted: (
   );
 }
 
+// ── Mass rewrite of product descriptions (AI) ─────────────────────────────
+// Writes new descriptions for the products currently shown (respects search + filters), lets you review and
+// edit every one, and only saves the ones you tick. Nothing is changed until you press Save.
+function BulkDescriptionModal({ products, onClose, onApplied }: {
+  products: Product[]; onClose: () => void; onApplied: (updates: { id: string; description: string }[]) => void;
+}) {
+  const [onlyMissing, setOnlyMissing] = useState(false);
+  const [phase, setPhase] = useState<'setup' | 'generating' | 'review' | 'saving' | 'done'>('setup');
+  const [results, setResults] = useState<Record<string, string>>({});
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [progress, setProgress] = useState({ done: 0, total: 0 });
+  const [saveInfo, setSaveInfo] = useState({ ok: 0, failed: 0 });
+  const stopRef = useRef(false);
+
+  const list = products.filter(p => p.name?.trim() && (!onlyMissing || (p.description || '').trim().length < 40));
+  const reviewList = list.filter(p => results[p._id] !== undefined);
+  const missingCount = list.filter(p => results[p._id] === undefined).length;
+
+  const generate = async () => {
+    stopRef.current = false; setPhase('generating');
+    const todo = list.filter(p => results[p._id] === undefined);
+    setProgress({ done: 0, total: todo.length });
+    const acc = { ...results }; const errs: Record<string, string> = {};
+    for (let i = 0; i < todo.length; i += 8) {
+      if (stopRef.current) break;
+      const chunk = todo.slice(i, i + 8);
+      try {
+        const res = await fetch('/api/products?invoiceDescriptions=true', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ items: chunk.map(p => ({ id: p._id, name: p.name, hint: '', imageUrl: getImg(p) })) }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || `Server error (${res.status})`);
+        chunk.forEach(p => {
+          const d = data.descriptions?.[p._id];
+          if (d) acc[p._id] = d; else errs[p._id] = 'The AI returned nothing for this product';
+        });
+      } catch (e: any) {
+        const msg = e?.message || 'Network error';
+        chunk.forEach(p => { errs[p._id] = msg; });
+        if (/limit|quota/i.test(msg)) stopRef.current = true; // free AI limit hit — stop instead of failing every batch
+      }
+      setResults({ ...acc }); setErrors({ ...errs });
+      setProgress({ done: Math.min(i + 8, todo.length), total: todo.length });
+      if (i + 8 < todo.length && !stopRef.current) await new Promise(r => setTimeout(r, 3000)); // gentle on the free AI limit
+    }
+    setPicked(new Set(Object.keys(acc)));
+    setPhase('review');
+  };
+
+  const saveSelected = async () => {
+    setPhase('saving');
+    let ok = 0, failed = 0; const applied: { id: string; description: string }[] = [];
+    for (const id of Array.from(picked)) {
+      const description = (results[id] || '').trim();
+      if (!description) continue;
+      try {
+        const res = await fetch('/api/products', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id, description }) });
+        if (!res.ok) throw new Error();
+        ok++; applied.push({ id, description });
+      } catch { failed++; }
+      setSaveInfo({ ok, failed });
+    }
+    onApplied(applied);
+    setSaveInfo({ ok, failed });
+    setPhase('done');
+  };
+
+  const busy = phase === 'generating' || phase === 'saving';
+  const toggle = (id: string) => setPicked(prev => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+
+  return (
+    <div className="fixed inset-0 z-[100] bg-black/60 flex items-center justify-center p-4" onClick={() => !busy && onClose()}>
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[92vh] flex flex-col" onClick={e => e.stopPropagation()}>
+        <div className="p-4 border-b border-gray-100 flex items-start justify-between gap-3">
+          <div>
+            <p className="text-sm font-black uppercase tracking-widest text-gray-800 flex items-center gap-2"><Wand2 className="w-4 h-4 text-[#FA5600]" /> Rewrite descriptions with AI</p>
+            <p className="text-[11px] text-gray-400 mt-0.5">AI looks at each product's name and main picture. Nothing is saved until you review and press Save.</p>
+          </div>
+          <button onClick={onClose} disabled={busy} className="text-gray-400 hover:text-gray-700 text-lg leading-none disabled:opacity-40">✕</button>
+        </div>
+
+        <div className="p-4 overflow-y-auto flex-1 space-y-3">
+          {phase === 'setup' && (
+            <>
+              <div className="bg-orange-50 border border-orange-200 rounded-xl p-3 text-xs text-gray-700">
+                <p className="font-black">{list.length} product{list.length === 1 ? '' : 's'} will be rewritten</p>
+                <p className="mt-1 text-gray-500">This is the list currently shown on the page. To rewrite only one category or search result, close this, set the filter, and open this again. To rewrite everything, reset all filters first.</p>
+              </div>
+              <label className="flex items-start gap-2 text-xs text-gray-600 cursor-pointer">
+                <input type="checkbox" checked={onlyMissing} onChange={e => setOnlyMissing(e.target.checked)} className="mt-0.5 accent-[#FA5600]" />
+                <span>Only products with no description, or a very short one</span>
+              </label>
+              <p className="text-[11px] text-gray-400">
+                About {Math.ceil(list.length / 8)} AI request{Math.ceil(list.length / 8) === 1 ? '' : 's'} (8 products each) · roughly {Math.max(1, Math.ceil((list.length / 8) * 8 / 60))} minute{Math.ceil((list.length / 8) * 8 / 60) === 1 ? '' : 's'}. If Google's free daily limit runs out, it stops and you can continue later.
+              </p>
+            </>
+          )}
+
+          {phase === 'generating' && (
+            <div className="py-6 text-center">
+              <Loader2 className="w-7 h-7 text-[#FA5600] mx-auto mb-3 animate-spin" />
+              <p className="text-sm font-black text-gray-700">Writing descriptions… {progress.done} / {progress.total}</p>
+              <div className="w-full bg-gray-100 rounded-full h-2.5 mt-3"><div className="bg-[#FA5600] h-2.5 rounded-full transition-all" style={{ width: `${progress.total ? (progress.done / progress.total) * 100 : 0}%` }} /></div>
+            </div>
+          )}
+
+          {phase === 'review' && (
+            <>
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <p className="text-xs font-black text-gray-600">{reviewList.length} written · {picked.size} selected{missingCount > 0 ? ` · ${missingCount} not written` : ''}</p>
+                <div className="flex gap-2">
+                  <button onClick={() => setPicked(new Set(reviewList.map(p => p._id)))} className="text-[10px] font-black uppercase px-2.5 py-1.5 rounded-lg bg-gray-100 text-gray-600 hover:bg-gray-200">Select all</button>
+                  <button onClick={() => setPicked(new Set())} className="text-[10px] font-black uppercase px-2.5 py-1.5 rounded-lg bg-gray-100 text-gray-600 hover:bg-gray-200">Select none</button>
+                </div>
+              </div>
+              {missingCount > 0 && (
+                <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-xs text-red-600">
+                  {missingCount} product{missingCount === 1 ? '' : 's'} could not be written{Object.values(errors)[0] ? ` — ${String(Object.values(errors)[0]).slice(0, 200)}` : ''}.
+                  <button onClick={generate} className="ml-2 font-black underline">Try the missing ones again</button>
+                </div>
+              )}
+              {reviewList.map(p => (
+                <div key={p._id} className={`border rounded-xl p-3 flex gap-3 ${picked.has(p._id) ? 'border-[#FA5600]/40 bg-orange-50/30' : 'border-gray-200'}`}>
+                  <input type="checkbox" checked={picked.has(p._id)} onChange={() => toggle(p._id)} className="mt-1 w-4 h-4 accent-[#FA5600] shrink-0" />
+                  {getImg(p) && <img src={getImg(p) || undefined} alt="" className="w-14 h-14 rounded-lg object-cover border border-gray-100 shrink-0" />}
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-black text-gray-800 truncate">{p.name}</p>
+                    <p className="text-[10px] text-gray-400 line-clamp-2 mt-0.5"><span className="font-black uppercase">Now:</span> {(p.description || '').trim() || '— empty —'}</p>
+                    <textarea value={results[p._id]} rows={3} onChange={e => setResults(r => ({ ...r, [p._id]: e.target.value }))}
+                      className="w-full mt-1.5 text-[11px] border border-gray-200 rounded-lg px-2 py-1.5 focus:border-[#FA5600] outline-none resize-y" />
+                  </div>
+                </div>
+              ))}
+              {reviewList.length === 0 && <p className="text-xs text-gray-400 text-center py-8">No descriptions were written. {Object.values(errors)[0] ? String(Object.values(errors)[0]).slice(0, 220) : ''}</p>}
+            </>
+          )}
+
+          {phase === 'saving' && (
+            <div className="py-6 text-center">
+              <Loader2 className="w-7 h-7 text-[#FA5600] mx-auto mb-3 animate-spin" />
+              <p className="text-sm font-black text-gray-700">Saving… {saveInfo.ok + saveInfo.failed} / {picked.size}</p>
+            </div>
+          )}
+
+          {phase === 'done' && (
+            <div className="py-8 text-center">
+              <Check className="w-9 h-9 text-green-600 mx-auto mb-2" />
+              <p className="text-sm font-black text-gray-800">{saveInfo.ok} description{saveInfo.ok === 1 ? '' : 's'} saved</p>
+              {saveInfo.failed > 0 && <p className="text-xs text-red-500 mt-1">{saveInfo.failed} could not be saved — try those again.</p>}
+            </div>
+          )}
+        </div>
+
+        <div className="p-4 border-t border-gray-100 flex gap-2 justify-end">
+          {phase === 'setup' && <button onClick={generate} disabled={list.length === 0}
+            className="px-5 py-2.5 bg-[#FA5600] text-white font-black uppercase tracking-widest text-xs rounded-xl hover:bg-[#E04A00] transition disabled:opacity-50">Write {list.length} descriptions</button>}
+          {phase === 'generating' && <button onClick={() => { stopRef.current = true; }}
+            className="px-5 py-2.5 border-2 border-gray-200 text-gray-600 font-black uppercase tracking-widest text-xs rounded-xl hover:border-red-400 hover:text-red-500 transition">Stop after this batch</button>}
+          {phase === 'review' && <>
+            <button onClick={onClose} className="px-4 py-2.5 border-2 border-gray-200 text-gray-600 font-black uppercase tracking-widest text-xs rounded-xl">Discard</button>
+            <button onClick={saveSelected} disabled={picked.size === 0}
+              className="px-5 py-2.5 bg-[#FA5600] text-white font-black uppercase tracking-widest text-xs rounded-xl hover:bg-[#E04A00] transition disabled:opacity-50">Save {picked.size} description{picked.size === 1 ? '' : 's'}</button>
+          </>}
+          {phase === 'done' && <button onClick={onClose} className="px-5 py-2.5 bg-[#FA5600] text-white font-black uppercase tracking-widest text-xs rounded-xl">Close</button>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function ProductManagerEmbed() {
   const [allProducts, setAllProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<any[]>([]);
@@ -942,6 +1114,9 @@ export function ProductManagerEmbed() {
 
   // Remove-duplicates modal
   const [showDedupe, setShowDedupe] = useState(false);
+
+  // Mass rewrite of descriptions modal
+  const [showBulkDesc, setShowBulkDesc] = useState(false);
 
   useEffect(() => {
     // NOTE: the API caps `limit` at 100 per request no matter what we ask for,
@@ -1083,6 +1258,14 @@ export function ProductManagerEmbed() {
             )}
           </button>
 
+          {/* Rewrite descriptions (AI) */}
+          <button
+            onClick={() => setShowBulkDesc(true)}
+            className="flex items-center gap-2 px-4 py-2.5 rounded-xl border-2 border-gray-200 text-gray-500 hover:border-[#FA5600] hover:text-[#FA5600] text-sm font-black uppercase tracking-widest transition">
+            <Wand2 className="w-4 h-4" />
+            Rewrite Descriptions
+          </button>
+
           {/* Remove Duplicates */}
           <button
             onClick={() => setShowDedupe(true)}
@@ -1099,6 +1282,17 @@ export function ProductManagerEmbed() {
             Add Product
           </button>
         </div>
+
+        {showBulkDesc && (
+          <BulkDescriptionModal
+            products={filtered}
+            onClose={() => setShowBulkDesc(false)}
+            onApplied={(updates) => {
+              const m = new Map(updates.map(u => [u.id, u.description]));
+              setAllProducts(prev => prev.map(p => m.has(p._id) ? { ...p, description: m.get(p._id) } : p));
+            }}
+          />
+        )}
 
         {showDedupe && (
           <DedupeModal
