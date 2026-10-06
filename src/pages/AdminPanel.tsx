@@ -3467,10 +3467,9 @@ function ImportProductsSection() {
 }
 
 // ── Invoice Import (AI) ──────────────────────────────────────────────────
-// Upload a supplier invoice (PDF or photo). Gemini reads the line items and crops each item's
-// own real photo straight out of the invoice page — no AI-generated pictures. If an item has no
-// photo on the invoice (and no match on the optional supplier site), it's left for you to add
-// a picture yourself from the viewer (paste a link from the supplier, or any photo URL).
+// Upload a supplier invoice (PDF or photo). Gemini ONLY reads the line items and writes descriptions —
+// it does not crop, clean or generate pictures. Pictures come from the optional supplier website, or you
+// upload them yourself (or paste a link) from the picture viewer.
 // Everything lands in an editable table for review before the actual import.
 type InvoiceRow = {
   id: string;
@@ -3478,7 +3477,7 @@ type InvoiceRow = {
   category: string; subcategory: string; originalPrice: string; discountedPrice: string;
   imagePrompt: string;
   matchedTitle: string; descStatus: 'idle' | 'loading' | 'done' | 'error'; descError: string;
-  imageUrl: string; imageSource: 'invoice' | 'supplier' | 'link' | 'ai' | ''; imageStatus: 'pending' | 'loading' | 'done' | 'error';
+  imageUrl: string; imageSource: 'invoice' | 'supplier' | 'link' | 'upload' | 'ai' | ''; imageStatus: 'pending' | 'loading' | 'done' | 'error';
   include: boolean;
 };
 
@@ -3571,13 +3570,42 @@ function InvoiceImportSection() {
     })();
   }, [rows, stage]);
 
+  // Rewrites EVERY imported item's description from its name + current picture (use after all pictures are added)
+  const rewriteAllDescriptions = async () => {
+    if (descBatchRunning.current) return;
+    const todo = rows.filter(r => r.name.trim());
+    if (todo.length === 0) return;
+    descBatchRunning.current = true;
+    const ids = new Set(todo.map(r => r.id));
+    setRows(rs => rs.map(r => ids.has(r.id) ? { ...r, descStatus: 'loading', descError: '' } : r));
+    for (let i = 0; i < todo.length; i += 8) {
+      const chunk = todo.slice(i, i + 8);
+      try {
+        const res = await fetch('/api/products?invoiceDescriptions=true', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ items: chunk.map(r => ({ id: r.id, name: r.name, hint: '', imageUrl: r.imageUrl })) }),
+        });
+        const data = await res.json().catch(() => ({}));
+        const map: Record<string, string> = res.ok ? (data.descriptions || {}) : {};
+        const why = res.ok ? 'The AI did not return a description for this item' : (data.error || `Server error (${res.status})`);
+        setRows(rs => rs.map(r => chunk.some(c => c.id === r.id)
+          ? (map[r.id] ? { ...r, description: map[r.id], descStatus: 'done', descError: '' } : { ...r, descStatus: 'error', descError: why })
+          : r));
+      } catch (e: any) {
+        setRows(rs => rs.map(r => chunk.some(c => c.id === r.id) ? { ...r, descStatus: 'error', descError: e?.message || 'Network error' } : r));
+      }
+      if (i + 8 < todo.length) await new Promise(r => setTimeout(r, 3000)); // gentle on the free AI limit
+    }
+    descBatchRunning.current = false;
+  };
+
   // ── Picture viewer: see the picture large, or replace it with a link to a better one ──
   const [viewId, setViewId] = useState<string | null>(null);
   const [linkInput, setLinkInput] = useState('');
-  const [cleanText, setCleanText] = useState(true);
   const [applying, setApplying] = useState(false);
   const [viewMsg, setViewMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [viewSize, setViewSize] = useState('');
+  const uploadRef = useRef<HTMLInputElement>(null);
   const viewRow = rows.find(r => r.id === viewId) || null;
   const openViewer = (id: string) => { setViewId(id); setLinkInput(''); setViewMsg(null); setViewSize(''); };
 
@@ -3588,18 +3616,37 @@ function InvoiceImportSection() {
     try {
       const res = await fetch('/api/products?imageFromLink=true', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: link.trim(), name: row.name, clean: cleanText }),
+        body: JSON.stringify({ url: link.trim(), name: row.name, clean: false }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.imageUrl) throw new Error(data.error || 'Could not use that picture');
       setRows(rs => rs.map(r => r.id === row.id ? { ...r, imageUrl: data.imageUrl, imageSource: 'link', imageStatus: 'done' } : r));
-      setViewMsg({ ok: true, text: data.cleaned ? 'Picture replaced and cleaned of text.' : (data.note || 'Picture replaced.') });
+      setViewMsg({ ok: true, text: 'Picture replaced.' });
       setLinkInput('');
       setViewSize('');
     } catch (e: any) {
       setViewMsg({ ok: false, text: e.message || 'Something went wrong' });
     } finally {
       setApplying(false);
+    }
+  };
+
+  // Upload a picture from this computer — same /api/upload the rest of the admin panel uses
+  const uploadPictureFor = async (row: InvoiceRow, file: File) => {
+    if (!file.type.startsWith('image/')) { setViewMsg({ ok: false, text: 'Please choose an image file (JPG, PNG or WebP).' }); return; }
+    setApplying(true); setViewMsg(null);
+    try {
+      const res = await fetch('/api/upload', { method: 'POST', body: file, headers: { 'Content-Type': file.type || 'image/jpeg' } });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.url) throw new Error(data.error || 'Upload failed');
+      setRows(rs => rs.map(r => r.id === row.id ? { ...r, imageUrl: data.url, imageSource: 'upload', imageStatus: 'done' } : r));
+      setViewMsg({ ok: true, text: 'Picture uploaded.' });
+      setViewSize('');
+    } catch (e: any) {
+      setViewMsg({ ok: false, text: e.message || 'Upload failed' });
+    } finally {
+      setApplying(false);
+      if (uploadRef.current) uploadRef.current.value = '';
     }
   };
 
@@ -3715,7 +3762,7 @@ function InvoiceImportSection() {
         <div className="w-10 h-10 bg-purple-100 rounded-xl flex items-center justify-center shrink-0"><Wand2 className="w-5 h-5 text-purple-600" /></div>
         <div className="flex-1">
           <p className="text-sm font-black text-gray-800">Import from a Supplier Invoice</p>
-          <p className="text-xs text-gray-500 mt-0.5">Upload the invoice (PDF or photo). Add the supplier's website to pull each item's high-quality photo from it. Otherwise we crop the invoice photo, or generate a free AI image if the invoice has none. You verify everything below before importing.</p>
+          <p className="text-xs text-gray-500 mt-0.5">Upload the invoice (PDF or photo). AI reads the items and writes the descriptions. Pictures are not touched by AI — add the supplier's website to fetch product photos from it, or upload each picture yourself. You verify everything below before importing.</p>
         </div>
       </div>
 
@@ -3725,7 +3772,7 @@ function InvoiceImportSection() {
             <span className="text-[10px] font-black uppercase tracking-widest text-gray-500">Supplier website (optional)</span>
             <input value={supplierSite} onChange={e => setSupplierSite(e.target.value)} list="invoice-suppliers" placeholder="e.g. suppliername.com"
               className="mt-1 w-full text-sm border border-gray-200 rounded-xl px-3 py-2.5 focus:outline-none focus:border-[#FA5600]" />
-            <span className="block text-[11px] text-gray-400 mt-1">If this supplier has a website, each item is searched there and its high-quality product photo is used. Leave empty to use the invoice photos.</span>
+            <span className="block text-[11px] text-gray-400 mt-1">If this supplier has a website, each item is searched there and its product photo is used. Leave empty and upload the pictures yourself.</span>
             <datalist id="invoice-suppliers">{recentSuppliers.map(s => <option key={s} value={s} />)}</datalist>
           </label>
           <div onClick={() => fileRef.current?.click()} className="border-2 border-dashed border-gray-200 hover:border-[#FA5600] rounded-2xl p-10 text-center cursor-pointer transition group">
@@ -3750,7 +3797,16 @@ function InvoiceImportSection() {
         <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
           <div className="p-4 border-b border-gray-100 flex items-center justify-between">
             <p className="text-xs font-black uppercase tracking-widest text-gray-500">{rows.length} item{rows.length === 1 ? '' : 's'} found — verify before importing</p>
-            {stage === 'review' && <button onClick={reset} className="text-[10px] font-black uppercase tracking-widest text-gray-400 hover:text-[#FA5600]">Start over</button>}
+            {stage === 'review' && (
+              <div className="flex items-center gap-3">
+                <button onClick={rewriteAllDescriptions} disabled={rows.length === 0 || rows.some(r => r.descStatus === 'loading')}
+                  title={rows.some(r => !r.imageUrl) ? `${rows.filter(r => !r.imageUrl).length} item(s) have no picture yet — add them first for better descriptions` : 'Rewrite every description from its picture'}
+                  className="text-[10px] font-black uppercase tracking-widest px-3 py-1.5 rounded-lg bg-orange-50 text-[#FA5600] hover:bg-[#FA5600] hover:text-white transition disabled:opacity-50">
+                  {rows.some(r => r.descStatus === 'loading') ? 'Writing…' : '✨ Rewrite all descriptions'}
+                </button>
+                <button onClick={reset} className="text-[10px] font-black uppercase tracking-widest text-gray-400 hover:text-[#FA5600]">Start over</button>
+              </div>
+            )}
           </div>
 
           <div className="divide-y divide-gray-100 max-h-[32rem] overflow-y-auto">
@@ -3759,13 +3815,13 @@ function InvoiceImportSection() {
                 <input type="checkbox" checked={row.include} onChange={e => updateRow(row.id, { include: e.target.checked })} className="mt-1.5 w-4 h-4 accent-[#FA5600] shrink-0" disabled={stage !== 'review'} />
 
                 <div className="w-16 h-16 rounded-xl bg-gray-50 border border-gray-100 shrink-0 relative overflow-hidden cursor-pointer"
-                  onClick={() => openViewer(row.id)} title={row.imageUrl ? 'Click to view large / replace' : 'Click to add a picture'}>
+                  onClick={() => openViewer(row.id)} title={row.imageUrl ? 'Click to view large / replace' : 'Click to upload a picture'}>
                   {row.imageStatus === 'loading' && <div className="w-full h-full flex items-center justify-center"><RefreshCw className="w-4 h-4 text-gray-300 animate-spin" /></div>}
-                  {row.imageStatus === 'error' && !row.imageUrl && <div className="w-full h-full flex items-center justify-center text-red-400 text-[9px] font-bold text-center px-1">No photo<br/>— add one</div>}
+                  {row.imageStatus === 'error' && !row.imageUrl && <div className="w-full h-full flex items-center justify-center text-red-400 text-[9px] font-bold text-center px-1">No photo<br/>— upload</div>}
                   {row.imageUrl && <img src={row.imageUrl} alt={row.name} className="w-full h-full object-cover" />}
                   {row.imageSource && (
-                    <span className={`absolute bottom-0 left-0 right-0 text-[7px] font-black uppercase tracking-wider text-center py-0.5 ${row.imageSource === 'supplier' || row.imageSource === 'link' ? 'bg-blue-600/90 text-white' : row.imageSource === 'invoice' ? 'bg-green-600/90 text-white' : 'bg-purple-500/90 text-white'}`}>
-                      {row.imageSource === 'supplier' ? 'From supplier' : row.imageSource === 'link' ? 'From link' : row.imageSource === 'invoice' ? 'From invoice' : 'AI approx.'}
+                    <span className={`absolute bottom-0 left-0 right-0 text-[7px] font-black uppercase tracking-wider text-center py-0.5 ${row.imageSource === 'supplier' || row.imageSource === 'link' ? 'bg-blue-600/90 text-white' : row.imageSource === 'upload' || row.imageSource === 'invoice' ? 'bg-green-600/90 text-white' : 'bg-purple-500/90 text-white'}`}>
+                      {row.imageSource === 'supplier' ? 'From supplier' : row.imageSource === 'link' ? 'From link' : row.imageSource === 'upload' ? 'Uploaded' : row.imageSource === 'invoice' ? 'From invoice' : 'AI approx.'}
                     </span>
                   )}
                 </div>
@@ -3861,7 +3917,7 @@ function InvoiceImportSection() {
               <div className="min-w-0">
                 <p className="text-xs font-black uppercase tracking-widest text-gray-700 truncate">{viewRow.name}</p>
                 <p className="text-[11px] text-gray-400 mt-0.5">
-                  {viewRow.imageSource === 'invoice' ? 'Cropped from the invoice' : viewRow.imageSource === 'link' ? 'From a link you pasted' : viewRow.imageSource === 'supplier' ? 'From the supplier website' : viewRow.imageSource === 'ai' ? 'AI-generated (older import)' : 'No picture yet — paste a link below'}
+                  {viewRow.imageSource === 'invoice' ? 'From the invoice' : viewRow.imageSource === 'link' ? 'From a link you pasted' : viewRow.imageSource === 'upload' ? 'Uploaded by you' : viewRow.imageSource === 'supplier' ? 'From the supplier website' : viewRow.imageSource === 'ai' ? 'AI-generated (older import)' : 'No picture yet — upload one below'}
                   {viewSize && <> · {viewSize}</>}
                 </p>
               </div>
@@ -3875,27 +3931,24 @@ function InvoiceImportSection() {
                       onLoad={e => { const im = e.currentTarget; setViewSize(`${im.naturalWidth} × ${im.naturalHeight} px`); }} />
                   : <p className="text-xs text-gray-400 py-16">No picture yet</p>}
               </div>
-              <p className="text-[11px] text-gray-400 -mt-2">If it looks blurry or small (low pixel size), replace it with a better picture from the supplier below.</p>
+              <p className="text-[11px] text-gray-400 -mt-2">If it looks blurry or small (low pixel size), replace it with a better picture below.</p>
 
               <div className="space-y-2">
-                <span className="text-[10px] font-black uppercase tracking-widest text-gray-500">Better picture link</span>
+                <input ref={uploadRef} type="file" accept="image/*" className="hidden"
+                  onChange={e => { const f = e.target.files?.[0]; if (f && viewRow) uploadPictureFor(viewRow, f); }} />
+                <button onClick={() => uploadRef.current?.click()} disabled={applying}
+                  className="w-full py-2.5 bg-[#FA5600] text-white font-black uppercase tracking-widest text-xs rounded-xl hover:bg-[#E04A00] transition disabled:opacity-50 flex items-center justify-center gap-2">
+                  {applying ? <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Working…</> : <><Upload className="w-3.5 h-3.5" /> Upload picture from this computer</>}
+                </button>
+                <div className="flex items-center gap-2 pt-1"><div className="flex-1 h-px bg-gray-100" /><span className="text-[10px] font-black uppercase tracking-widest text-gray-300">or</span><div className="flex-1 h-px bg-gray-100" /></div>
+                <span className="text-[10px] font-black uppercase tracking-widest text-gray-500">Picture link</span>
                 <input value={linkInput} onChange={e => setLinkInput(e.target.value)} placeholder="Paste the image link (or product page link) from the supplier's site"
                   className="w-full text-xs border border-gray-200 rounded-xl px-3 py-2.5 focus:outline-none focus:border-[#FA5600]" disabled={applying} />
                 <p className="text-[10px] text-gray-400">Tip: on the supplier's site, right-click the photo and choose "Copy image address".</p>
-                <label className="flex items-start gap-2 text-[11px] text-gray-600 cursor-pointer">
-                  <input type="checkbox" checked={cleanText} onChange={e => setCleanText(e.target.checked)} className="mt-0.5 accent-[#FA5600]" disabled={applying} />
-                  <span>Remove the wholesaler's text, captions and logos with AI <span className="text-gray-400">(needs Google's image model — may not work on the free plan; the picture is then used as it is)</span></span>
-                </label>
                 <button onClick={() => applyPicture(viewRow, linkInput)} disabled={applying || !linkInput.trim()}
                   className="w-full py-2.5 bg-[#FA5600] text-white font-black uppercase tracking-widest text-xs rounded-xl hover:bg-[#E04A00] transition disabled:opacity-50 flex items-center justify-center gap-2">
                   {applying ? <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Working…</> : 'Use this picture'}
                 </button>
-                {viewRow.imageUrl && (
-                  <button onClick={() => applyPicture(viewRow, viewRow.imageUrl)} disabled={applying}
-                    className="w-full py-2 border border-gray-200 text-gray-600 font-black uppercase tracking-widest text-[10px] rounded-xl hover:border-[#FA5600] hover:text-[#FA5600] transition disabled:opacity-50">
-                    Only remove text from the current picture
-                  </button>
-                )}
                 {viewMsg && <p className={`text-[11px] font-bold ${viewMsg.ok ? 'text-green-600' : 'text-red-500'}`}>{viewMsg.text}</p>}
               </div>
             </div>
@@ -5629,10 +5682,9 @@ function MarketplaceAssist({ product, images, price, caption, guard, onShared }:
   const generateTagsAI = async () => {
     setTagsBusy(true);
     try {
-      const res = await fetch('/api/products', {
+      const res = await fetch('/api/products?generateTags=true', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          generateTags: true,
           name: product.name || '', category: product.category || '',
           subcategory: product.subcategory || '', description: igCaptionText(product.description || ''),
         }),
