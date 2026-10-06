@@ -2311,6 +2311,7 @@ function ProductVideoSection() {
   const [categoryFilter, setCategoryFilter] = useState('all');
   const [priceMin, setPriceMin] = useState('');
   const [priceMax, setPriceMax] = useState('');
+  const [videoFilter, setVideoFilter] = useState<'all' | 'hasvideo' | 'novideo'>('all');
 
   const [tracks, setTracks] = useState<MusicTrack[]>([]);
   const [loadingTracks, setLoadingTracks] = useState(true);
@@ -2428,6 +2429,8 @@ function ProductVideoSection() {
     const price = priceValueOf(p);
     if (minVal !== null && price < minVal) return false;
     if (maxVal !== null && price > maxVal) return false;
+    if (videoFilter === 'hasvideo' && !p.videoUrl) return false;
+    if (videoFilter === 'novideo'  && p.videoUrl)  return false;
     return true;
   });
 
@@ -2637,8 +2640,19 @@ function ProductVideoSection() {
         <input value={priceMax} onChange={e => setPriceMax(e.target.value)} type="number" placeholder="Max ₹"
           className="border border-gray-200 rounded-xl px-2 py-2.5 text-xs" />
       </div>
-      {(categoryFilter !== 'all' || priceMin || priceMax) && (
-        <p className="text-[11px] text-gray-400 -mt-2">Showing {filtered.length} of {products.length} products{categoryFilter !== 'all' ? ` in "${categoryFilter}"` : ''}{(priceMin || priceMax) ? ` priced ${priceMin || '0'}–${priceMax || '∞'}` : ''}.</p>
+      <div className="flex items-center gap-1.5">
+        {(['all', 'hasvideo', 'novideo'] as const).map(v => (
+          <button key={v} onClick={() => setVideoFilter(v)}
+            className={`text-[10px] font-black uppercase px-2 py-1.5 rounded-lg border-2 transition-all flex items-center gap-1 ${
+              videoFilter === v ? 'bg-[#FA5600] text-white border-[#FA5600]' : 'border-gray-200 text-gray-400 bg-white'
+            }`}>
+            <Video className="w-3 h-3" />
+            {v === 'all' ? 'All' : v === 'hasvideo' ? 'Has Video' : 'No Video'}
+          </button>
+        ))}
+      </div>
+      {(categoryFilter !== 'all' || priceMin || priceMax || videoFilter !== 'all') && (
+        <p className="text-[11px] text-gray-400 -mt-2">Showing {filtered.length} of {products.length} products{categoryFilter !== 'all' ? ` in "${categoryFilter}"` : ''}{(priceMin || priceMax) ? ` priced ${priceMin || '0'}–${priceMax || '∞'}` : ''}{videoFilter !== 'all' ? ` · ${videoFilter === 'hasvideo' ? 'with a video' : 'without a video'}` : ''}.</p>
       )}
 
       {loadingList && <div className="text-center text-xs text-gray-400 font-bold py-6">Loading products...</div>}
@@ -5316,6 +5330,10 @@ async function videoApi(body: any) {
 function VideoSharePanel({ product, caption, guard, onShared }: {
   product: any; caption: string; guard: ShareGuard; onShared: OnShared;
 }) {
+  // Two sources for the video: the one already generated for this product (Video tab), or a fresh
+  // upload from this device. Defaults to the website video when one exists, since that's normally
+  // the one you'd want to post.
+  const [mode, setMode]             = useState<'website' | 'device'>(product.videoUrl ? 'website' : 'device');
   const [file, setFile]             = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState('');
   const [duration, setDuration]     = useState<number | null>(null);
@@ -5328,8 +5346,13 @@ function VideoSharePanel({ product, caption, guard, onShared }: {
   const busy = Object.values(status).some(s => s.state === 'working');
   const tooShort = duration !== null && duration < 3;
   const productId = String(product._id);
+  const hasVideo = mode === 'website' ? !!product.videoUrl : !!file;
+  const activeSrc = mode === 'website' ? product.videoUrl : previewUrl;
 
   useEffect(() => () => { if (previewUrl) URL.revokeObjectURL(previewUrl); }, [previewUrl]);
+  // Switching source resets everything downstream — a different video shouldn't carry over upload
+  // state, duration checks, or post results from whatever was selected before.
+  useEffect(() => { setDuration(null); setWaLink(''); setStatus(IDLE_VID); uploaded.current = null; derived.current = {}; }, [mode]);
 
   const setTarget = (t: VidTarget, s: VidState) => setStatus(prev => ({ ...prev, [t]: s }));
 
@@ -5349,6 +5372,10 @@ function VideoSharePanel({ product, caption, guard, onShared }: {
   };
 
   const ensureUploaded = async (): Promise<string> => {
+    if (mode === 'website') {
+      if (!product.videoUrl) throw new Error('This product has no website video yet.');
+      return product.videoUrl; // already hosted — nothing to upload
+    }
     if (!file) throw new Error('Choose a video first.');
     if (uploaded.current?.file === file) return uploaded.current.url;
     setUploadPct(0);
@@ -5415,7 +5442,7 @@ function VideoSharePanel({ product, caption, guard, onShared }: {
     setWaLink('');
     setTarget('whatsapp', { state: 'working', text: 'Opening…' });
     try {
-      if (file && isMobileDevice() && navigator.canShare && navigator.canShare({ files: [file] })) {
+      if (mode === 'device' && file && isMobileDevice() && navigator.canShare && navigator.canShare({ files: [file] })) {
         await navigator.share({ files: [file], text: waLinkText(caption) });
         setTarget('whatsapp', { state: 'ok', text: 'Shared!' });
         onShared([productId], VIDEO_CHANNEL.whatsapp);
@@ -5435,7 +5462,7 @@ function VideoSharePanel({ product, caption, guard, onShared }: {
   };
 
   const go = (t: VidTarget) => {
-    if (!file || busy) return;
+    if (!hasVideo || busy) return;
     guard([productId], () => {
       if (t === 'whatsapp') runWhatsApp();
       else if (t === 'telegram') runTelegram();
@@ -5450,7 +5477,7 @@ function VideoSharePanel({ product, caption, guard, onShared }: {
     const s = status[t];
     return (
       <div key={t}>
-        <button onClick={() => go(t)} disabled={!file || busy || (t !== 'whatsapp' && t !== 'telegram' && tooShort)}
+        <button onClick={() => go(t)} disabled={!hasVideo || busy || (t !== 'whatsapp' && t !== 'telegram' && tooShort)}
           className={`w-full flex flex-col items-center justify-center font-black py-3 rounded-xl transition-all shadow-sm text-xs uppercase tracking-widest disabled:opacity-40 ${
             s.state === 'ok' ? 'bg-green-500 text-white' : cls
           }`}>
@@ -5470,22 +5497,42 @@ function VideoSharePanel({ product, caption, guard, onShared }: {
 
   return (
     <div className="p-4 space-y-4">
-      {!file ? (
+      {/* Source: this product's existing website video, or a fresh upload from this device */}
+      <div className="flex gap-2 bg-gray-100 rounded-xl p-1">
+        <button onClick={() => setMode('website')} disabled={!product.videoUrl || busy}
+          className={`flex-1 flex items-center justify-center gap-1.5 text-[10px] font-black uppercase tracking-widest py-2 rounded-lg transition disabled:opacity-40 ${mode === 'website' ? 'bg-white text-[#FA5600] shadow-sm' : 'text-gray-400 hover:text-gray-600'}`}>
+          <Video className="w-3.5 h-3.5" /> Website Video
+        </button>
+        <button onClick={() => setMode('device')} disabled={busy}
+          className={`flex-1 flex items-center justify-center gap-1.5 text-[10px] font-black uppercase tracking-widest py-2 rounded-lg transition disabled:opacity-40 ${mode === 'device' ? 'bg-white text-[#FA5600] shadow-sm' : 'text-gray-400 hover:text-gray-600'}`}>
+          <Upload className="w-3.5 h-3.5" /> Upload From Device
+        </button>
+      </div>
+
+      {mode === 'website' && !product.videoUrl && (
+        <p className="text-[11px] font-bold text-gray-400 text-center py-2">
+          No website video on this product yet — generate one in the Video tab, or switch to "Upload From Device" above.
+        </p>
+      )}
+
+      {mode === 'device' && !file && (
         <label className="flex flex-col items-center justify-center gap-1 border-2 border-dashed border-gray-300 text-gray-500 font-black py-6 rounded-xl hover:border-[#FA5600] hover:text-[#FA5600] transition cursor-pointer text-xs uppercase tracking-widest">
           <span className="flex items-center gap-2"><Upload className="w-4 h-4" /> Choose a video from your device</span>
           <span className="text-[9px] font-bold normal-case tracking-normal text-gray-400">MP4 or MOV · up to {MAX_VIDEO_MB} MB · vertical 9:16 works best</span>
           <input type="file" accept="video/*" onChange={pickFile} className="hidden" />
         </label>
-      ) : (
+      )}
+
+      {hasVideo && (
         <div className="space-y-2">
           <div className="flex items-center gap-3">
-            <video src={previewUrl} controls playsInline preload="metadata"
+            <video src={activeSrc} controls playsInline preload="metadata"
               onLoadedMetadata={e => setDuration(e.currentTarget.duration)}
               className="w-24 h-32 rounded-lg object-contain bg-black shrink-0" />
             <div className="flex-1 min-w-0">
-              <p className="text-xs font-black text-gray-800 truncate">{file.name}</p>
+              <p className="text-xs font-black text-gray-800 truncate">{mode === 'website' ? `${product.name} — website video` : file?.name}</p>
               <p className="text-[10px] text-gray-400 font-bold">
-                {(file.size / 1048576).toFixed(1)} MB{duration !== null ? ` · ${Math.round(duration)}s` : ''}
+                {mode === 'device' && file ? `${(file.size / 1048576).toFixed(1)} MB` : 'Already on the website'}{duration !== null ? ` · ${Math.round(duration)}s` : ''}
               </p>
               {uploadPct !== null && (
                 <div className="mt-2">
@@ -5494,7 +5541,7 @@ function VideoSharePanel({ product, caption, guard, onShared }: {
                 </div>
               )}
             </div>
-            {!busy && <button onClick={clearFile} className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-400 shrink-0"><X className="w-4 h-4" /></button>}
+            {mode === 'device' && !busy && <button onClick={clearFile} className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-400 shrink-0"><X className="w-4 h-4" /></button>}
           </div>
           {tooShort && <p className="text-[10px] font-bold text-red-500">Instagram and Facebook need at least 3 seconds of video.</p>}
           {reelWarn && <p className="text-[10px] font-bold text-yellow-600">Over 90 seconds — Facebook Reels may reject it. Instagram usually accepts longer.</p>}
@@ -5545,6 +5592,7 @@ function BroadcastSection() {
   const [priceMin, setPriceMin]             = useState('');
   const [priceMax, setPriceMax]             = useState('');
   const [stockFilter, setStockFilter]       = useState<'all'|'instock'|'outofstock'>('all');
+  const [videoFilter, setVideoFilter]       = useState<'all'|'hasvideo'|'novideo'>('all');
 
   // Multi-select (Telegram batch)
   const [selectedIds, setSelectedIds]       = useState<Set<string>>(new Set());
@@ -5672,6 +5720,8 @@ function BroadcastSection() {
     if (priceMax && price > parseFloat(priceMax)) return false;
     if (stockFilter === 'instock'    && stock !== null && stock <= 0) return false;
     if (stockFilter === 'outofstock' && stock !== null && stock > 0)  return false;
+    if (videoFilter === 'hasvideo' && !p.videoUrl) return false;
+    if (videoFilter === 'novideo'  && p.videoUrl)  return false;
     const h = shareHistory[String(p._id)];
     const inShared = isRecentShare(h);
     if (shareTab === 'toshare' && inShared) return false;
@@ -6007,6 +6057,17 @@ function BroadcastSection() {
                   </button>
                 ))}
               </div>
+              <div className="flex items-center gap-1.5">
+                {(['all','hasvideo','novideo'] as const).map(v => (
+                  <button key={v} onClick={() => setVideoFilter(v)}
+                    className={`text-[10px] font-black uppercase px-2 py-1.5 rounded-lg border-2 transition-all flex items-center gap-1 ${
+                      videoFilter === v ? 'bg-[#FA5600] text-white border-[#FA5600]' : 'border-gray-200 text-gray-400 bg-white'
+                    }`}>
+                    <Video className="w-3 h-3" />
+                    {v === 'all' ? 'All' : v === 'hasvideo' ? 'Has Video' : 'No Video'}
+                  </button>
+                ))}
+              </div>
               <span className="text-[10px] font-black text-gray-400 ml-auto">{filtered.length} products</span>
             </div>
           </div>
@@ -6047,11 +6108,17 @@ function BroadcastSection() {
                     {isChecked && <Check className="w-3 h-3 text-white"/>}
                   </button>
                   {/* Thumbnail — click to preview */}
-                  <button onClick={() => selectPreview(p)} className="w-12 h-12 rounded-lg overflow-hidden bg-gray-100 shrink-0 border border-gray-200 hover:border-[#FA5600] transition">
+                  <button onClick={() => selectPreview(p)} className="relative w-12 h-12 rounded-lg overflow-hidden bg-gray-100 shrink-0 border border-gray-200 hover:border-[#FA5600] transition">
                     {productImageList(p)[0] ? (
                       <img src={productImageList(p)[0]} alt={p.name} className="w-full h-full object-cover"/>
                     ) : (
                       <div className="w-full h-full flex items-center justify-center text-gray-300"><Package className="w-5 h-5"/></div>
+                    )}
+                    {/* Marks products that already have a video on the website, so the right one is easy to spot in this list */}
+                    {p.videoUrl && (
+                      <span title="Has a website video" className="absolute bottom-0 right-0 w-4 h-4 bg-[#FA5600] rounded-tl-md flex items-center justify-center">
+                        <Video className="w-2.5 h-2.5 text-white" />
+                      </span>
                     )}
                   </button>
                   {/* Info — click to preview */}
