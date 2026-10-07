@@ -5348,6 +5348,98 @@ const sleepMs = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 // XMLHttpRequest (not fetch) so upload progress can be shown. The file goes straight to Cloudinary,
 // never through the Vercel function, so its ~4.5MB body limit doesn't apply.
+function roundedRectPath(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+// Re-encodes a video frame-by-frame with a price badge burned in, top-left — the same visual
+// language as the live price badge on the product page. Used only right before POSTING: once a
+// video is posted to Instagram/WhatsApp/etc. it's a static file forever regardless of how it was
+// made, so baking in whatever the price is AT THE MOMENT OF POSTING is the correct behavior here
+// (unlike the Video tab's generated videos, which deliberately never bake price in, since those
+// live indefinitely on the product card and would go stale).
+function burnPriceIntoVideo(sourceUrl: string, priceLabel: string, discountLabel: string | null, onProgress?: (pct: number) => void): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    const video = document.createElement('video');
+    video.src = sourceUrl;
+    video.crossOrigin = 'anonymous';
+    video.muted = false;
+    video.playsInline = true;
+
+    video.onloadedmetadata = () => {
+      const W = video.videoWidth || 720, H = video.videoHeight || 1280;
+      const canvas = document.createElement('canvas');
+      canvas.width = W; canvas.height = H;
+      const ctx = canvas.getContext('2d');
+      const videoStream = (canvas as any).captureStream?.(30);
+      if (!ctx || !videoStream) { reject(new Error('This browser cannot process video — use Chrome or Edge.')); return; }
+
+      let combined: MediaStream = videoStream;
+      try {
+        const srcStream: MediaStream | null = (video as any).captureStream?.() || (video as any).mozCaptureStream?.() || null;
+        const audioTracks = srcStream ? srcStream.getAudioTracks() : [];
+        if (audioTracks.length) combined = new MediaStream([...videoStream.getVideoTracks(), ...audioTracks]);
+      } catch { /* proceed video-only if this browser can't also capture the source audio */ }
+
+      const mime = ['video/mp4;codecs=avc1.42E01E,mp4a.40.2', 'video/mp4', 'video/webm;codecs=vp9,opus', 'video/webm']
+        .find(m => MediaRecorder.isTypeSupported(m)) || '';
+      const rec = new MediaRecorder(combined, { ...(mime ? { mimeType: mime } : {}), videoBitsPerSecond: 6_000_000 });
+      const parts: Blob[] = [];
+      rec.ondataavailable = e => { if (e.data?.size) parts.push(e.data); };
+      rec.onerror = () => reject(new Error('Recording the price overlay failed.'));
+      rec.onstop = () => resolve(new Blob(parts, { type: rec.mimeType || mime || 'video/webm' }));
+
+      const drawBadge = () => {
+        ctx.font = `800 ${Math.round(W * 0.055)}px system-ui, sans-serif`;
+        const priceW = ctx.measureText(priceLabel).width;
+        const padX = W * 0.025, pillH = H * 0.045;
+        const x = W * 0.035, y = H * 0.035;
+        ctx.save();
+        ctx.shadowColor = 'rgba(0,0,0,0.3)'; ctx.shadowBlur = 10; ctx.shadowOffsetY = 3;
+        ctx.fillStyle = 'rgba(255,255,255,0.96)';
+        roundedRectPath(ctx, x, y, priceW + padX * 2, pillH, pillH / 2);
+        ctx.fill();
+        ctx.restore();
+        ctx.fillStyle = '#1a1a1a';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(priceLabel, x + padX, y + pillH / 2);
+        if (discountLabel) {
+          const dx = x + priceW + padX * 2 + W * 0.015;
+          ctx.font = `800 ${Math.round(W * 0.032)}px system-ui, sans-serif`;
+          const discW = ctx.measureText(discountLabel).width;
+          ctx.save();
+          ctx.shadowColor = 'rgba(0,0,0,0.3)'; ctx.shadowBlur = 10; ctx.shadowOffsetY = 3;
+          ctx.fillStyle = '#FA5600';
+          roundedRectPath(ctx, dx, y, discW + padX * 1.6, pillH, pillH / 2);
+          ctx.fill();
+          ctx.restore();
+          ctx.fillStyle = '#fff';
+          ctx.fillText(discountLabel, dx + padX * 0.8, y + pillH / 2);
+        }
+      };
+
+      let raf = 0;
+      const drawFrame = () => {
+        if (video.ended || video.paused) { rec.stop(); return; }
+        ctx.drawImage(video, 0, 0, W, H);
+        drawBadge();
+        if (onProgress && video.duration) onProgress(Math.min(99, Math.round((video.currentTime / video.duration) * 100)));
+        raf = requestAnimationFrame(drawFrame);
+      };
+      video.onplay = () => { rec.start(250); raf = requestAnimationFrame(drawFrame); };
+      video.onended = () => { cancelAnimationFrame(raf); rec.stop(); };
+      video.play().catch(err => reject(new Error('Could not play the source video: ' + (err?.message || err))));
+    };
+    video.onerror = () => reject(new Error('Could not load the video to add the price overlay.'));
+  });
+}
+
 const uploadVideoFile = (file: File, onPct: (n: number) => void): Promise<string> => new Promise(async (resolve, reject) => {
   try {
     const sig = await (await fetch('/api/products?cloudinarySign=true&resourceType=video')).json();
@@ -5400,12 +5492,15 @@ function VideoSharePanel({ product, caption, guard, onShared }: {
   const tooShort = duration !== null && duration < 3;
   const productId = String(product._id);
   const hasVideo = mode === 'website' ? !!product.videoUrl : !!file;
+  const [burnPrice, setBurnPrice] = useState(true);
+  const [burningPct, setBurningPct] = useState<number | null>(null);
+  const burnedCache = useRef<{ key: string; url: string } | null>(null);
   const activeSrc = mode === 'website' ? product.videoUrl : previewUrl;
 
   useEffect(() => () => { if (previewUrl) URL.revokeObjectURL(previewUrl); }, [previewUrl]);
   // Switching source resets everything downstream — a different video shouldn't carry over upload
   // state, duration checks, or post results from whatever was selected before.
-  useEffect(() => { setDuration(null); setWaLink(''); setStatus(IDLE_VID); uploaded.current = null; derived.current = {}; }, [mode]);
+  useEffect(() => { setDuration(null); setWaLink(''); setStatus(IDLE_VID); uploaded.current = null; derived.current = {}; burnedCache.current = null; }, [mode]);
 
   const setTarget = (t: VidTarget, s: VidState) => setStatus(prev => ({ ...prev, [t]: s }));
 
@@ -5422,6 +5517,33 @@ function VideoSharePanel({ product, caption, guard, onShared }: {
   const clearFile = () => {
     setFile(null); setPreviewUrl(''); setDuration(null); setFileError(''); setWaLink(''); setStatus(IDLE_VID);
     uploaded.current = null; derived.current = {};
+  };
+
+  const getPostingVideoUrl = async (onStatus?: (t: string) => void): Promise<string> => {
+    const base = await ensureUploaded();
+    if (!burnPrice) return base;
+    if (burnedCache.current?.key === base) return burnedCache.current.url;
+
+    onStatus?.('Fetching current price…');
+    const res = await fetch(`/api/products?id=${encodeURIComponent(productId)}`);
+    const live = await res.json().catch(() => null);
+    if (!res.ok || !live) throw new Error('Could not fetch the current price for this product.');
+
+    const hasDiscount = live.discountedPrice && live.originalPrice && Number(live.discountedPrice) < Number(live.originalPrice);
+    const displayPrice = hasDiscount ? live.discountedPrice : (live.originalPrice || live.price || 0);
+    if (!(Number(displayPrice) > 0)) return base; // nothing sensible to show — post the video as-is
+    const priceLabel = `₹${Number(displayPrice).toLocaleString('en-IN')}`;
+    const discountLabel = hasDiscount ? `-${Math.round((1 - Number(live.discountedPrice) / Number(live.originalPrice)) * 100)}%` : null;
+
+    onStatus?.('Adding price to video…');
+    setBurningPct(0);
+    try {
+      const blob = await burnPriceIntoVideo(base, priceLabel, discountLabel, setBurningPct);
+      onStatus?.('Uploading…');
+      const url = await uploadVideoFile(new File([blob], `priced-${productId}.${blob.type.includes('mp4') ? 'mp4' : 'webm'}`, { type: blob.type }), () => {});
+      burnedCache.current = { key: base, url };
+      return url;
+    } finally { setBurningPct(null); }
   };
 
   const ensureUploaded = async (): Promise<string> => {
@@ -5455,7 +5577,7 @@ function VideoSharePanel({ product, caption, guard, onShared }: {
   const runMeta = async (target: 'instagram_reel' | 'facebook_reel' | 'instagram_story' | 'facebook_story') => {
     setTarget(target, { state: 'working', text: 'Uploading…' });
     try {
-      const original = await ensureUploaded();
+      const original = await getPostingVideoUrl(t => setTarget(target, { state: 'working', text: t }));
       const url = await prepare('meta', original, t => setTarget(target, { state: 'working', text: t }));
       setTarget(target, { state: 'working', text: 'Sending…' });
       const started = await videoApi({ videoAction: 'start', target, videoUrl: url, caption: igCaptionText(caption) });
@@ -5480,7 +5602,7 @@ function VideoSharePanel({ product, caption, guard, onShared }: {
   const runTelegram = async () => {
     setTarget('telegram', { state: 'working', text: 'Uploading…' });
     try {
-      const original = await ensureUploaded();
+      const original = await getPostingVideoUrl(t => setTarget('telegram', { state: 'working', text: t }));
       const url = await prepare('plain', original, t => setTarget('telegram', { state: 'working', text: t }));
       setTarget('telegram', { state: 'working', text: 'Posting…' });
       await videoApi({ videoAction: 'telegram', videoUrl: url, caption });
@@ -5495,14 +5617,14 @@ function VideoSharePanel({ product, caption, guard, onShared }: {
     setWaLink('');
     setTarget('whatsapp', { state: 'working', text: 'Opening…' });
     try {
-      if (mode === 'device' && file && isMobileDevice() && navigator.canShare && navigator.canShare({ files: [file] })) {
+      if (!burnPrice && mode === 'device' && file && isMobileDevice() && navigator.canShare && navigator.canShare({ files: [file] })) {
         await navigator.share({ files: [file], text: waLinkText(caption) });
         setTarget('whatsapp', { state: 'ok', text: 'Shared!' });
         onShared([productId], VIDEO_CHANNEL.whatsapp);
         return;
       }
       setTarget('whatsapp', { state: 'working', text: 'Uploading…' });
-      const original = await ensureUploaded();
+      const original = await getPostingVideoUrl(t => setTarget('whatsapp', { state: 'working', text: t }));
       const link = `https://wa.me/?text=${encodeURIComponent(`${waLinkText(caption)}\n\n▶ Watch the video:\n${original}`)}`;
       setWaLink(link);
       window.open(link, '_blank');
@@ -5600,6 +5722,21 @@ function VideoSharePanel({ product, caption, guard, onShared }: {
           {reelWarn && <p className="text-[10px] font-bold text-yellow-600">Over 90 seconds — Facebook Reels may reject it. Instagram usually accepts longer.</p>}
           {storyWarn && !reelWarn && <p className="text-[10px] font-bold text-yellow-600">Over 60 seconds — video stories may be rejected. Reels are fine.</p>}
           {storyWarn && reelWarn && <p className="text-[10px] font-bold text-yellow-600">Over 60 seconds — video stories may be rejected.</p>}
+        </div>
+      )}
+      {hasVideo && (
+        <div className="space-y-1.5">
+          <label className="flex items-center gap-2 text-xs font-bold text-gray-700 border border-gray-200 rounded-xl px-3 py-2.5 cursor-pointer">
+            <input type="checkbox" checked={burnPrice} onChange={e => setBurnPrice(e.target.checked)} disabled={busy} className="w-4 h-4 accent-[#FA5600]" />
+            💰 Show price on video
+          </label>
+          <p className="text-[10px] text-gray-400">Fetched fresh right before posting — always the product's current price, never whatever it was when this video was made.</p>
+          {burningPct !== null && (
+            <div>
+              <div className="w-full h-1.5 bg-gray-100 rounded-full overflow-hidden"><div className="h-full bg-[#FA5600] transition-all" style={{ width: `${burningPct}%` }} /></div>
+              <p className="text-[10px] font-bold text-gray-400 mt-1">Adding price to video — {burningPct}%</p>
+            </div>
+          )}
         </div>
       )}
       {fileError && <p className="text-[11px] font-bold text-red-500">{fileError}</p>}
