@@ -107,6 +107,32 @@ async function syncSaleCashFlow({ cashFlow, inventory, sale, saleId, newItems, t
   return { synced: true };
 }
 
+// ── Date ranges for Today / Week / Month / Year / custom, in INDIA time (IST) ─────────────
+// The server runs in UTC, so plain setHours(0,0,0,0) started "today" at 5:30 AM IST. Everything is now
+// measured from IST midnight. "week" = this calendar week (starts on WEEK_STARTS_ON). custom = ?from=YYYY-MM-DD&to=YYYY-MM-DD
+// (both days included in full).
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+const WEEK_STARTS_ON = 1; // 0 = Sunday, 1 = Monday
+function resolveDateRange(q = {}) {
+  const { period, from, to } = q;
+  const now = new Date();
+  const istNow = new Date(now.getTime() + IST_OFFSET_MS);
+  const y = istNow.getUTCFullYear(), m = istNow.getUTCMonth(), d = istNow.getUTCDate();
+  const istMidnight = (yy, mm, dd) => new Date(Date.UTC(yy, mm, dd) - IST_OFFSET_MS);
+  const parseDay = (str, endOfDay) => {
+    const mt = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(str || '').trim());
+    if (mt) { const s = istMidnight(+mt[1], +mt[2] - 1, +mt[3]); return endOfDay ? new Date(s.getTime() + 86400000 - 1) : s; }
+    const dt = new Date(str); return isNaN(dt.getTime()) ? undefined : dt;
+  };
+  let fromDate, toDate;
+  if (period === 'today') { fromDate = istMidnight(y, m, d); toDate = now; }
+  else if (period === 'week') { const back = (istNow.getUTCDay() - WEEK_STARTS_ON + 7) % 7; fromDate = istMidnight(y, m, d - back); toDate = now; }
+  else if (period === 'month') { fromDate = istMidnight(y, m, 1); toDate = now; }
+  else if (period === 'year') { fromDate = istMidnight(y, 0, 1); toDate = now; }
+  else { if (from) fromDate = parseDay(from, false); if (to) toDate = parseDay(to, true); }
+  return { fromDate, toDate };
+}
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
@@ -154,13 +180,7 @@ export default async function handler(req, res) {
       const filter = {};
       if (status) filter.status = status;
 
-      const now = new Date();
-      let fromDate, toDate;
-      if (period === 'today') { fromDate = new Date(new Date().setHours(0,0,0,0)); toDate = new Date(); }
-      else if (period === 'week') { fromDate = new Date(new Date().setDate(now.getDate() - 7)); toDate = new Date(); }
-      else if (period === 'month') { fromDate = new Date(now.getFullYear(), now.getMonth(), 1); toDate = new Date(); }
-      else if (period === 'year') { fromDate = new Date(now.getFullYear(), 0, 1); toDate = new Date(); }
-      else { if (from) fromDate = new Date(from); if (to) toDate = new Date(to); }
+      const { fromDate, toDate } = resolveDateRange(req.query);
 
       if (fromDate || toDate) {
         filter.date = {};
@@ -169,13 +189,16 @@ export default async function handler(req, res) {
       }
 
       const sales = await salesCol.find(filter).sort({ date: -1 }).toArray();
-      const totalRevenue = sales.reduce((s, sale) => s + (sale.totalAmount || 0), 0);
-      const totalOrders = sales.length;
+      // Cancelled orders are not revenue — leave them out of the totals (they still show in the list)
+      const counted = sales.filter(s => s.status !== 'cancelled');
+      const totalRevenue = counted.reduce((s, sale) => s + (sale.totalAmount || 0), 0);
+      const totalOrders = counted.length;
       const avgOrderValue = totalOrders > 0 ? totalRevenue / totalOrders : 0;
       const pendingCount = sales.filter(s => s.status === 'pending').length;
       const confirmedCount = sales.filter(s => s.status === 'confirmed').length;
+      const cancelledCount = sales.filter(s => s.status === 'cancelled').length;
 
-      return res.status(200).json({ sales, summary: { totalRevenue, totalOrders, avgOrderValue, pendingCount, confirmedCount } });
+      return res.status(200).json({ sales, summary: { totalRevenue, totalOrders, avgOrderValue, pendingCount, confirmedCount, cancelledCount } });
     }
 
     if (req.method === 'POST') {
