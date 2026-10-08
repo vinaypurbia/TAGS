@@ -838,7 +838,7 @@ function OrdersModule({ showMsg }: any) {
   const filtered = statusFilter === 'all' ? orders : orders.filter(o => o.status === statusFilter);
 
   const deleteOrder = async (order: any) => {
-    if (!confirm(`Delete order ${order.orderId} for ${order.customerName}? This cannot be undone.`)) return;
+    if (!confirm(`Delete order ${order.orderId} for ${order.customerName}? This cannot be undone.\n\nAny payment recorded for this order in Cash Flow (advance payment, cash collected, cost of goods) is removed as well, so your totals stay correct.`)) return;
     await fetch('/api/customers?module=orders', {
       method: 'DELETE',
       headers: { 'Content-Type': 'application/json' },
@@ -1422,6 +1422,37 @@ function OrdersModule({ showMsg }: any) {
     </div>
   );
 }
+// ── Period picker shared by Sales / Cash Flow / Expenses: Today · Week · Month · Year · Date range ──
+const periodQS = (period: string, from: string, to: string) =>
+  period === 'custom' ? `period=custom&from=${from}&to=${to}` : `period=${period}`;
+// A custom range is only fetched once both dates are chosen
+const periodReady = (period: string, from: string, to: string) => period !== 'custom' || (!!from && !!to);
+
+function PeriodPicker({ period, setPeriod, from, setFrom, to, setTo }: {
+  period: string; setPeriod: (v: string) => void; from: string; setFrom: (v: string) => void; to: string; setTo: (v: string) => void;
+}) {
+  const today = new Date().toISOString().slice(0, 10);
+  const inputCls = "border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none bg-white";
+  return (
+    <>
+      <select value={period} onChange={e => setPeriod(e.target.value)} className={inputCls}>
+        <option value="today">Today</option>
+        <option value="week">This Week</option>
+        <option value="month">This Month</option>
+        <option value="year">This Year</option>
+        <option value="custom">Date range…</option>
+      </select>
+      {period === 'custom' && (
+        <div className="flex items-center gap-2">
+          <input type="date" value={from} max={to || today} onChange={e => setFrom(e.target.value)} className={inputCls} />
+          <span className="text-gray-400 text-xs font-bold">to</span>
+          <input type="date" value={to} min={from || undefined} max={today} onChange={e => setTo(e.target.value)} className={inputCls} />
+        </div>
+      )}
+    </>
+  );
+}
+
 function SalesModule({ showMsg }: any) {
   const [sales, setSales] = useState<any[]>([]);
   const [summary, setSummary] = useState<any>({});
@@ -1440,15 +1471,18 @@ function SalesModule({ showMsg }: any) {
   const formRef = useRef<HTMLDivElement>(null);
   const scrollToForm = () => setTimeout(() => formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 60);
 
+  const [rangeFrom, setRangeFrom] = useState('');
+  const [rangeTo, setRangeTo] = useState('');
   const fetchSales = () => {
+    if (!periodReady(period, rangeFrom, rangeTo)) return;
     setLoading(true);
-    fetch(`/api/sales?period=${period}`)
+    fetch(`/api/sales?${periodQS(period, rangeFrom, rangeTo)}`)
       .then(r => r.json())
       .then(data => { setSales(data.sales || []); setSummary(data.summary || {}); })
       .catch(() => {}).finally(() => setLoading(false));
   };
 
-  useEffect(() => { fetchSales(); }, [period]);
+  useEffect(() => { fetchSales(); }, [period, rangeFrom, rangeTo]);
   useEffect(() => {
     fetch('/api/products?limit=500&adminView=true').then(r => r.json()).then(data => setProducts(Array.isArray(data) ? data : (data.products || []))).catch(() => {});
     fetch('/api/customers').then(r => r.json()).then(data => setCustomers(data.customers || [])).catch(() => {}); // FIX #7
@@ -1530,14 +1564,25 @@ function SalesModule({ showMsg }: any) {
     fetchSales();
   };
 
+  // Real sales only. A cancelled order is not a sale, and an online order that is still pending is not
+  // revenue yet (no payment has been recorded for it). Both are shown separately below the tiles so the
+  // numbers can be reconciled with Cash Flow, which only counts money actually received.
+  const pendingSales = (sales || []).filter((s: any) => s.status === 'pending');
+  const cancelledSales = (sales || []).filter((s: any) => s.status === 'cancelled');
+  const countedSales = (sales || []).filter((s: any) => s.status !== 'pending' && s.status !== 'cancelled');
+  const sumAmt = (list: any[]) => list.reduce((a: number, s: any) => a + (Number(s.totalAmount) || 0), 0);
+  const revenueNow = sumAmt(countedSales);
+  const pendingAmt = sumAmt(pendingSales);
+  const cancelledAmt = sumAmt(cancelledSales);
+
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         {[
-          { label: 'Revenue', value: fmt(summary.totalRevenue) },
-          { label: 'Orders', value: fmtQty(summary.totalOrders) },
-          { label: 'Avg Order', value: fmt(summary.avgOrderValue) },
-          { label: 'Pending', value: fmtQty(summary.pendingCount) },
+          { label: 'Revenue', value: fmt(revenueNow) },
+          { label: 'Orders', value: fmtQty(countedSales.length) },
+          { label: 'Avg Order', value: fmt(countedSales.length > 0 ? revenueNow / countedSales.length : 0) },
+          { label: 'Pending', value: fmtQty(pendingSales.length) },
         ].map(s => (
           <div key={s.label} className="bg-white rounded-xl border border-gray-200 p-3 text-center">
             <p className="text-xl font-black text-gray-900">{s.value}</p>
@@ -1545,14 +1590,17 @@ function SalesModule({ showMsg }: any) {
           </div>
         ))}
       </div>
+      {(pendingSales.length > 0 || cancelledSales.length > 0) && (
+        <p className="text-[11px] text-gray-500 -mt-1 px-1">
+          Revenue does not include
+          {pendingSales.length > 0 && <> {pendingSales.length} pending order{pendingSales.length === 1 ? '' : 's'} ({fmt(pendingAmt)}) — counted once confirmed</>}
+          {pendingSales.length > 0 && cancelledSales.length > 0 && ' or'}
+          {cancelledSales.length > 0 && <> {cancelledSales.length} cancelled order{cancelledSales.length === 1 ? '' : 's'} ({fmt(cancelledAmt)})</>}.
+        </p>
+      )}
 
       <div className="flex gap-2 flex-wrap">
-        <select value={period} onChange={e => setPeriod(e.target.value)} className="border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none bg-white">
-          <option value="today">Today</option>
-          <option value="week">This Week</option>
-          <option value="month">This Month</option>
-          <option value="year">This Year</option>
-        </select>
+        <PeriodPicker period={period} setPeriod={setPeriod} from={rangeFrom} setFrom={setRangeFrom} to={rangeTo} setTo={setRangeTo} />
         <button onClick={() => { if (!showForm) { setEditingSale(null); setForm({ customerName: '', customerPhone: '', customerAddress: '', notes: '', paymentMode: 'cash', items: [{ productId: '', productName: '', price: '', quantity: '1', imageUrl: '' }] }); } setShowForm(!showForm); }} className="flex items-center gap-2 bg-[#FA5600] text-white font-black text-xs uppercase tracking-widest px-4 py-2 rounded-xl hover:bg-[#E04A00] transition ml-auto">
           <Plus className="w-4 h-4" /> Record Sale
         </button>
@@ -2287,8 +2335,10 @@ function CashflowModule({ showMsg }: any) {
   const INCOME_CATS = ['Sales', 'Delivery Collection', 'Refund Received', 'Loan', 'Investment', 'Other Income'];
   const EXPENSE_CATS = ['Rent', 'Salaries', 'Purchase', 'Utilities', 'Marketing', 'Transport', 'Maintenance', 'Packaging', 'Other'];
 
-  const fetchData = () => { setLoading(true); fetch(`/api/business?module=cashflow&period=${period}`).then(r => r.json()).then(d => setData(d)).catch(() => {}).finally(() => setLoading(false)); };
-  useEffect(() => { fetchData(); }, [period]);
+  const [rangeFrom, setRangeFrom] = useState('');
+  const [rangeTo, setRangeTo] = useState('');
+  const fetchData = () => { if (!periodReady(period, rangeFrom, rangeTo)) return; setLoading(true); fetch(`/api/business?module=cashflow&${periodQS(period, rangeFrom, rangeTo)}`).then(r => r.json()).then(d => setData(d)).catch(() => {}).finally(() => setLoading(false)); };
+  useEffect(() => { fetchData(); }, [period, rangeFrom, rangeTo]);
 
   const handleSubmit = async () => {
     if (!form.amount || !form.category) { showMsg('Category and amount required.', 'error'); return; }
@@ -2324,6 +2374,25 @@ function CashflowModule({ showMsg }: any) {
         </div>
       </div>
 
+      {/* Sales booked vs money received (same period) */}
+      {data.reconciliation && (
+        <div className="bg-gray-50 border border-gray-200 rounded-xl p-3 text-xs text-gray-600">
+          <div className="flex flex-wrap gap-x-5 gap-y-1 font-bold">
+            <span>Sales booked: <span className="text-gray-900">{fmt(data.reconciliation.salesBooked)}</span> <span className="text-gray-400">({data.reconciliation.salesCount} orders)</span></span>
+            <span>Revenue received: <span className="text-gray-900">{fmt(data.reconciliation.revenueReceived)}</span></span>
+            <span className={Math.abs(data.reconciliation.difference) < 1 ? 'text-green-600' : 'text-[#FA5600]'}>
+              Difference: {fmt(data.reconciliation.difference)}
+            </span>
+          </div>
+          {Math.abs(data.reconciliation.difference) >= 1 && (
+            <p className="text-[10px] text-gray-400 mt-1">
+              Sales are counted the day an order is placed; revenue is counted when the money is received (delivered orders whose cash the driver has handed in, advances, shop sales).
+              {data.reconciliation.unsettledCollections > 0 ? ` ${fmt(data.reconciliation.unsettledCollections)} is collected by drivers but not settled yet.` : ''}
+            </p>
+          )}
+        </div>
+      )}
+
       {/* Cash in Hand + Cash at Bank */}
       <div className="grid grid-cols-2 gap-3">
         <div className="bg-yellow-50 rounded-xl border border-yellow-200 p-4 flex items-center gap-3">
@@ -2345,9 +2414,7 @@ function CashflowModule({ showMsg }: any) {
       </div>
 
       <div className="flex gap-2 flex-wrap">
-        <select value={period} onChange={e => setPeriod(e.target.value)} className="border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none bg-white">
-          <option value="today">Today</option><option value="week">This Week</option><option value="month">This Month</option><option value="year">This Year</option>
-        </select>
+        <PeriodPicker period={period} setPeriod={setPeriod} from={rangeFrom} setFrom={setRangeFrom} to={rangeTo} setTo={setRangeTo} />
         <button onClick={() => setShowForm(!showForm)} className="flex items-center gap-2 bg-[#FA5600] text-white font-black text-xs uppercase tracking-widest px-4 py-2 rounded-xl hover:bg-[#E04A00] transition ml-auto">
           <Plus className="w-4 h-4" /> Add Entry
         </button>
@@ -2422,8 +2489,10 @@ function ExpensesModule({ showMsg }: any) {
   const CATS = ['Rent', 'Salaries', 'Purchase', 'Utilities', 'Marketing', 'Transport', 'Maintenance', 'Packaging', 'Other'];
 
   // FIX #13: pass period to API
-  const fetchExpenses = () => { setLoading(true); fetch(`/api/business?module=expenses&period=${period}`).then(r => r.json()).then(data => setExpenses(Array.isArray(data) ? data : [])).catch(() => {}).finally(() => setLoading(false)); };
-  useEffect(() => { fetchExpenses(); }, [period]);
+  const [rangeFrom, setRangeFrom] = useState('');
+  const [rangeTo, setRangeTo] = useState('');
+  const fetchExpenses = () => { if (!periodReady(period, rangeFrom, rangeTo)) return; setLoading(true); fetch(`/api/business?module=expenses&${periodQS(period, rangeFrom, rangeTo)}`).then(r => r.json()).then(data => setExpenses(Array.isArray(data) ? data : [])).catch(() => {}).finally(() => setLoading(false)); };
+  useEffect(() => { fetchExpenses(); }, [period, rangeFrom, rangeTo]);
 
   const handleSubmit = async () => {
     if (!form.category || !form.amount) { showMsg('Category and amount required.', 'error'); return; }
@@ -2446,19 +2515,14 @@ function ExpensesModule({ showMsg }: any) {
         <div>
           <p className="text-2xl font-black text-red-700">{fmt(expenses.reduce((s, e) => s + (e.amount || 0), 0))}</p>
           <p className="text-xs font-bold text-red-500 uppercase tracking-widest">
-            {period === 'today' ? "Today's" : period === 'week' ? "This Week's" : period === 'month' ? "This Month's" : "This Year's"} Expenses
+            {period === 'today' ? "Today's" : period === 'week' ? "This Week's" : period === 'month' ? "This Month's" : period === 'custom' ? "Selected Range" : "This Year's"} Expenses
           </p>
         </div>
         <button onClick={() => setShowForm(!showForm)} className="flex items-center gap-2 bg-[#FA5600] text-white font-black text-xs uppercase tracking-widest px-4 py-2 rounded-xl hover:bg-[#E04A00] transition"><Plus className="w-4 h-4" /> Add</button>
       </div>
 
       {/* FIX #13: period filter */}
-      <select value={period} onChange={e => setPeriod(e.target.value)} className="border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none bg-white">
-        <option value="today">Today</option>
-        <option value="week">This Week</option>
-        <option value="month">This Month</option>
-        <option value="year">This Year</option>
-      </select>
+      <div className="flex gap-2 flex-wrap"><PeriodPicker period={period} setPeriod={setPeriod} from={rangeFrom} setFrom={setRangeFrom} to={rangeTo} setTo={setRangeTo} /></div>
 
       {showForm && (
         <div className="bg-white rounded-2xl border-2 border-[#FA5600] p-5 space-y-3">
