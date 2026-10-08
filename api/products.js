@@ -412,6 +412,91 @@ async function loadImageFromLink(link) {
   throw new Error('That link is not an image or a product page');
 }
 
+// ── High-resolution picture search ─────────────────────────────────────────────────────────
+// Google no longer sells new access to its own image-search API (Custom Search JSON API closes to new
+// customers and shuts down on 1 Jan 2027), so this talks to whichever search provider you set up. Pick ONE:
+//   SERPER_API_KEY   → serper.dev   (Google Images results)
+//   SERPAPI_API_KEY  → serpapi.com  (Google Images results)
+//   GOOGLE_CSE_KEY + GOOGLE_CSE_CX → Google Custom Search (only if you already had it before it closed)
+// Optional: IMAGE_SEARCH_PROVIDER = serper | serpapi | google_cse to force one when several keys exist.
+function imageSearchProvider() {
+  const forced = (process.env.IMAGE_SEARCH_PROVIDER || '').toLowerCase();
+  if (forced) return forced;
+  if (process.env.SERPER_API_KEY) return 'serper';
+  if (process.env.SERPAPI_API_KEY) return 'serpapi';
+  if (process.env.GOOGLE_CSE_KEY && process.env.GOOGLE_CSE_CX) return 'google_cse';
+  return '';
+}
+function searchError(message, code) { const e = new Error(message); e.code = code; return e; }
+
+async function fetchImageCandidates(query) {
+  const provider = imageSearchProvider();
+  if (!provider) throw searchError('Picture search is not set up yet. Add SERPER_API_KEY (or SERPAPI_API_KEY) in your server settings.', 'NOT_CONFIGURED');
+  let r, raw = [];
+  const guard = (status) => {
+    if (status === 401 || status === 403) throw searchError('The picture-search key was rejected. Check the key in your server settings.', 'BAD_KEY');
+    if (status === 402 || status === 429) throw searchError('The picture-search credits for today/this plan are used up.', 'QUOTA');
+  };
+  if (provider === 'serper') {
+    r = await fetch('https://google.serper.dev/images', {
+      method: 'POST', headers: { 'X-API-KEY': process.env.SERPER_API_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ q: query, gl: 'in', num: 20 }), signal: AbortSignal.timeout(15000),
+    });
+    guard(r.status); if (!r.ok) throw searchError(`Picture search failed (${r.status})`, 'FAILED');
+    const d = await r.json();
+    raw = (d.images || []).map(x => ({ url: x.imageUrl, thumb: x.thumbnailUrl, width: +x.imageWidth || 0, height: +x.imageHeight || 0, title: x.title || '', source: x.source || x.domain || '', page: x.link || '' }));
+  } else if (provider === 'serpapi') {
+    r = await fetch(`https://serpapi.com/search.json?engine=google_images&gl=in&q=${encodeURIComponent(query)}&api_key=${encodeURIComponent(process.env.SERPAPI_API_KEY)}`, { signal: AbortSignal.timeout(20000) });
+    guard(r.status); if (!r.ok) throw searchError(`Picture search failed (${r.status})`, 'FAILED');
+    const d = await r.json();
+    if (d.error) throw searchError(String(d.error), /run out|limit|quota/i.test(String(d.error)) ? 'QUOTA' : 'FAILED');
+    raw = (d.images_results || []).map(x => ({ url: x.original, thumb: x.thumbnail, width: +x.original_width || 0, height: +x.original_height || 0, title: x.title || '', source: x.source || '', page: x.link || '' }));
+  } else if (provider === 'google_cse') {
+    r = await fetch(`https://www.googleapis.com/customsearch/v1?key=${encodeURIComponent(process.env.GOOGLE_CSE_KEY)}&cx=${encodeURIComponent(process.env.GOOGLE_CSE_CX)}&q=${encodeURIComponent(query)}&searchType=image&imgSize=xlarge&safe=active&num=10`, { signal: AbortSignal.timeout(15000) });
+    guard(r.status); if (!r.ok) throw searchError(`Picture search failed (${r.status})`, 'FAILED');
+    const d = await r.json();
+    raw = (d.items || []).map(x => ({ url: x.link, thumb: x.image?.thumbnailLink, width: +x.image?.width || 0, height: +x.image?.height || 0, title: x.title || '', source: x.displayLink || '', page: x.image?.contextLink || '' }));
+  } else {
+    throw searchError(`Unknown IMAGE_SEARCH_PROVIDER "${provider}"`, 'NOT_CONFIGURED');
+  }
+  return raw;
+}
+
+// Keeps big, usable pictures and ranks them: name match first, then size, then square-ish shape.
+async function searchProductImages(query, productName, minSize) {
+  const raw = await fetchImageCandidates(query);
+  const STOP = new Set(['the','and','for','with','set','pack','pcs','toy','toys','new','boys','girls','kids','size']);
+  const tokens = String(productName || query).toLowerCase().replace(/[^\p{L}\p{N}\s]+/gu, ' ').split(/\s+/).filter(w => w.length > 2 && !STOP.has(w));
+  const seen = new Set();
+  const out = [];
+  for (const c of raw) {
+    if (!c.url || !/^https?:\/\//i.test(c.url) || /\.(svg|gif)(\?|$)/i.test(c.url) || seen.has(c.url)) continue;
+    seen.add(c.url);
+    const shortSide = Math.min(c.width || 0, c.height || 0);
+    if (c.width && c.height && shortSide < minSize) continue; // too small — only keep real high-resolution pictures
+    const hay = `${c.title} ${c.source} ${c.page}`.toLowerCase();
+    const overlap = tokens.length ? tokens.filter(t => hay.includes(t)).length / tokens.length : 0;
+    const ratio = c.width && c.height ? c.width / c.height : 1;
+    const square = ratio > 0.75 && ratio < 1.34 ? 1 : 0;
+    const known = c.width && c.height ? 1 : 0;
+    out.push({ ...c, score: overlap * 100 + Math.min(shortSide, 2400) / 24 + square * 12 + known * 5 });
+  }
+  return out.sort((a, b) => b.score - a.score).slice(0, 8).map(({ score, ...rest }) => rest);
+}
+
+// Stores a picture at up to 2000×2000 (the normal import helper caps at 1000) and reports its final size.
+async function uploadHdImage(buffer) {
+  const isWebp = buffer.slice(0, 4).toString() === 'RIFF' && buffer.slice(8, 12).toString() === 'WEBP';
+  const mime = buffer[0] === 0x89 && buffer[1] === 0x50 ? 'image/png' : isWebp ? 'image/webp' : buffer.slice(0, 3).toString() === 'GIF' ? 'image/gif' : 'image/jpeg';
+  const dataUri = `data:${mime};base64,${buffer.toString('base64')}`;
+  const result = await cloudinary.uploader.upload(dataUri, {
+    folder: 'tags-hd-images', public_id: `hd_${invoiceBufferHash(buffer)}`, format: 'webp',
+    transformation: [{ width: 2000, height: 2000, crop: 'limit', quality: 'auto:best' }],
+    overwrite: false, unique_filename: true, invalidate: true, resource_type: 'image',
+  });
+  return { url: result.secure_url, width: result.width || 0, height: result.height || 0 };
+}
+
 // Removes seller/wholesaler text, banners, captions and watermarks, keeping the product itself.
 // Needs an image-capable Gemini model on this key (mostly paid-only) — returns null when unavailable.
 const GEMINI_IMAGE_MODELS = [
@@ -1097,12 +1182,30 @@ export default async function handler(req, res) {
       }
     }
 
+    // ── High-resolution picture search — POST /api/products?imageSearch=true  { name, category?, query?, minSize? } ──
+    // → { results: [{ url, thumb, width, height, title, source, page }] }, best match first.
+    if (req.method === 'POST' && req.query.imageSearch === 'true') {
+      const { name, category, query, minSize } = req.body || {};
+      const nm = String(name || '').trim();
+      const cat = String(category || '').trim();
+      const q = String(query || [nm, cat && !nm.toLowerCase().includes(cat.toLowerCase()) ? cat : ''].filter(Boolean).join(' ')).trim();
+      if (!q) return res.status(400).json({ error: 'A product name or search text is required' });
+      try {
+        const results = await searchProductImages(q, nm || q, Math.max(300, Math.min(3000, Number(minSize) || 800)));
+        return res.status(200).json({ success: true, query: q, provider: imageSearchProvider(), results });
+      } catch (error) {
+        const status = error.code === 'NOT_CONFIGURED' ? 501 : error.code === 'QUOTA' ? 429 : error.code === 'BAD_KEY' ? 502 : 502;
+        console.warn('Image search failed:', error.message);
+        return res.status(status).json({ error: error.message || 'Picture search failed', code: error.code || 'FAILED' });
+      }
+    }
+
     // ── Invoice Import (AI) — POST /api/products?imageFromLink=true  { url, name?, clean? } ─────
     // Replaces an item's picture with the image at a link (e.g. the supplier's high-resolution photo).
     // clean=true also asks AI to remove wholesaler text/logos; if that model is unavailable the picture is
     // still used as-is and the response says cleaned:false so the admin knows.
     if (req.method === 'POST' && req.query.imageFromLink === 'true') {
-      const { url, name } = req.body || {};
+      const { url, name, hd } = req.body || {};
       const clean = false; // AI picture cleaning is switched off — pictures are used exactly as they are
       if (!url) return res.status(400).json({ error: 'A link is required' });
       try {
@@ -1115,6 +1218,7 @@ export default async function handler(req, res) {
             ? 'The picture was saved as-is: the AI image limit is used up right now.'
             : 'The picture was saved as-is: AI text removal is not available on this Google plan (image editing usually needs billing enabled).';
         }
+        if (hd) { const up = await uploadHdImage(buf); return res.status(200).json({ success: true, imageUrl: up.url, width: up.width, height: up.height, cleaned, note }); }
         const imageUrl = await uploadInvoiceItemImage(buf);
         return res.status(200).json({ success: true, imageUrl, cleaned, note });
       } catch (error) {
