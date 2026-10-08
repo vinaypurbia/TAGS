@@ -63,6 +63,32 @@ async function sendOrderEmail(toEmail, customerName, eventType, orderData) {
   } catch (e) { console.error('sendOrderEmail failed:', e); return false; }
 }
 
+// ── Date ranges for Today / Week / Month / Year / custom, in INDIA time (IST) ─────────────
+// The server runs in UTC, so plain setHours(0,0,0,0) started "today" at 5:30 AM IST. Everything is now
+// measured from IST midnight. "week" = this calendar week (starts on WEEK_STARTS_ON). custom = ?from=YYYY-MM-DD&to=YYYY-MM-DD
+// (both days included in full).
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+const WEEK_STARTS_ON = 1; // 0 = Sunday, 1 = Monday
+function resolveDateRange(q = {}) {
+  const { period, from, to } = q;
+  const now = new Date();
+  const istNow = new Date(now.getTime() + IST_OFFSET_MS);
+  const y = istNow.getUTCFullYear(), m = istNow.getUTCMonth(), d = istNow.getUTCDate();
+  const istMidnight = (yy, mm, dd) => new Date(Date.UTC(yy, mm, dd) - IST_OFFSET_MS);
+  const parseDay = (str, endOfDay) => {
+    const mt = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(str || '').trim());
+    if (mt) { const s = istMidnight(+mt[1], +mt[2] - 1, +mt[3]); return endOfDay ? new Date(s.getTime() + 86400000 - 1) : s; }
+    const dt = new Date(str); return isNaN(dt.getTime()) ? undefined : dt;
+  };
+  let fromDate, toDate;
+  if (period === 'today') { fromDate = istMidnight(y, m, d); toDate = now; }
+  else if (period === 'week') { const back = (istNow.getUTCDay() - WEEK_STARTS_ON + 7) % 7; fromDate = istMidnight(y, m, d - back); toDate = now; }
+  else if (period === 'month') { fromDate = istMidnight(y, m, 1); toDate = now; }
+  else if (period === 'year') { fromDate = istMidnight(y, 0, 1); toDate = now; }
+  else { if (from) fromDate = parseDay(from, false); if (to) toDate = parseDay(to, true); }
+  return { fromDate, toDate };
+}
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
@@ -301,11 +327,7 @@ export default async function handler(req, res) {
         const filter = {};
         let fromDate, toDate;
         const now = new Date();
-        if (period === 'today') { fromDate = new Date(new Date().setHours(0,0,0,0)); toDate = new Date(); }
-        else if (period === 'week') { fromDate = new Date(now.setDate(now.getDate() - 7)); toDate = new Date(); }
-        else if (period === 'month') { fromDate = new Date(now.getFullYear(), now.getMonth(), 1); toDate = new Date(); }
-        else if (period === 'year') { fromDate = new Date(now.getFullYear(), 0, 1); toDate = new Date(); }
-        else { if (from) fromDate = new Date(from); if (to) toDate = new Date(to); }
+        ({ fromDate, toDate } = resolveDateRange(req.query));
         if (fromDate || toDate) {
           filter.date = {};
           if (fromDate) filter.date.$gte = fromDate;
@@ -338,11 +360,7 @@ export default async function handler(req, res) {
         const { from, to, type, period } = req.query;
         let fromDate, toDate;
         const now = new Date();
-        if (period === 'today') { fromDate = new Date(new Date().setHours(0,0,0,0)); toDate = new Date(); }
-        else if (period === 'week') { fromDate = new Date(now.setDate(now.getDate() - 7)); toDate = new Date(); }
-        else if (period === 'month') { fromDate = new Date(now.getFullYear(), now.getMonth(), 1); toDate = new Date(); }
-        else if (period === 'year') { fromDate = new Date(now.getFullYear(), 0, 1); toDate = new Date(); }
-        else { if (from) fromDate = new Date(from); if (to) toDate = new Date(to); }
+        ({ fromDate, toDate } = resolveDateRange(req.query));
         const filter = {};
         if (fromDate || toDate) { filter.date = {}; if (fromDate) filter.date.$gte = fromDate; if (toDate) filter.date.$lte = toDate; }
         if (type) filter.type = type;
@@ -436,7 +454,25 @@ export default async function handler(req, res) {
 
         // Exclude internal transfer categories from visible entries
         const CF_HIDDEN = ['cogs', 'cash_settled', 'cash_handover', 'owner_deposit'];
+
+        // ── Sales vs Cash Flow reconciliation (same period) ──────────────────
+        // Sales are booked the day an order/sale is created; Cash Flow revenue is booked when the money is
+        // actually received (delivery cash that the driver has handed in, advances, shop sales). This shows
+        // both side by side so any gap is explained instead of looking like an error.
+        let reconciliation = null;
+        try {
+          const salesFilter = { status: { $ne: 'cancelled' } };
+          if (fromDate || toDate) { salesFilter.date = {}; if (fromDate) salesFilter.date.$gte = fromDate; if (toDate) salesFilter.date.$lte = toDate; }
+          const periodSales = await db.collection('sales').find(salesFilter).project({ totalAmount: 1 }).toArray();
+          const salesBooked = periodSales.reduce((s, x) => s + (x.totalAmount || 0), 0);
+          const unsettledCollections = entries
+            .filter(e => e.category === 'delivery_collection' && !isSettledDelivery(e))
+            .reduce((s, e) => s + e.amount, 0);
+          reconciliation = { salesBooked, salesCount: periodSales.length, revenueReceived: revenue, difference: salesBooked - revenue, unsettledCollections };
+        } catch (recErr) { console.error('Reconciliation failed:', recErr.message); }
+
         return res.status(200).json({
+          reconciliation,
           entries: entries.filter(e => !CF_HIDDEN.includes(e.category) && isSettledDelivery(e)),
           summary: {
             income:           operatingIncome,
