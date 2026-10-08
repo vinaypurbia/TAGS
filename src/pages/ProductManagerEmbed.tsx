@@ -89,6 +89,49 @@ const downloadProductImages = async (p: Product, only?: { url: string; index: nu
   }
 };
 
+// Copies the picture itself to the clipboard (so you can paste it straight into WhatsApp Web, Facebook, an email…).
+// Browsers only accept PNG on the clipboard, so the image is converted first. If the image host blocks that,
+// the picture's link is copied instead. Returns what was copied so the button can say so.
+const copyImageToClipboard = async (url: string): Promise<'image' | 'link'> => {
+  try {
+    if (!(navigator.clipboard && (window as any).ClipboardItem)) throw new Error('not supported');
+    const res = await fetch(url, { mode: 'cors' });
+    if (!res.ok) throw new Error('fetch failed');
+    const src = await res.blob();
+    const bmp = await createImageBitmap(src);
+    const canvas = document.createElement('canvas');
+    canvas.width = bmp.width; canvas.height = bmp.height;
+    canvas.getContext('2d')!.drawImage(bmp, 0, 0);
+    const png: Blob = await new Promise((resolve, reject) => canvas.toBlob(b => b ? resolve(b) : reject(new Error('convert failed')), 'image/png'));
+    await navigator.clipboard.write([new (window as any).ClipboardItem({ 'image/png': png })]);
+    return 'image';
+  } catch {
+    await navigator.clipboard.writeText(url);
+    return 'link';
+  }
+};
+
+// Small round button: copies the given picture. Stops the click so it never opens edit mode.
+function CopyImageButton({ url, small, label }: { url: string; small?: boolean; label?: string }) {
+  const [state, setState] = useState<'idle' | 'image' | 'link' | 'error'>('idle');
+  const run = async (e: React.MouseEvent) => {
+    e.stopPropagation(); e.preventDefault();
+    try { setState(await copyImageToClipboard(url)); } catch { setState('error'); }
+    setTimeout(() => setState('idle'), 1800);
+  };
+  const title = state === 'image' ? 'Image copied — paste it anywhere'
+    : state === 'link' ? 'Browser blocked image copy — link copied instead'
+    : state === 'error' ? 'Could not copy' : (label || 'Copy image');
+  return (
+    <button type="button" title={title} onClick={run}
+      className={`${small ? 'w-6 h-6' : 'h-8 w-8'} shrink-0 rounded-full shadow-md flex items-center justify-center transition-colors ${
+        state === 'image' ? 'bg-green-500 text-white' : state === 'link' ? 'bg-amber-500 text-white' : state === 'error' ? 'bg-red-500 text-white'
+        : 'bg-white/95 hover:bg-[#FA5600] text-gray-700 hover:text-white'}`}>
+      {state === 'image' || state === 'link' ? <Check className={small ? 'w-3 h-3' : 'w-4 h-4'} /> : <Copy className={small ? 'w-3 h-3' : 'w-4 h-4'} />}
+    </button>
+  );
+}
+
 const getPrice = (p: Product): number =>
   Number(p.discountedPrice || p.originalPrice) || 0;
 
@@ -180,14 +223,17 @@ function ProductCard({ product, onEdit }: { product: Product; onEdit: () => void
         </button>
         {/* Download image(s) — named after the product; does not open edit */}
         {img && (
-          <button
-            type="button"
-            title={getAllImages(product).length > 1 ? `Download ${getAllImages(product).length} images` : 'Download image'}
-            onClick={(e) => { e.stopPropagation(); e.preventDefault(); downloadProductImages(product); }}
-            className="absolute top-2 right-2 z-10 h-8 min-w-8 px-2 bg-white/95 hover:bg-[#FA5600] text-gray-700 hover:text-white rounded-full shadow-md flex items-center justify-center gap-1 transition-colors">
-            <Download className="w-4 h-4" />
-            {getAllImages(product).length > 1 && <span className="text-[10px] font-black">{getAllImages(product).length}</span>}
-          </button>
+          <div className="absolute top-2 right-2 z-10 flex items-center gap-1.5">
+            <CopyImageButton url={img} label="Copy image" />
+            <button
+              type="button"
+              title={getAllImages(product).length > 1 ? `Download ${getAllImages(product).length} images` : 'Download image'}
+              onClick={(e) => { e.stopPropagation(); e.preventDefault(); downloadProductImages(product); }}
+              className="h-8 min-w-8 px-2 bg-white/95 hover:bg-[#FA5600] text-gray-700 hover:text-white rounded-full shadow-md flex items-center justify-center gap-1 transition-colors">
+              <Download className="w-4 h-4" />
+              {getAllImages(product).length > 1 && <span className="text-[10px] font-black">{getAllImages(product).length}</span>}
+            </button>
+          </div>
         )}
       </div>
 
@@ -542,6 +588,7 @@ function EditModal({
                             className="absolute top-1 left-1 z-10 w-6 h-6 bg-white/90 hover:bg-[#FA5600] text-gray-700 hover:text-white rounded-full shadow flex items-center justify-center transition-colors">
                             <Download className="w-3 h-3" />
                           </button>
+                          <div className="absolute top-1 right-1 z-10"><CopyImageButton url={url} small label="Copy this image" /></div>
                           {i === 0 && (
                             <span className="absolute bottom-0 left-0 right-0 bg-[#FA5600] text-white text-[8px] font-black text-center py-0.5 uppercase tracking-widest">Main</span>
                           )}
@@ -1496,6 +1543,9 @@ function ListRow({ product, onEdit }: { product: Product; onEdit: () => void }) 
         )}
       </div>
       {img && (
+        <div className="shrink-0 [&>button]:shadow-none [&>button]:bg-gray-100 [&>button]:rounded-xl"><CopyImageButton url={img} /></div>
+      )}
+      {img && (
         <button type="button" title="Download image(s)"
           onClick={(e) => { e.stopPropagation(); downloadProductImages(product); }}
           className="shrink-0 w-8 h-8 flex items-center justify-center bg-gray-100 hover:bg-[#FA5600] text-gray-600 hover:text-white rounded-xl transition">
@@ -1791,6 +1841,7 @@ function AddProductInline({
                             className="absolute top-1 left-1 z-10 w-6 h-6 bg-white/90 hover:bg-[#FA5600] text-gray-700 hover:text-white rounded-full shadow flex items-center justify-center transition-colors">
                             <Download className="w-3 h-3" />
                           </button>
+                          <div className="absolute top-1 right-1 z-10"><CopyImageButton url={url} small label="Copy this image" /></div>
                           {i === 0 && (
                             <span className="absolute bottom-0 left-0 right-0 bg-[#FA5600] text-white text-[8px] font-black text-center py-0.5 uppercase tracking-widest">Main</span>
                           )}
