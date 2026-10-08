@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { Search, Filter, SlidersHorizontal, Image as ImageIcon, Tag, ChevronDown, X, Check, Pencil, Trash2, Plus, Upload, Eye, RotateCcw, Copy, Loader2, AlertTriangle, Download, Wand2 } from 'lucide-react';
+import { Search, Filter, SlidersHorizontal, Image as ImageIcon, Tag, ChevronDown, X, Check, Pencil, Trash2, Plus, Upload, Eye, RotateCcw, Copy, Loader2, AlertTriangle, ImagePlus, Download, Wand2 } from 'lucide-react';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -89,49 +89,6 @@ const downloadProductImages = async (p: Product, only?: { url: string; index: nu
   }
 };
 
-// Copies the picture itself to the clipboard (so you can paste it straight into WhatsApp Web, Facebook, an email…).
-// Browsers only accept PNG on the clipboard, so the image is converted first. If the image host blocks that,
-// the picture's link is copied instead. Returns what was copied so the button can say so.
-const copyImageToClipboard = async (url: string): Promise<'image' | 'link'> => {
-  try {
-    if (!(navigator.clipboard && (window as any).ClipboardItem)) throw new Error('not supported');
-    const res = await fetch(url, { mode: 'cors' });
-    if (!res.ok) throw new Error('fetch failed');
-    const src = await res.blob();
-    const bmp = await createImageBitmap(src);
-    const canvas = document.createElement('canvas');
-    canvas.width = bmp.width; canvas.height = bmp.height;
-    canvas.getContext('2d')!.drawImage(bmp, 0, 0);
-    const png: Blob = await new Promise((resolve, reject) => canvas.toBlob(b => b ? resolve(b) : reject(new Error('convert failed')), 'image/png'));
-    await navigator.clipboard.write([new (window as any).ClipboardItem({ 'image/png': png })]);
-    return 'image';
-  } catch {
-    await navigator.clipboard.writeText(url);
-    return 'link';
-  }
-};
-
-// Small round button: copies the given picture. Stops the click so it never opens edit mode.
-function CopyImageButton({ url, small, label }: { url: string; small?: boolean; label?: string }) {
-  const [state, setState] = useState<'idle' | 'image' | 'link' | 'error'>('idle');
-  const run = async (e: React.MouseEvent) => {
-    e.stopPropagation(); e.preventDefault();
-    try { setState(await copyImageToClipboard(url)); } catch { setState('error'); }
-    setTimeout(() => setState('idle'), 1800);
-  };
-  const title = state === 'image' ? 'Image copied — paste it anywhere'
-    : state === 'link' ? 'Browser blocked image copy — link copied instead'
-    : state === 'error' ? 'Could not copy' : (label || 'Copy image');
-  return (
-    <button type="button" title={title} onClick={run}
-      className={`${small ? 'w-6 h-6' : 'h-8 w-8'} shrink-0 rounded-full shadow-md flex items-center justify-center transition-colors ${
-        state === 'image' ? 'bg-green-500 text-white' : state === 'link' ? 'bg-amber-500 text-white' : state === 'error' ? 'bg-red-500 text-white'
-        : 'bg-white/95 hover:bg-[#FA5600] text-gray-700 hover:text-white'}`}>
-      {state === 'image' || state === 'link' ? <Check className={small ? 'w-3 h-3' : 'w-4 h-4'} /> : <Copy className={small ? 'w-3 h-3' : 'w-4 h-4'} />}
-    </button>
-  );
-}
-
 const getPrice = (p: Product): number =>
   Number(p.discountedPrice || p.originalPrice) || 0;
 
@@ -192,7 +149,327 @@ function FilterPill({ label, active, onClick }: { label: string; active: boolean
   );
 }
 
-function ProductCard({ product, onEdit }: { product: Product; onEdit: () => void }) {
+// ─── High-resolution picture finder ──────────────────────────────────────────
+interface HdCandidate { url: string; thumb?: string; width: number; height: number; title: string; source: string; page: string; }
+
+const searchHdImages = async (p: { name: string; category?: string }, query?: string, minSize = 800): Promise<HdCandidate[]> => {
+  const res = await fetch('/api/products?imageSearch=true', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: p.name, category: p.category || '', query: query || '', minSize }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) { const e: any = new Error(data.error || `Picture search failed (${res.status})`); e.code = data.code; throw e; }
+  return data.results || [];
+};
+
+// Downloads the chosen picture on the server, stores it in high resolution, and puts it on the product (main picture).
+const applyHdImage = async (p: Product, url: string, keepOld: boolean): Promise<{ product: Product; width: number; height: number }> => {
+  const r = await fetch('/api/products?imageFromLink=true', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url, name: p.name, hd: true }),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok || !d.imageUrl) throw new Error(d.error || 'Could not use that picture');
+  const current = p.imageUrls?.length ? p.imageUrls : p.imageUrl ? [p.imageUrl] : [];
+  const rest = (keepOld ? current : current.slice(1)).filter(u => u !== d.imageUrl);
+  const imageUrls = [d.imageUrl, ...rest];
+  const body: any = { id: p._id, imageUrl: d.imageUrl, imageUrls };
+  if (p.image) body.image = d.imageUrl;
+  const put = await fetch('/api/products', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  if (!put.ok) throw new Error('The picture was found but saving the product failed');
+  return { product: { ...p, imageUrl: d.imageUrl, imageUrls, ...(p.image ? { image: d.imageUrl } : {}) }, width: d.width || 0, height: d.height || 0 };
+};
+
+// Loads a picture in the browser to read its real pixel size
+const measureImage = (url: string): Promise<{ w: number; h: number } | null> =>
+  new Promise(resolve => {
+    const im = new Image();
+    const t = setTimeout(() => resolve(null), 8000);
+    im.onload = () => { clearTimeout(t); resolve({ w: im.naturalWidth, h: im.naturalHeight }); };
+    im.onerror = () => { clearTimeout(t); resolve(null); };
+    im.src = url;
+  });
+
+const sizeLabel = (w: number, h: number) => (w && h ? `${w}×${h}` : 'size unknown');
+
+// One product, one click: shows the best high-resolution matches; clicking one puts it straight on the product.
+function HdImageModal({ product, onClose, onApplied }: { product: Product; onClose: () => void; onApplied: (p: Product) => void }) {
+  const [query, setQuery] = useState(product.name);
+  const [results, setResults] = useState<HdCandidate[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [errorCode, setErrorCode] = useState('');
+  const [applying, setApplying] = useState('');
+  const [keepOld, setKeepOld] = useState(false);
+  const [done, setDone] = useState<{ w: number; h: number } | null>(null);
+  const [cur, setCur] = useState<{ w: number; h: number } | null>(null);
+  const img = getImg(product);
+
+  const search = async (q: string) => {
+    setLoading(true); setError(''); setErrorCode(''); setResults([]);
+    try { setResults(await searchHdImages(product, q === product.name ? '' : q)); }
+    catch (e: any) { setError(e.message || 'Picture search failed'); setErrorCode(e.code || ''); }
+    finally { setLoading(false); }
+  };
+  useEffect(() => { search(product.name); if (img) measureImage(img).then(setCur); }, []);
+
+  const use = async (c: HdCandidate) => {
+    setApplying(c.url); setError('');
+    try {
+      const out = await applyHdImage(product, c.url, keepOld);
+      setDone({ w: out.width, h: out.height });
+      onApplied(out.product);
+      setTimeout(onClose, 1200);
+    } catch (e: any) { setError(e.message || 'Could not use that picture'); setApplying(''); }
+  };
+
+  return createPortal(
+    <div className="fixed inset-0 z-[110] bg-black/60 flex items-center justify-center p-4" onClick={() => !applying && onClose()}>
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[92vh] flex flex-col" onClick={e => e.stopPropagation()}>
+        <div className="p-4 border-b border-gray-100 flex items-start gap-3">
+          {img ? <img src={img} alt="" className="w-14 h-14 rounded-xl object-cover border border-gray-200 shrink-0" /> : <div className="w-14 h-14 rounded-xl bg-gray-100 shrink-0" />}
+          <div className="flex-1 min-w-0">
+            <p className="text-xs font-black uppercase tracking-widest text-[#FA5600] flex items-center gap-1.5"><ImagePlus className="w-3.5 h-3.5" /> Find high-resolution picture</p>
+            <p className="text-sm font-black text-gray-900 truncate">{product.name}</p>
+            <p className="text-[10px] text-gray-400 font-bold">Current picture: {img ? (cur ? sizeLabel(cur.w, cur.h) : 'checking…') : 'none'}</p>
+          </div>
+          <button onClick={onClose} disabled={!!applying} className="text-gray-400 hover:text-gray-700 text-lg leading-none disabled:opacity-40">✕</button>
+        </div>
+
+        <div className="p-4 border-b border-gray-100 space-y-2">
+          <div className="flex gap-2">
+            <input value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') search(query); }}
+              placeholder="Search words (e.g. brand + model)" className="flex-1 border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none" />
+            <button onClick={() => search(query)} disabled={loading || !!applying} className="px-4 bg-[#FA5600] text-white rounded-xl text-xs font-black uppercase tracking-widest disabled:opacity-50">Search</button>
+          </div>
+          <label className="flex items-center gap-2 text-[11px] text-gray-500 cursor-pointer">
+            <input type="checkbox" checked={keepOld} onChange={e => setKeepOld(e.target.checked)} className="accent-[#FA5600]" />
+            Keep the old picture as an extra image (otherwise it is replaced)
+          </label>
+        </div>
+
+        <div className="p-4 overflow-y-auto flex-1">
+          {done && <div className="mb-3 bg-green-50 border border-green-200 text-green-700 rounded-xl p-3 text-xs font-black">✓ Picture replaced{done.w ? ` — saved at ${sizeLabel(done.w, done.h)}` : ''}</div>}
+          {error && (
+            <div className={`mb-3 rounded-xl p-3 text-xs border ${errorCode === 'NOT_CONFIGURED' ? 'bg-amber-50 border-amber-200 text-amber-800' : 'bg-red-50 border-red-200 text-red-600'}`}>
+              {error}
+              {errorCode === 'NOT_CONFIGURED' && <p className="mt-1 text-[11px]">One-time setup: create an account with a picture-search provider (serper.dev or serpapi.com), then add its key to your server settings as <b>SERPER_API_KEY</b> (or <b>SERPAPI_API_KEY</b>) and redeploy.</p>}
+            </div>
+          )}
+          {loading && <div className="py-12 text-center"><Loader2 className="w-7 h-7 text-[#FA5600] mx-auto animate-spin" /><p className="text-xs font-black text-gray-500 mt-2">Searching for high-resolution pictures…</p></div>}
+          {!loading && !error && results.length === 0 && <p className="text-xs text-gray-400 text-center py-10">No high-resolution pictures found. Try different search words above.</p>}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            {results.map((c, i) => (
+              <button key={c.url} onClick={() => use(c)} disabled={!!applying || !!done}
+                className="group text-left border-2 border-gray-200 hover:border-[#FA5600] rounded-xl overflow-hidden transition disabled:opacity-60 relative">
+                <div className="aspect-square bg-gray-50"><img src={c.thumb || c.url} alt={c.title} className="w-full h-full object-cover" onError={e => { const t = e.currentTarget; if (t.src !== c.url) t.src = c.url; }} /></div>
+                {i === 0 && <span className="absolute top-1.5 left-1.5 bg-[#FA5600] text-white text-[8px] font-black uppercase px-1.5 py-0.5 rounded-full">Best match</span>}
+                {applying === c.url && <div className="absolute inset-0 bg-white/70 flex items-center justify-center"><Loader2 className="w-6 h-6 text-[#FA5600] animate-spin" /></div>}
+                <div className="p-2">
+                  <p className="text-[11px] font-black text-gray-800">{sizeLabel(c.width, c.height)}</p>
+                  <p className="text-[9px] text-gray-400 truncate">{(c.source || '').replace(/^https?:\/\//, '')}</p>
+                </div>
+              </button>
+            ))}
+          </div>
+          <p className="text-[10px] text-gray-400 mt-4">Click a picture to use it straight away. Check you have the right to use a picture before publishing it — most pictures on the web belong to someone else.</p>
+        </div>
+      </div>
+    </div>, document.body);
+}
+
+// Many products at once: finds a better picture for each, you review, then apply the ones you tick.
+type HdRow = { product: Product; cur: { w: number; h: number } | null; options: HdCandidate[]; chosen: number; picked: boolean; note?: string };
+
+function BulkHdImageModal({ products, onClose, onApplied }: { products: Product[]; onClose: () => void; onApplied: (updated: Product[]) => void }) {
+  const [phase, setPhase] = useState<'setup' | 'working' | 'review' | 'saving' | 'done'>('setup');
+  const [skipAbove, setSkipAbove] = useState(800);   // skip products whose picture is already at least this many pixels (0 = replace all)
+  const [maxCount, setMaxCount] = useState(50);
+  const [keepOld, setKeepOld] = useState(false);
+  const [rows, setRows] = useState<HdRow[]>([]);
+  const [progress, setProgress] = useState({ done: 0, total: 0, label: '' });
+  const [error, setError] = useState('');
+  const [errorCode, setErrorCode] = useState('');
+  const [saveInfo, setSaveInfo] = useState({ ok: 0, failed: 0 });
+  const stopRef = useRef(false);
+
+  const run = async () => {
+    stopRef.current = false; setError(''); setErrorCode(''); setPhase('working');
+    // 1. which products actually need a better picture?
+    const pool = products.filter(p => p.name?.trim());
+    const sizes = new Map<string, { w: number; h: number } | null>();
+    setProgress({ done: 0, total: pool.length, label: 'Checking current picture sizes…' });
+    let idx = 0, doneCount = 0;
+    const worker = async () => {
+      while (idx < pool.length && !stopRef.current) {
+        const p = pool[idx++]; const u = getImg(p);
+        sizes.set(p._id, u ? await measureImage(u) : null);
+        setProgress({ done: ++doneCount, total: pool.length, label: 'Checking current picture sizes…' });
+      }
+    };
+    await Promise.all(Array.from({ length: 6 }, worker));
+    const targets = pool.filter(p => {
+      const sz = sizes.get(p._id);
+      if (!getImg(p) || !sz) return true;                  // no picture (or unreadable) → needs one
+      return skipAbove === 0 || Math.min(sz.w, sz.h) < skipAbove;
+    }).slice(0, maxCount);
+
+    // 2. search for each one (one search each, gently paced)
+    const out: HdRow[] = [];
+    for (let i = 0; i < targets.length; i++) {
+      if (stopRef.current) break;
+      const p = targets[i];
+      setProgress({ done: i, total: targets.length, label: `Searching: ${p.name}` });
+      try {
+        const options = (await searchHdImages(p)).slice(0, 4);
+        const cur = sizes.get(p._id) || null;
+        const best = options[0];
+        const better = !!best && (!cur || Math.min(best.width || 0, best.height || 0) > Math.min(cur.w, cur.h) * 1.2 || !best.width);
+        out.push({ product: p, cur, options, chosen: 0, picked: better, note: options.length === 0 ? 'No high-resolution picture found' : undefined });
+      } catch (e: any) {
+        setError(e.message || 'Picture search failed'); setErrorCode(e.code || '');
+        if (['QUOTA', 'NOT_CONFIGURED', 'BAD_KEY'].includes(e.code)) break;   // pointless to keep going
+        out.push({ product: p, cur: sizes.get(p._id) || null, options: [], chosen: 0, picked: false, note: e.message || 'Search failed' });
+      }
+      await new Promise(r => setTimeout(r, 600));
+    }
+    setRows(out);
+    setPhase('review');
+  };
+
+  const apply = async () => {
+    setPhase('saving');
+    const picked = rows.filter(r => r.picked && r.options[r.chosen]);
+    let ok = 0, failed = 0; const updated: Product[] = [];
+    for (let i = 0; i < picked.length; i++) {
+      const r = picked[i];
+      setProgress({ done: i, total: picked.length, label: r.product.name });
+      try { updated.push((await applyHdImage(r.product, r.options[r.chosen].url, keepOld)).product); ok++; }
+      catch { failed++; }
+      setSaveInfo({ ok, failed });
+    }
+    onApplied(updated);
+    setPhase('done');
+  };
+
+  const setRow = (i: number, patch: Partial<HdRow>) => setRows(rs => rs.map((r, k) => k === i ? { ...r, ...patch } : r));
+  const pickedCount = rows.filter(r => r.picked && r.options[r.chosen]).length;
+  const busy = phase === 'working' || phase === 'saving';
+
+  return createPortal(
+    <div className="fixed inset-0 z-[110] bg-black/60 flex items-center justify-center p-4" onClick={() => !busy && onClose()}>
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[92vh] flex flex-col" onClick={e => e.stopPropagation()}>
+        <div className="p-4 border-b border-gray-100 flex items-start justify-between gap-3">
+          <div>
+            <p className="text-sm font-black uppercase tracking-widest text-gray-800 flex items-center gap-2"><ImagePlus className="w-4 h-4 text-[#FA5600]" /> Find high-resolution pictures</p>
+            <p className="text-[11px] text-gray-400 mt-0.5">Searches for a better picture for each product. Nothing changes until you review and press Apply.</p>
+          </div>
+          <button onClick={onClose} disabled={busy} className="text-gray-400 hover:text-gray-700 text-lg leading-none disabled:opacity-40">✕</button>
+        </div>
+
+        <div className="p-4 overflow-y-auto flex-1 space-y-3">
+          {error && (
+            <div className={`rounded-xl p-3 text-xs border ${errorCode === 'NOT_CONFIGURED' ? 'bg-amber-50 border-amber-200 text-amber-800' : 'bg-red-50 border-red-200 text-red-600'}`}>
+              {error}{errorCode === 'NOT_CONFIGURED' && <p className="mt-1 text-[11px]">Add SERPER_API_KEY (serper.dev) or SERPAPI_API_KEY (serpapi.com) in your server settings, then redeploy.</p>}
+            </div>
+          )}
+
+          {phase === 'setup' && (
+            <>
+              <div className="bg-orange-50 border border-orange-200 rounded-xl p-3 text-xs text-gray-700">
+                <p className="font-black">{products.length} product{products.length === 1 ? '' : 's'} in the current list</p>
+                <p className="mt-1 text-gray-500">Use the page filters (category, search, no-image…) first to choose which products to process.</p>
+              </div>
+              <div className="grid sm:grid-cols-2 gap-3">
+                <label className="text-xs font-bold text-gray-600 space-y-1 block">
+                  <span>Skip products whose picture is already at least</span>
+                  <select value={skipAbove} onChange={e => setSkipAbove(Number(e.target.value))} className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold">
+                    <option value={600}>600 px</option><option value={800}>800 px (recommended)</option><option value={1000}>1000 px</option><option value={1200}>1200 px</option><option value={0}>Don't skip — look for every product</option>
+                  </select>
+                </label>
+                <label className="text-xs font-bold text-gray-600 space-y-1 block">
+                  <span>Process at most</span>
+                  <select value={maxCount} onChange={e => setMaxCount(Number(e.target.value))} className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold">
+                    <option value={20}>20 products</option><option value={50}>50 products</option><option value={100}>100 products</option><option value={200}>200 products</option>
+                  </select>
+                </label>
+              </div>
+              <label className="flex items-center gap-2 text-xs text-gray-600 cursor-pointer"><input type="checkbox" checked={keepOld} onChange={e => setKeepOld(e.target.checked)} className="accent-[#FA5600]" /> Keep each old picture as an extra image</label>
+              <p className="text-[11px] text-gray-400">Each product uses one picture-search credit from your search provider. Products that already have a large enough picture are skipped without using a credit.</p>
+            </>
+          )}
+
+          {(phase === 'working' || phase === 'saving') && (
+            <div className="py-8 text-center">
+              <Loader2 className="w-7 h-7 text-[#FA5600] mx-auto mb-3 animate-spin" />
+              <p className="text-sm font-black text-gray-700">{phase === 'saving' ? 'Applying pictures…' : progress.label} {progress.total ? `(${progress.done}/${progress.total})` : ''}</p>
+              <div className="w-full bg-gray-100 rounded-full h-2.5 mt-3"><div className="bg-[#FA5600] h-2.5 rounded-full transition-all" style={{ width: `${progress.total ? (progress.done / progress.total) * 100 : 0}%` }} /></div>
+            </div>
+          )}
+
+          {phase === 'review' && (
+            <>
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <p className="text-xs font-black text-gray-600">{rows.length} checked · {pickedCount} selected to apply</p>
+                <div className="flex gap-2">
+                  <button onClick={() => setRows(rs => rs.map(r => ({ ...r, picked: r.options.length > 0 })))} className="text-[10px] font-black uppercase px-2.5 py-1.5 rounded-lg bg-gray-100 text-gray-600">Select all</button>
+                  <button onClick={() => setRows(rs => rs.map(r => ({ ...r, picked: false })))} className="text-[10px] font-black uppercase px-2.5 py-1.5 rounded-lg bg-gray-100 text-gray-600">Select none</button>
+                </div>
+              </div>
+              {rows.length === 0 && <p className="text-xs text-gray-400 text-center py-8">Nothing needed a better picture — every product already has a large enough one.</p>}
+              {rows.map((r, i) => {
+                const ch = r.options[r.chosen];
+                return (
+                  <div key={r.product._id} className={`border rounded-xl p-3 flex gap-3 items-start ${r.picked ? 'border-[#FA5600]/40 bg-orange-50/30' : 'border-gray-200'}`}>
+                    <input type="checkbox" checked={r.picked} disabled={!ch} onChange={() => setRow(i, { picked: !r.picked })} className="mt-1 w-4 h-4 accent-[#FA5600] shrink-0" />
+                    <div className="w-16 shrink-0 text-center">
+                      {getImg(r.product) ? <img src={getImg(r.product)!} alt="" className="w-16 h-16 rounded-lg object-cover border border-gray-200" /> : <div className="w-16 h-16 rounded-lg bg-gray-100" />}
+                      <p className="text-[9px] text-gray-400 mt-1">Now: {r.cur ? sizeLabel(r.cur.w, r.cur.h) : 'none'}</p>
+                    </div>
+                    <span className="text-gray-300 mt-6">→</span>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-black text-gray-800 truncate">{r.product.name}</p>
+                      {r.options.length === 0 ? <p className="text-[11px] text-gray-400 mt-1">{r.note || 'No picture found'}</p> : (
+                        <div className="flex gap-2 mt-1.5 flex-wrap">
+                          {r.options.map((c, k) => (
+                            <button key={c.url} onClick={() => setRow(i, { chosen: k, picked: true })}
+                              className={`w-20 text-left rounded-lg overflow-hidden border-2 ${k === r.chosen ? 'border-[#FA5600]' : 'border-gray-200 hover:border-gray-400'}`}>
+                              <img src={c.thumb || c.url} alt="" className="w-20 h-20 object-cover" onError={e => { const t = e.currentTarget; if (t.src !== c.url) t.src = c.url; }} />
+                              <p className="text-[9px] font-black text-gray-600 px-1 py-0.5">{sizeLabel(c.width, c.height)}</p>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </>
+          )}
+
+          {phase === 'done' && (
+            <div className="py-8 text-center">
+              <Check className="w-9 h-9 text-green-600 mx-auto mb-2" />
+              <p className="text-sm font-black text-gray-800">{saveInfo.ok} picture{saveInfo.ok === 1 ? '' : 's'} replaced</p>
+              {saveInfo.failed > 0 && <p className="text-xs text-red-500 mt-1">{saveInfo.failed} could not be applied — try those one at a time.</p>}
+            </div>
+          )}
+        </div>
+
+        <div className="p-4 border-t border-gray-100 flex gap-2 justify-end">
+          {phase === 'setup' && <button onClick={run} disabled={products.length === 0} className="px-5 py-2.5 bg-[#FA5600] text-white font-black uppercase tracking-widest text-xs rounded-xl hover:bg-[#E04A00] disabled:opacity-50">Find pictures</button>}
+          {phase === 'working' && <button onClick={() => { stopRef.current = true; }} className="px-5 py-2.5 border-2 border-gray-200 text-gray-600 font-black uppercase tracking-widest text-xs rounded-xl hover:border-red-400 hover:text-red-500">Stop and review what's found</button>}
+          {phase === 'review' && <>
+            <button onClick={onClose} className="px-4 py-2.5 border-2 border-gray-200 text-gray-600 font-black uppercase tracking-widest text-xs rounded-xl">Discard</button>
+            <button onClick={apply} disabled={pickedCount === 0} className="px-5 py-2.5 bg-[#FA5600] text-white font-black uppercase tracking-widest text-xs rounded-xl hover:bg-[#E04A00] disabled:opacity-50">Apply {pickedCount} picture{pickedCount === 1 ? '' : 's'}</button>
+          </>}
+          {phase === 'done' && <button onClick={onClose} className="px-5 py-2.5 bg-[#FA5600] text-white font-black uppercase tracking-widest text-xs rounded-xl">Close</button>}
+        </div>
+      </div>
+    </div>, document.body);
+}
+
+function ProductCard({ product, onEdit, onFindHd }: { product: Product; onEdit: () => void; onFindHd?: () => void }) {
   const img = getImg(product);
   const disc = discountPct(product);
 
@@ -221,19 +498,23 @@ function ProductCard({ product, onEdit }: { product: Product; onEdit: () => void
             <Pencil className="w-3.5 h-3.5" /> Edit
           </span>
         </button>
+        {/* Find a high-resolution picture */}
+        {onFindHd && (
+          <button type="button" title="Find a high-resolution picture" onClick={(e) => { e.stopPropagation(); e.preventDefault(); onFindHd(); }}
+            className="absolute top-12 right-2 z-10 h-8 w-8 bg-white/95 hover:bg-[#FA5600] text-gray-700 hover:text-white rounded-full shadow-md flex items-center justify-center transition-colors">
+            <ImagePlus className="w-4 h-4" />
+          </button>
+        )}
         {/* Download image(s) — named after the product; does not open edit */}
         {img && (
-          <div className="absolute top-2 right-2 z-10 flex items-center gap-1.5">
-            <CopyImageButton url={img} label="Copy image" />
-            <button
-              type="button"
-              title={getAllImages(product).length > 1 ? `Download ${getAllImages(product).length} images` : 'Download image'}
-              onClick={(e) => { e.stopPropagation(); e.preventDefault(); downloadProductImages(product); }}
-              className="h-8 min-w-8 px-2 bg-white/95 hover:bg-[#FA5600] text-gray-700 hover:text-white rounded-full shadow-md flex items-center justify-center gap-1 transition-colors">
-              <Download className="w-4 h-4" />
-              {getAllImages(product).length > 1 && <span className="text-[10px] font-black">{getAllImages(product).length}</span>}
-            </button>
-          </div>
+          <button
+            type="button"
+            title={getAllImages(product).length > 1 ? `Download ${getAllImages(product).length} images` : 'Download image'}
+            onClick={(e) => { e.stopPropagation(); e.preventDefault(); downloadProductImages(product); }}
+            className="absolute top-2 right-2 z-10 h-8 min-w-8 px-2 bg-white/95 hover:bg-[#FA5600] text-gray-700 hover:text-white rounded-full shadow-md flex items-center justify-center gap-1 transition-colors">
+            <Download className="w-4 h-4" />
+            {getAllImages(product).length > 1 && <span className="text-[10px] font-black">{getAllImages(product).length}</span>}
+          </button>
         )}
       </div>
 
@@ -588,7 +869,6 @@ function EditModal({
                             className="absolute top-1 left-1 z-10 w-6 h-6 bg-white/90 hover:bg-[#FA5600] text-gray-700 hover:text-white rounded-full shadow flex items-center justify-center transition-colors">
                             <Download className="w-3 h-3" />
                           </button>
-                          <div className="absolute top-1 right-1 z-10"><CopyImageButton url={url} small label="Copy this image" /></div>
                           {i === 0 && (
                             <span className="absolute bottom-0 left-0 right-0 bg-[#FA5600] text-white text-[8px] font-black text-center py-0.5 uppercase tracking-widest">Main</span>
                           )}
@@ -1165,6 +1445,14 @@ export function ProductManagerEmbed() {
   // Mass rewrite of descriptions modal
   const [showBulkDesc, setShowBulkDesc] = useState(false);
 
+  // High-resolution picture finder (one product / many products)
+  const [hdProduct, setHdProduct] = useState<Product | null>(null);
+  const [showBulkHd, setShowBulkHd] = useState(false);
+  const applyHdUpdates = useCallback((updated: Product[]) => {
+    const m = new Map(updated.map(p => [p._id, p]));
+    setAllProducts(prev => prev.map(p => m.has(p._id) ? { ...p, ...m.get(p._id)! } : p));
+  }, []);
+
   useEffect(() => {
     // NOTE: the API caps `limit` at 100 per request no matter what we ask for,
     // so a single fetch (even with limit=1000) silently drops any product
@@ -1313,6 +1601,14 @@ export function ProductManagerEmbed() {
             Rewrite Descriptions
           </button>
 
+          {/* High-resolution pictures */}
+          <button
+            onClick={() => setShowBulkHd(true)}
+            className="flex items-center gap-2 px-4 py-2.5 rounded-xl border-2 border-gray-200 text-gray-500 hover:border-[#FA5600] hover:text-[#FA5600] text-sm font-black uppercase tracking-widest transition">
+            <ImagePlus className="w-4 h-4" />
+            Find HD Pictures
+          </button>
+
           {/* Remove Duplicates */}
           <button
             onClick={() => setShowDedupe(true)}
@@ -1339,6 +1635,14 @@ export function ProductManagerEmbed() {
               setAllProducts(prev => prev.map(p => m.has(p._id) ? { ...p, description: m.get(p._id) } : p));
             }}
           />
+        )}
+
+        {showBulkHd && (
+          <BulkHdImageModal products={filtered} onClose={() => setShowBulkHd(false)} onApplied={applyHdUpdates} />
+        )}
+
+        {hdProduct && (
+          <HdImageModal product={hdProduct} onClose={() => setHdProduct(null)} onApplied={(p) => applyHdUpdates([p])} />
         )}
 
         {showDedupe && (
@@ -1486,13 +1790,13 @@ export function ProductManagerEmbed() {
           {viewMode === 'grid' ? (
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3 mb-6">
               {grouped[cat].map(p => (
-                <ProductCard key={p._id} product={p} onEdit={() => setEditingProduct(p)} />
+                <ProductCard key={p._id} product={p} onEdit={() => setEditingProduct(p)} onFindHd={() => setHdProduct(p)} />
               ))}
             </div>
           ) : (
             <div className="space-y-1 mb-6">
               {grouped[cat].map(p => (
-                <ListRow key={p._id} product={p} onEdit={() => setEditingProduct(p)} />
+                <ListRow key={p._id} product={p} onEdit={() => setEditingProduct(p)} onFindHd={() => setHdProduct(p)} />
               ))}
             </div>
           )}
@@ -1515,7 +1819,7 @@ export function ProductManagerEmbed() {
 
 // ─── List Row View ────────────────────────────────────────────────────────────
 
-function ListRow({ product, onEdit }: { product: Product; onEdit: () => void }) {
+function ListRow({ product, onEdit, onFindHd }: { product: Product; onEdit: () => void; onFindHd?: () => void }) {
   const img = getImg(product);
   const disc = discountPct(product);
   return (
@@ -1542,8 +1846,11 @@ function ListRow({ product, onEdit }: { product: Product; onEdit: () => void }) 
           <span className="text-sm font-black text-gray-900">{fmt(product.originalPrice)}</span>
         )}
       </div>
-      {img && (
-        <div className="shrink-0 [&>button]:shadow-none [&>button]:bg-gray-100 [&>button]:rounded-xl"><CopyImageButton url={img} /></div>
+      {onFindHd && (
+        <button type="button" title="Find a high-resolution picture" onClick={(e) => { e.stopPropagation(); onFindHd(); }}
+          className="shrink-0 w-8 h-8 flex items-center justify-center bg-gray-100 hover:bg-[#FA5600] text-gray-600 hover:text-white rounded-xl transition">
+          <ImagePlus className="w-4 h-4" />
+        </button>
       )}
       {img && (
         <button type="button" title="Download image(s)"
@@ -1841,7 +2148,6 @@ function AddProductInline({
                             className="absolute top-1 left-1 z-10 w-6 h-6 bg-white/90 hover:bg-[#FA5600] text-gray-700 hover:text-white rounded-full shadow flex items-center justify-center transition-colors">
                             <Download className="w-3 h-3" />
                           </button>
-                          <div className="absolute top-1 right-1 z-10"><CopyImageButton url={url} small label="Copy this image" /></div>
                           {i === 0 && (
                             <span className="absolute bottom-0 left-0 right-0 bg-[#FA5600] text-white text-[8px] font-black text-center py-0.5 uppercase tracking-widest">Main</span>
                           )}
