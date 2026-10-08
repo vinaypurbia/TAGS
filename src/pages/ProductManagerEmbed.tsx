@@ -162,7 +162,19 @@ const searchHdImages = async (p: { name: string; category?: string }, query?: st
   return data.results || [];
 };
 
-// Downloads the chosen picture on the server, stores it in high resolution, and puts it on the product (main picture).
+// Puts an already-hosted picture on the product as its main picture (the old main picture is replaced, or kept as an extra).
+const savePictureOnProduct = async (p: Product, imageUrl: string, keepOld: boolean): Promise<Product> => {
+  const current = p.imageUrls?.length ? p.imageUrls : p.imageUrl ? [p.imageUrl] : [];
+  const rest = (keepOld ? current : current.slice(1)).filter(u => u !== imageUrl);
+  const imageUrls = [imageUrl, ...rest];
+  const body: any = { id: p._id, imageUrl, imageUrls };
+  if (p.image) body.image = imageUrl;
+  const put = await fetch('/api/products', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  if (!put.ok) throw new Error('The picture was found but saving the product failed');
+  return { ...p, imageUrl, imageUrls, ...(p.image ? { image: imageUrl } : {}) };
+};
+
+// Downloads the chosen picture (by link) on the server, stores it in high resolution, and puts it on the product.
 const applyHdImage = async (p: Product, url: string, keepOld: boolean): Promise<{ product: Product; width: number; height: number }> => {
   const r = await fetch('/api/products?imageFromLink=true', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -170,14 +182,15 @@ const applyHdImage = async (p: Product, url: string, keepOld: boolean): Promise<
   });
   const d = await r.json().catch(() => ({}));
   if (!r.ok || !d.imageUrl) throw new Error(d.error || 'Could not use that picture');
-  const current = p.imageUrls?.length ? p.imageUrls : p.imageUrl ? [p.imageUrl] : [];
-  const rest = (keepOld ? current : current.slice(1)).filter(u => u !== d.imageUrl);
-  const imageUrls = [d.imageUrl, ...rest];
-  const body: any = { id: p._id, imageUrl: d.imageUrl, imageUrls };
-  if (p.image) body.image = d.imageUrl;
-  const put = await fetch('/api/products', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-  if (!put.ok) throw new Error('The picture was found but saving the product failed');
-  return { product: { ...p, imageUrl: d.imageUrl, imageUrls, ...(p.image ? { image: d.imageUrl } : {}) }, width: d.width || 0, height: d.height || 0 };
+  return { product: await savePictureOnProduct(p, d.imageUrl, keepOld), width: d.width || 0, height: d.height || 0 };
+};
+
+// A picture pasted/copied from the computer: upload it with the normal uploader, then put it on the product.
+const applyPastedFile = async (p: Product, file: File, keepOld: boolean): Promise<Product> => {
+  const res = await fetch('/api/upload', { method: 'POST', body: file, headers: { 'Content-Type': file.type || 'image/jpeg' } });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.url) throw new Error(data.error || 'Upload failed');
+  return savePictureOnProduct(p, data.url, keepOld);
 };
 
 // Loads a picture in the browser to read its real pixel size
@@ -192,11 +205,110 @@ const measureImage = (url: string): Promise<{ w: number; h: number } | null> =>
 
 const sizeLabel = (w: number, h: number) => (w && h ? `${w}×${h}` : 'size unknown');
 
+// FREE mode — no search service needed. Opens Google/Bing Images (large pictures only); you copy the picture you
+// like and paste it here (Ctrl+V), then one click puts it on the product in high quality.
+function FreePicturePanel({ product, onApplied }: { product: Product; onApplied: (p: Product, w: number, h: number) => void }) {
+  const [query, setQuery] = useState(product.name);
+  const [link, setLink] = useState('');
+  const [file, setFile] = useState<File | null>(null);
+  const [preview, setPreview] = useState('');
+  const [size, setSize] = useState<{ w: number; h: number } | null>(null);
+  const [keepOld, setKeepOld] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [ok, setOk] = useState('');
+  const zoneRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => { zoneRef.current?.focus(); }, []);
+  useEffect(() => () => { if (preview.startsWith('blob:')) URL.revokeObjectURL(preview); }, [preview]);
+
+  const setPicture = async (nextFile: File | null, nextLink: string) => {
+    setError(''); setOk(''); setFile(nextFile); setLink(nextLink); setSize(null);
+    const src = nextFile ? URL.createObjectURL(nextFile) : nextLink;
+    setPreview(src);
+    if (src) setSize(await measureImage(src));
+  };
+  const onPaste = (e: React.ClipboardEvent) => {
+    const f = Array.from(e.clipboardData?.items || []).find(i => i.kind === 'file' && i.type.startsWith('image/'))?.getAsFile();
+    if (f) { e.preventDefault(); setPicture(f, ''); return; }
+    const text = (e.clipboardData?.getData('text') || '').trim();
+    if (/^https?:\/\//i.test(text)) { e.preventDefault(); setPicture(null, text); }
+    else if (text) setError('That is not a picture or a link. Right-click the big picture and choose "Copy image" or "Copy image address".');
+  };
+
+  const use = async () => {
+    if (!file && !link) return;
+    setBusy(true); setError('');
+    try {
+      let updated: Product, w = size?.w || 0, h = size?.h || 0;
+      if (file) updated = await applyPastedFile(product, file, keepOld);
+      else { const out = await applyHdImage(product, link.trim(), keepOld); updated = out.product; w = out.width || w; h = out.height || h; }
+      setOk(`Picture replaced${w ? ` — ${sizeLabel(w, h)}` : ''}`);
+      onApplied(updated, w, h);
+    } catch (e: any) { setError(e.message || 'Could not use that picture'); }
+    finally { setBusy(false); }
+  };
+
+  const q = encodeURIComponent(query.trim() || product.name);
+  const small = !!size && Math.min(size.w, size.h) < 800;
+
+  return (
+    <div className="space-y-3">
+      <div className="flex gap-2">
+        <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search words"
+          className="flex-1 border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none" />
+        <a href={`https://www.google.com/search?tbm=isch&tbs=isz:l&q=${q}`} target="_blank" rel="noopener noreferrer"
+          className="px-3 py-2 bg-[#FA5600] text-white rounded-xl text-xs font-black uppercase tracking-widest flex items-center whitespace-nowrap">Google Images</a>
+        <a href={`https://www.bing.com/images/search?q=${q}&qft=+filterui:imagesize-large`} target="_blank" rel="noopener noreferrer"
+          className="px-3 py-2 border-2 border-gray-200 text-gray-600 rounded-xl text-xs font-black uppercase tracking-widest flex items-center whitespace-nowrap">Bing</a>
+      </div>
+      <ol className="text-[11px] text-gray-500 list-decimal ml-4 space-y-0.5">
+        <li>Open Google Images above (it only shows large pictures) and click the picture you like.</li>
+        <li>Right-click the big picture → <b>Copy image</b> (or <b>Copy image address</b>).</li>
+        <li>Come back here, click the box below and press <b>Ctrl+V</b>. Then press <b>Use this picture</b>.</li>
+      </ol>
+
+      <div ref={zoneRef} tabIndex={0} onPaste={onPaste}
+        className="border-2 border-dashed border-gray-300 focus:border-[#FA5600] rounded-xl p-4 text-center outline-none bg-gray-50 cursor-text">
+        {preview ? (
+          <div className="flex items-center gap-3 text-left">
+            <img src={preview} alt="" className="w-24 h-24 object-cover rounded-lg border border-gray-200" />
+            <div className="text-xs">
+              <p className="font-black text-gray-800">{size ? sizeLabel(size.w, size.h) : 'Checking size…'}</p>
+              {small && <p className="text-amber-600 font-bold mt-0.5">Fairly small — a larger picture will look sharper.</p>}
+              <p className="text-gray-400 mt-0.5">Paste again to choose a different one.</p>
+            </div>
+          </div>
+        ) : <p className="text-xs font-black text-gray-400 uppercase tracking-widest">Click here, then press Ctrl+V to paste the picture</p>}
+      </div>
+
+      <input value={link} onChange={e => { setFile(null); setLink(e.target.value); setPreview(e.target.value); setOk(''); setError(''); }}
+        onBlur={() => { if (link && !file) measureImage(link).then(setSize); }}
+        placeholder="…or paste a picture link here" className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-xs focus:border-[#FA5600] outline-none" />
+
+      <label className="flex items-center gap-2 text-[11px] text-gray-500 cursor-pointer">
+        <input type="checkbox" checked={keepOld} onChange={e => setKeepOld(e.target.checked)} className="accent-[#FA5600]" />
+        Keep the old picture as an extra image
+      </label>
+
+      {error && <div className="bg-red-50 border border-red-200 text-red-600 rounded-xl p-2.5 text-xs">{error}</div>}
+      {ok && <div className="bg-green-50 border border-green-200 text-green-700 rounded-xl p-2.5 text-xs font-black">✓ {ok}</div>}
+      <button onClick={use} disabled={busy || !!ok || (!file && !link.trim())}
+        className="w-full py-2.5 bg-[#FA5600] text-white font-black uppercase tracking-widest text-xs rounded-xl hover:bg-[#E04A00] disabled:opacity-50 flex items-center justify-center gap-2">
+        {busy ? <><Loader2 className="w-4 h-4 animate-spin" /> Saving…</> : 'Use this picture'}
+      </button>
+      <p className="text-[10px] text-gray-400">Most pictures on the web belong to someone else — check you may use a picture before publishing it.</p>
+    </div>
+  );
+}
+
 // One product, one click: shows the best high-resolution matches; clicking one puts it straight on the product.
 function HdImageModal({ product, onClose, onApplied }: { product: Product; onClose: () => void; onApplied: (p: Product) => void }) {
   const [query, setQuery] = useState(product.name);
   const [results, setResults] = useState<HdCandidate[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const [tab, setTab] = useState<'free' | 'auto'>('free');
+  const [searched, setSearched] = useState(false);
   const [error, setError] = useState('');
   const [errorCode, setErrorCode] = useState('');
   const [applying, setApplying] = useState('');
@@ -211,7 +323,9 @@ function HdImageModal({ product, onClose, onApplied }: { product: Product; onClo
     catch (e: any) { setError(e.message || 'Picture search failed'); setErrorCode(e.code || ''); }
     finally { setLoading(false); }
   };
-  useEffect(() => { search(product.name); if (img) measureImage(img).then(setCur); }, []);
+  useEffect(() => { if (img) measureImage(img).then(setCur); }, []);
+  // The automatic search only runs when you open its tab, so no search credit is used unless you choose it
+  useEffect(() => { if (tab === 'auto' && !searched) { setSearched(true); search(product.name); } }, [tab]);
 
   const use = async (c: HdCandidate) => {
     setApplying(c.url); setError('');
@@ -236,6 +350,18 @@ function HdImageModal({ product, onClose, onApplied }: { product: Product; onClo
           <button onClick={onClose} disabled={!!applying} className="text-gray-400 hover:text-gray-700 text-lg leading-none disabled:opacity-40">✕</button>
         </div>
 
+        <div className="px-4 pt-3 flex gap-2 border-b border-gray-100">
+          {([['free', 'Free — pick it yourself'], ['auto', 'Automatic search (needs a search key)']] as const).map(([id, label]) => (
+            <button key={id} onClick={() => setTab(id)}
+              className={`px-3 py-2 text-[11px] font-black uppercase tracking-widest rounded-t-lg border-b-2 -mb-px ${tab === id ? 'border-[#FA5600] text-[#FA5600]' : 'border-transparent text-gray-400 hover:text-gray-600'}`}>{label}</button>
+          ))}
+        </div>
+
+        {tab === 'free' ? (
+          <div className="p-4 overflow-y-auto flex-1">
+            <FreePicturePanel product={product} onApplied={(p, w, h) => { setDone({ w, h }); onApplied(p); setTimeout(onClose, 1400); }} />
+          </div>
+        ) : (<>
         <div className="p-4 border-b border-gray-100 space-y-2">
           <div className="flex gap-2">
             <input value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') search(query); }}
@@ -274,6 +400,7 @@ function HdImageModal({ product, onClose, onApplied }: { product: Product; onClo
           </div>
           <p className="text-[10px] text-gray-400 mt-4">Click a picture to use it straight away. Check you have the right to use a picture before publishing it — most pictures on the web belong to someone else.</p>
         </div>
+        </>)}
       </div>
     </div>, document.body);
 }
@@ -282,7 +409,10 @@ function HdImageModal({ product, onClose, onApplied }: { product: Product; onClo
 type HdRow = { product: Product; cur: { w: number; h: number } | null; options: HdCandidate[]; chosen: number; picked: boolean; note?: string };
 
 function BulkHdImageModal({ products, onClose, onApplied }: { products: Product[]; onClose: () => void; onApplied: (updated: Product[]) => void }) {
-  const [phase, setPhase] = useState<'setup' | 'working' | 'review' | 'saving' | 'done'>('setup');
+  const [phase, setPhase] = useState<'setup' | 'working' | 'review' | 'saving' | 'queue' | 'done'>('setup');
+  const [mode, setMode] = useState<'free' | 'auto'>('free');   // free = you pick each picture; auto = uses a search key
+  const [queue, setQueue] = useState<Product[]>([]);
+  const [qIdx, setQIdx] = useState(0);
   const [skipAbove, setSkipAbove] = useState(800);   // skip products whose picture is already at least this many pixels (0 = replace all)
   const [maxCount, setMaxCount] = useState(50);
   const [keepOld, setKeepOld] = useState(false);
@@ -313,6 +443,12 @@ function BulkHdImageModal({ products, onClose, onApplied }: { products: Product[
       if (!getImg(p) || !sz) return true;                  // no picture (or unreadable) → needs one
       return skipAbove === 0 || Math.min(sz.w, sz.h) < skipAbove;
     }).slice(0, maxCount);
+
+    // FREE mode: no searching — walk through the list one product at a time
+    if (mode === 'free') {
+      if (stopRef.current || targets.length === 0) { setRows([]); setPhase(targets.length === 0 ? 'review' : 'done'); return; }
+      setQueue(targets); setQIdx(0); setSaveInfo({ ok: 0, failed: 0 }); setPhase('queue'); return;
+    }
 
     // 2. search for each one (one search each, gently paced)
     const out: HdRow[] = [];
@@ -380,6 +516,14 @@ function BulkHdImageModal({ products, onClose, onApplied }: { products: Product[
                 <p className="font-black">{products.length} product{products.length === 1 ? '' : 's'} in the current list</p>
                 <p className="mt-1 text-gray-500">Use the page filters (category, search, no-image…) first to choose which products to process.</p>
               </div>
+              <label className="text-xs font-bold text-gray-600 space-y-1 block">
+                <span>How do you want to find pictures?</span>
+                <select value={mode} onChange={e => setMode(e.target.value as 'free' | 'auto')} className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold">
+                  <option value="free">Free — I pick each picture myself (no search service, no cost)</option>
+                  <option value="auto">Automatic search (needs a paid/limited search key)</option>
+                </select>
+              </label>
+              {mode === 'free' && <p className="text-[11px] text-gray-500 bg-gray-50 rounded-xl p-2.5">For each product that needs a better picture, you open Google Images, copy the picture you like and paste it here. One click then saves it. Products that already have a large picture are skipped.</p>}
               <div className="grid sm:grid-cols-2 gap-3">
                 <label className="text-xs font-bold text-gray-600 space-y-1 block">
                   <span>Skip products whose picture is already at least</span>
@@ -395,7 +539,7 @@ function BulkHdImageModal({ products, onClose, onApplied }: { products: Product[
                 </label>
               </div>
               <label className="flex items-center gap-2 text-xs text-gray-600 cursor-pointer"><input type="checkbox" checked={keepOld} onChange={e => setKeepOld(e.target.checked)} className="accent-[#FA5600]" /> Keep each old picture as an extra image</label>
-              <p className="text-[11px] text-gray-400">Each product uses one picture-search credit from your search provider. Products that already have a large enough picture are skipped without using a credit.</p>
+              {mode === 'auto' && <p className="text-[11px] text-gray-400">Each product uses one picture-search credit from your search provider. Products that already have a large enough picture are skipped without using a credit.</p>}
             </>
           )}
 
@@ -447,6 +591,24 @@ function BulkHdImageModal({ products, onClose, onApplied }: { products: Product[
             </>
           )}
 
+          {phase === 'queue' && queue[qIdx] && (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <p className="text-xs font-black text-gray-600">Product {qIdx + 1} of {queue.length} · {saveInfo.ok} replaced</p>
+                <div className="flex gap-2">
+                  <button onClick={() => (qIdx + 1 >= queue.length ? setPhase('done') : setQIdx(i => i + 1))} className="text-[10px] font-black uppercase px-3 py-1.5 rounded-lg bg-gray-100 text-gray-600 hover:bg-gray-200">Skip this one</button>
+                  <button onClick={() => setPhase('done')} className="text-[10px] font-black uppercase px-3 py-1.5 rounded-lg bg-gray-100 text-gray-600 hover:bg-gray-200">Finish</button>
+                </div>
+              </div>
+              <div className="flex items-center gap-3 bg-gray-50 rounded-xl p-2.5">
+                {getImg(queue[qIdx]) ? <img src={getImg(queue[qIdx])!} alt="" className="w-14 h-14 rounded-lg object-cover border border-gray-200" /> : <div className="w-14 h-14 rounded-lg bg-gray-200" />}
+                <p className="text-sm font-black text-gray-900">{queue[qIdx].name}</p>
+              </div>
+              <FreePicturePanel key={queue[qIdx]._id} product={queue[qIdx]}
+                onApplied={(p) => { onApplied([p]); setSaveInfo(s => ({ ...s, ok: s.ok + 1 })); setTimeout(() => (qIdx + 1 >= queue.length ? setPhase('done') : setQIdx(i => i + 1)), 900); }} />
+            </div>
+          )}
+
           {phase === 'done' && (
             <div className="py-8 text-center">
               <Check className="w-9 h-9 text-green-600 mx-auto mb-2" />
@@ -457,7 +619,7 @@ function BulkHdImageModal({ products, onClose, onApplied }: { products: Product[
         </div>
 
         <div className="p-4 border-t border-gray-100 flex gap-2 justify-end">
-          {phase === 'setup' && <button onClick={run} disabled={products.length === 0} className="px-5 py-2.5 bg-[#FA5600] text-white font-black uppercase tracking-widest text-xs rounded-xl hover:bg-[#E04A00] disabled:opacity-50">Find pictures</button>}
+          {phase === 'setup' && <button onClick={run} disabled={products.length === 0} className="px-5 py-2.5 bg-[#FA5600] text-white font-black uppercase tracking-widest text-xs rounded-xl hover:bg-[#E04A00] disabled:opacity-50">{mode === 'free' ? 'Start' : 'Find pictures'}</button>}
           {phase === 'working' && <button onClick={() => { stopRef.current = true; }} className="px-5 py-2.5 border-2 border-gray-200 text-gray-600 font-black uppercase tracking-widest text-xs rounded-xl hover:border-red-400 hover:text-red-500">Stop and review what's found</button>}
           {phase === 'review' && <>
             <button onClick={onClose} className="px-4 py-2.5 border-2 border-gray-200 text-gray-600 font-black uppercase tracking-widest text-xs rounded-xl">Discard</button>
