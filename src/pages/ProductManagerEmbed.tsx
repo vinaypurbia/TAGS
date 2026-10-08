@@ -1526,11 +1526,76 @@ function AddProductInline({
     category: '', subcategory: '', description: '', videoUrl: ''
   });
   const [subcategories, setSubcategories] = useState<any[]>([]);
+  // Pictures added by link — they sit in the "Current Images" strip, exactly like the Edit form
+  const [addedImageUrls, setAddedImageUrls] = useState<string[]>([]);
   const [imageFiles, setImageFiles] = useState<(File | null)[]>([null, null, null]);
   const [imagePreviews, setImagePreviews] = useState<(string | null)[]>([null, null, null]);
   const [uploading, setUploading] = useState(false);
   const [success, setSuccess] = useState(false);
+  const [videoUrlError, setVideoUrlError] = useState('');
+  const [embedUrl, setEmbedUrl] = useState<string | null>(null);
+  // Open by default on a new product so the picture and video options are right there
+  const [showMore, setShowMore] = useState(true);
   const imageInputRefs = [useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null)];
+
+  // ── Add a picture by link, or paste a copied picture (Ctrl+V) — same as the Edit form ──
+  const [imgLink, setImgLink] = useState('');
+  const [linkBusy, setLinkBusy] = useState(false);
+  const [imgMsg, setImgMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const addImageFromLink = async () => {
+    const link = imgLink.trim();
+    if (!link) return;
+    setLinkBusy(true); setImgMsg(null);
+    try {
+      const res = await fetch('/api/products?imageFromLink=true', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: link, name: formData.name || 'toy', clean: false }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.imageUrl) throw new Error(data.error || 'Could not use that link');
+      setAddedImageUrls(prev => [...prev, data.imageUrl]);
+      setImgLink(''); setShowMore(true);
+      setImgMsg({ ok: true, text: 'Picture added — press Add Product to keep it.' });
+    } catch (e: any) {
+      setImgMsg({ ok: false, text: e.message || 'Something went wrong' });
+    } finally {
+      setLinkBusy(false);
+    }
+  };
+
+  // Shrink big screenshots before they are uploaded on Add
+  const shrinkPasted = (file: File): Promise<File> => new Promise(resolve => {
+    const url = URL.createObjectURL(file); const img = new Image();
+    img.onload = () => {
+      const scale = Math.min(1, 1600 / Math.max(img.naturalWidth, img.naturalHeight));
+      const c = document.createElement('canvas'); c.width = Math.round(img.naturalWidth * scale); c.height = Math.round(img.naturalHeight * scale);
+      c.getContext('2d')!.drawImage(img, 0, 0, c.width, c.height); URL.revokeObjectURL(url);
+      c.toBlob(b => resolve(b ? new File([b], 'pasted.jpg', { type: 'image/jpeg' }) : file), 'image/jpeg', 0.9);
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); resolve(file); };
+    img.src = url;
+  });
+
+  const addPastedImage = async (file: File) => {
+    const slot = imageFiles.findIndex(f => !f);
+    if (slot === -1) { setImgMsg({ ok: false, text: 'All 3 "Add New Images" slots are full — remove one first.' }); return; }
+    const small = await shrinkPasted(file);
+    setImageFiles(prev => { const n = [...prev]; n[slot] = small; return n; });
+    setImagePreviews(prev => { const n = [...prev]; n[slot] = URL.createObjectURL(small); return n; });
+    setShowMore(true);
+    setImgMsg({ ok: true, text: 'Pasted picture added — press Add Product to keep it.' });
+  };
+
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent) => {
+      const file = Array.from(e.clipboardData?.items || []).find(i => i.kind === 'file' && i.type.startsWith('image/'))?.getAsFile();
+      if (file) { e.preventDefault(); addPastedImage(file); }
+    };
+    window.addEventListener('paste', onPaste);
+    return () => window.removeEventListener('paste', onPaste);
+  }, [imageFiles]);
+
   const parentCategories = categories.filter((c: any) => !c.parentId);
 
   useEffect(() => {
@@ -1543,6 +1608,7 @@ function AddProductInline({
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
     setFormData(prev => ({ ...prev, [name]: value, ...(name === 'category' ? { subcategory: '' } : {}) }));
+    if (name === 'videoUrl') { setVideoUrlError(''); setEmbedUrl(null); }
   };
 
   const handleImageChange = (index: number, e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1552,6 +1618,27 @@ function AddProductInline({
       nf[index] = file; np[index] = URL.createObjectURL(file);
       setImageFiles(nf); setImagePreviews(np);
     }
+  };
+
+  const removeNewImage = (index: number) => {
+    const nf = [...imageFiles]; const np = [...imagePreviews];
+    nf[index] = null; np[index] = null;
+    setImageFiles(nf); setImagePreviews(np);
+    if (imageInputRefs[index].current) imageInputRefs[index].current!.value = '';
+  };
+
+  const removeAddedImage = (index: number) => {
+    const updated = [...addedImageUrls]; updated.splice(index, 1);
+    setAddedImageUrls(updated);
+  };
+
+  const handlePreviewVideo = () => {
+    const url = formData.videoUrl.trim();
+    if (!url) { setVideoUrlError('Please enter a video URL first.'); return; }
+    const embed = getEmbedUrl(url) || (isDirectVideo(url) ? url : null);
+    if (!embed) { setVideoUrlError('Could not embed this URL. Supported: YouTube, Facebook, Instagram, TikTok, or a direct video file (.mp4).'); return; }
+    setVideoUrlError('');
+    setEmbedUrl(embed);
   };
 
   const uploadImage = async (file: File): Promise<string> => {
@@ -1565,12 +1652,17 @@ function AddProductInline({
     if (!formData.name || !formData.originalPrice || !formData.category) {
       alert('Please fill in Name, Category and Original Price.'); return;
     }
+    if (formData.videoUrl && !getEmbedUrl(formData.videoUrl) && !isDirectVideo(formData.videoUrl)) {
+      setVideoUrlError('Could not embed this URL.'); setShowMore(true);
+      return;
+    }
     setUploading(true);
     try {
-      const imageUrls: string[] = [];
+      const newUrls: string[] = [];
       for (let i = 0; i < imageFiles.length; i++) {
-        if (imageFiles[i]) imageUrls.push(await uploadImage(imageFiles[i]!));
+        if (imageFiles[i]) newUrls.push(await uploadImage(imageFiles[i]!));
       }
+      const imageUrls = [...addedImageUrls, ...newUrls];
       const res = await fetch('/api/products', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1665,38 +1757,135 @@ function AddProductInline({
               className="w-full border-2 border-gray-200 rounded-xl p-3 text-sm font-bold focus:border-[#FA5600] outline-none transition resize-none" />
           </div>
 
-          {/* Images */}
-          <div>
-            <label className="block text-[10px] font-black uppercase tracking-widest text-gray-500 mb-2">
-              Product Images <span className="text-gray-400 normal-case font-bold tracking-normal">(up to 3)</span>
-            </label>
-            <div className="grid grid-cols-3 gap-2">
-              {[0, 1, 2].map((index) => (
-                <div key={index}>
-                  <div onClick={() => imageInputRefs[index].current?.click()}
-                    className="cursor-pointer border-2 border-dashed border-gray-200 rounded-xl hover:border-[#FA5600] hover:bg-orange-50/50 transition aspect-square flex items-center justify-center relative overflow-hidden">
-                    {imagePreviews[index] ? (
-                      <>
-                        <img src={imagePreviews[index]!} alt="" className="w-full h-full object-cover" />
-                        <button onClick={(e) => { e.stopPropagation(); const nf = [...imageFiles]; const np = [...imagePreviews]; nf[index] = null; np[index] = null; setImageFiles(nf); setImagePreviews(np); }}
-                          className="absolute top-1 right-1 bg-red-500 text-white rounded-full w-5 h-5 flex items-center justify-center shadow">
-                          <X className="w-2.5 h-2.5" />
-                        </button>
-                      </>
-                    ) : (
-                      <div className="flex flex-col items-center gap-1">
-                        <Upload className="w-5 h-5 text-gray-300" />
-                        <p className="text-[9px] text-gray-400 font-black uppercase">Image {index + 1}</p>
-                        {index === 0 && <p className="text-[8px] text-[#FA5600] font-black">Main</p>}
-                      </div>
-                    )}
+          {/* Collapsible: Images + Video (same as the Edit form) */}
+          <div className="border-2 border-gray-100 rounded-xl overflow-hidden">
+            <button
+              onClick={() => setShowMore(v => !v)}
+              className="w-full flex items-center justify-between px-4 py-3 bg-gray-50 hover:bg-gray-100 transition text-left">
+              <span className="text-[10px] font-black uppercase tracking-widest text-gray-500">
+                Images & Video
+                {(addedImageUrls.length > 0 || imageFiles.some(Boolean) || formData.videoUrl) && (
+                  <span className="ml-2 bg-[#FA5600] text-white text-[8px] px-1.5 py-0.5 rounded-full">✓</span>
+                )}
+              </span>
+              <ChevronDown className={`w-4 h-4 text-gray-400 transition-transform ${showMore ? 'rotate-180' : ''}`} />
+            </button>
+
+            {showMore && (
+              <div className="px-4 py-4 space-y-4">
+
+                {/* Images added by link */}
+                {addedImageUrls.length > 0 && (
+                  <div>
+                    <label className="block text-[10px] font-black uppercase tracking-widest text-gray-500 mb-2">Current Images</label>
+                    <div className="flex gap-2 flex-wrap">
+                      {addedImageUrls.map((url, i) => (
+                        <div key={i} className="relative w-20 h-20 rounded-xl border-2 border-gray-200 overflow-hidden group/img">
+                          <img src={url} alt={`Image ${i + 1}`} className="w-full h-full object-cover" />
+                          <button onClick={() => removeAddedImage(i)}
+                            className="absolute inset-0 bg-black/0 group-hover/img:bg-black/40 transition flex items-center justify-center">
+                            <X className="w-4 h-4 text-white opacity-0 group-hover/img:opacity-100 transition" />
+                          </button>
+                          <button type="button" title="Download this image"
+                            onClick={(e) => { e.stopPropagation(); downloadImage(url, addedImageUrls.length > 1 ? `${safeFileName(formData.name || 'product')}-${i + 1}` : safeFileName(formData.name || 'product')); }}
+                            className="absolute top-1 left-1 z-10 w-6 h-6 bg-white/90 hover:bg-[#FA5600] text-gray-700 hover:text-white rounded-full shadow flex items-center justify-center transition-colors">
+                            <Download className="w-3 h-3" />
+                          </button>
+                          {i === 0 && (
+                            <span className="absolute bottom-0 left-0 right-0 bg-[#FA5600] text-white text-[8px] font-black text-center py-0.5 uppercase tracking-widest">Main</span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                  <input ref={imageInputRefs[index]} type="file" accept="image/png,image/jpeg,image/webp"
-                    onChange={(e) => handleImageChange(index, e)} className="hidden" />
+                )}
+
+                {/* Add New Images */}
+                <div>
+                  <label className="block text-[10px] font-black uppercase tracking-widest text-gray-500 mb-2">
+                    Add New Images <span className="text-gray-400 normal-case font-bold tracking-normal">(up to 3)</span>
+                  </label>
+                  <div className="grid grid-cols-3 gap-2">
+                    {[0, 1, 2].map((index) => (
+                      <div key={index}>
+                        <div onClick={() => imageInputRefs[index].current?.click()}
+                          className="cursor-pointer border-2 border-dashed border-gray-200 rounded-xl text-center hover:border-[#FA5600] hover:bg-orange-50/50 transition aspect-square flex items-center justify-center relative overflow-hidden">
+                          {imagePreviews[index] ? (
+                            <>
+                              <img src={imagePreviews[index]!} alt="" className="w-full h-full object-cover" />
+                              <button onClick={(e) => { e.stopPropagation(); removeNewImage(index); }}
+                                className="absolute top-1 right-1 bg-red-500 text-white rounded-full w-5 h-5 flex items-center justify-center shadow hover:bg-red-600">
+                                <X className="w-2.5 h-2.5" />
+                              </button>
+                            </>
+                          ) : (
+                            <div className="flex flex-col items-center gap-1">
+                              <Upload className="w-5 h-5 text-gray-300" />
+                              <p className="text-[9px] text-gray-400 font-black uppercase">Add</p>
+                            </div>
+                          )}
+                        </div>
+                        <input ref={imageInputRefs[index]} type="file" accept="image/png,image/jpeg,image/webp"
+                          onChange={(e) => handleImageChange(index, e)} className="hidden" />
+                      </div>
+                    ))}
+                  </div>
+                  <p className="text-[10px] text-gray-400 mt-1.5">⭐ First image is main display image</p>
+
+                  {/* Add by link / paste */}
+                  <div className="mt-3 space-y-1.5">
+                    <label className="block text-[10px] font-black uppercase tracking-widest text-gray-500">Add image by link</label>
+                    <div className="flex gap-2">
+                      <input type="url" value={imgLink} onChange={e => setImgLink(e.target.value)} disabled={linkBusy}
+                        onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addImageFromLink(); } }}
+                        placeholder="Paste an image link (or product page link)"
+                        className="flex-1 border-2 border-gray-200 focus:border-[#FA5600] rounded-xl px-3 py-2 text-xs font-bold outline-none transition" />
+                      <button type="button" onClick={addImageFromLink} disabled={linkBusy || !imgLink.trim()}
+                        className="px-3 py-2 bg-[#FA5600] text-white text-[10px] font-black uppercase tracking-widest rounded-xl disabled:opacity-50">
+                        {linkBusy ? 'Adding…' : 'Add'}
+                      </button>
+                    </div>
+                    <p className="text-[10px] text-gray-400">Or copy a picture anywhere and press <b>Ctrl+V</b> in this window to paste it into the next free slot above.</p>
+                    {imgMsg && <p className={`text-[11px] font-bold ${imgMsg.ok ? 'text-green-600' : 'text-red-500'}`}>{imgMsg.text}</p>}
+                  </div>
                 </div>
-              ))}
-            </div>
-            <p className="text-[10px] text-gray-400 mt-1.5">⭐ First image is main display image</p>
+
+                {/* Video URL */}
+                <div>
+                  <label className="block text-[10px] font-black uppercase tracking-widest text-gray-500 mb-1.5">
+                    Product Video URL <span className="text-gray-400 normal-case font-bold tracking-normal">(Optional)</span>
+                  </label>
+                  <div className="flex gap-2">
+                    <input type="url" name="videoUrl" value={formData.videoUrl} onChange={handleChange}
+                      placeholder="YouTube, Facebook, Instagram, TikTok or a video file (.mp4)..."
+                      className={`flex-1 border-2 rounded-xl p-3 text-sm font-bold outline-none transition ${videoUrlError ? 'border-red-400' : 'border-gray-200 focus:border-[#FA5600]'}`} />
+                    <button onClick={handlePreviewVideo}
+                      className="shrink-0 bg-gray-100 hover:bg-[#FA5600] hover:text-white text-gray-600 text-xs font-black px-3 rounded-xl transition uppercase tracking-widest">
+                      Preview
+                    </button>
+                  </div>
+                  {videoUrlError && <p className="text-red-500 text-xs mt-1 font-bold">{videoUrlError}</p>}
+                  {embedUrl && (
+                    <div className="mt-3 rounded-xl overflow-hidden border border-gray-200 bg-black">
+                      <div className="bg-gray-800 text-white text-[10px] px-3 py-1.5 flex items-center justify-between font-black uppercase tracking-widest">
+                        <span>📺 Preview</span>
+                        <button onClick={() => { setEmbedUrl(null); setFormData(f => ({ ...f, videoUrl: '' })); }} className="text-gray-400 hover:text-white">✕</button>
+                      </div>
+                      {isDirectVideo(embedUrl) ? (
+                        <video src={embedUrl} controls loop playsInline className="w-full max-h-[420px] bg-black" />
+                      ) : (
+                        <div className="relative w-full" style={{ paddingTop: '56.25%' }}>
+                          <iframe src={embedUrl} className="absolute top-0 left-0 w-full h-full"
+                            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                            allowFullScreen frameBorder="0" />
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+              </div>
+            )}
           </div>
 
         </div>
