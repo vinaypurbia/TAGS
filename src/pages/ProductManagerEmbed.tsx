@@ -193,12 +193,71 @@ const applyPastedFile = async (p: Product, file: File, keepOld: boolean): Promis
   return savePictureOnProduct(p, data.url, keepOld);
 };
 
-// Loads a picture in the browser to read its real pixel size
+// ── Picture-size memory ─────────────────────────────────────────────────────
+// Every picture's real pixel size is remembered (also between visits), so quality can be shown instantly
+// and the HD finder never has to re-check a picture it already knows.
+const SIZE_KEY = 'pm_img_sizes_v1';
+let sizeCache: Record<string, [number, number]> = {};
+try { if (typeof window !== 'undefined') sizeCache = JSON.parse(window.localStorage.getItem(SIZE_KEY) || '{}'); } catch { sizeCache = {}; }
+const sizeListeners = new Set<() => void>();
+let sizeSaveTimer: any = null;
+const rememberSize = (url: string | null | undefined, w: number, h: number) => {
+  if (!url || !w || !h) return;
+  const old = sizeCache[url];
+  if (old && old[0] === w && old[1] === h) return;
+  sizeCache[url] = [w, h];
+  sizeListeners.forEach(f => f());
+  clearTimeout(sizeSaveTimer);
+  sizeSaveTimer = setTimeout(() => {
+    try {
+      const keys = Object.keys(sizeCache);
+      if (keys.length > 4000) keys.slice(0, keys.length - 4000).forEach(k => delete sizeCache[k]);
+      window.localStorage.setItem(SIZE_KEY, JSON.stringify(sizeCache));
+    } catch { /* storage full or blocked — fine, it just won't be remembered next visit */ }
+  }, 800);
+};
+const getKnownSize = (url?: string | null): { w: number; h: number } | null =>
+  url && sizeCache[url] ? { w: sizeCache[url][0], h: sizeCache[url][1] } : null;
+const useSizeVersion = () => {
+  const [v, setV] = useState(0);
+  useEffect(() => { const f = () => setV(n => n + 1); sizeListeners.add(f); return () => { sizeListeners.delete(f); }; }, []);
+  return v;
+};
+
+// Quality bands (shorter side of the picture, in pixels). 800+ matches the HD finder's "already good" cut-off.
+const QUALITY_LOW = 600;
+const QUALITY_GOOD = 800;
+type Quality = 'low' | 'fair' | 'good';
+const qualityOf = (sz: { w: number; h: number } | null): Quality | null => {
+  if (!sz) return null;
+  const side = Math.min(sz.w, sz.h);
+  return side < QUALITY_LOW ? 'low' : side < QUALITY_GOOD ? 'fair' : 'good';
+};
+
+// Small coloured label: "Good · 1000×1000". Fills in by itself as pictures load.
+function QualityBadge({ url, className = '' }: { url: string | null; className?: string }) {
+  useSizeVersion();
+  const sz = getKnownSize(url);
+  const q = qualityOf(sz);
+  if (!url || !sz || !q) return null;
+  const word = q === 'good' ? 'Good' : q === 'fair' ? 'Fair' : 'Low';
+  const tone = q === 'good' ? 'bg-green-600/90' : q === 'fair' ? 'bg-amber-500/95' : 'bg-red-600/90';
+  return (
+    <span title={`${sz.w}×${sz.h} px — ${word} quality${q === 'good' ? '' : ' (a sharper picture would help)'}`}
+      className={`${className} ${tone} text-white text-[9px] font-black px-1.5 py-0.5 rounded-full tracking-wide whitespace-nowrap`}>
+      {word} · {sz.w}×{sz.h}
+    </span>
+  );
+}
+
+// Loads a picture in the browser to read its real pixel size (instant if already known)
 const measureImage = (url: string): Promise<{ w: number; h: number } | null> =>
   new Promise(resolve => {
+    const known = getKnownSize(url);
+    if (known) { resolve(known); return; }
     const im = new Image();
     const t = setTimeout(() => resolve(null), 8000);
-    im.onload = () => { clearTimeout(t); resolve({ w: im.naturalWidth, h: im.naturalHeight }); };
+    im.onload = () => { clearTimeout(t); rememberSize(url, im.naturalWidth, im.naturalHeight); resolve({ w: im.naturalWidth, h: im.naturalHeight }); };
     im.onerror = () => { clearTimeout(t); resolve(null); };
     im.src = url;
   });
@@ -640,7 +699,7 @@ function ProductCard({ product, onEdit, onFindHd }: { product: Product; onEdit: 
       {/* Image */}
       <div className="relative aspect-square bg-gray-50 overflow-hidden">
         {img ? (
-          <img src={img} alt={product.name} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
+          <img src={img} alt={product.name} onLoad={e => rememberSize(img, e.currentTarget.naturalWidth, e.currentTarget.naturalHeight)} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
         ) : (
           <div className="w-full h-full flex flex-col items-center justify-center gap-2 text-gray-300">
             <ImageIcon className="w-8 h-8" />
@@ -652,6 +711,7 @@ function ProductCard({ product, onEdit, onFindHd }: { product: Product; onEdit: 
             -{disc}%
           </span>
         )}
+        {img && <QualityBadge url={img} className="absolute bottom-2 left-2 z-10" />}
         {/* Edit button overlay */}
         <button
           onClick={onEdit}
@@ -1586,6 +1646,9 @@ export function ProductManagerEmbed() {
   const [search, setSearch] = useState('');
   const [filterCategory, setFilterCategory] = useState('');
   const [filterImage, setFilterImage] = useState<'all' | 'has' | 'none'>('all');
+  const [filterQuality, setFilterQuality] = useState<'all' | Quality | 'unchecked'>('all');
+  const [checkProg, setCheckProg] = useState<{ done: number; total: number } | null>(null);
+  useSizeVersion(); // re-run the filters whenever more picture sizes become known
   const [filterDiscount, setFilterDiscount] = useState<'all' | 'yes' | 'no'>('all');
   const [filterCatSet, setFilterCatSet] = useState<'all' | 'has' | 'none'>('all');
   const [priceMin, setPriceMin] = useState('');
@@ -1646,6 +1709,19 @@ export function ProductManagerEmbed() {
 
   const parentCategories = categories.filter((c: any) => !c.parentId);
 
+  // Reads the real size of every product's picture (6 at a time) so quality can be shown and filtered everywhere
+  const checkAllSizes = async () => {
+    const urls = Array.from(new Set(allProducts.map(getImg).filter((u): u is string => !!u && !getKnownSize(u))));
+    if (urls.length === 0 || checkProg) return;
+    setCheckProg({ done: 0, total: urls.length });
+    let idx = 0, done = 0;
+    const worker = async () => { while (idx < urls.length) { const u = urls[idx++]; await measureImage(u); setCheckProg({ done: ++done, total: urls.length }); } };
+    await Promise.all(Array.from({ length: 6 }, worker));
+    setCheckProg(null);
+  };
+  const qualityCounts = { good: 0, fair: 0, low: 0, unchecked: 0, none: 0 };
+  allProducts.forEach(p => { const u = getImg(p); if (!u) { qualityCounts.none++; return; } const q = qualityOf(getKnownSize(u)); if (q) qualityCounts[q]++; else qualityCounts.unchecked++; });
+
   // ── Filter logic ─────────────────────────────────────────────────────────
   const filtered = allProducts.filter(p => {
     if (search.trim()) {
@@ -1655,6 +1731,12 @@ export function ProductManagerEmbed() {
     if (filterCategory && p.category !== filterCategory) return false;
     if (filterImage === 'has' && !getImg(p)) return false;
     if (filterImage === 'none' && getImg(p)) return false;
+    if (filterQuality !== 'all') {
+      const u = getImg(p);
+      const q = u ? qualityOf(getKnownSize(u)) : null;
+      if (filterQuality === 'unchecked') { if (!u || q) return false; }
+      else if (q !== filterQuality) return false;
+    }
     if (filterDiscount === 'yes' && !hasDiscount(p)) return false;
     if (filterDiscount === 'no' && hasDiscount(p)) return false;
     if (filterCatSet === 'has' && !p.category?.trim()) return false;
@@ -1698,6 +1780,7 @@ export function ProductManagerEmbed() {
   const activeFiltersCount = [
     filterCategory !== '',
     filterImage !== 'all',
+    filterQuality !== 'all',
     filterDiscount !== 'all',
     priceMin !== '',
     priceMax !== '',
@@ -1707,6 +1790,7 @@ export function ProductManagerEmbed() {
   const resetFilters = () => {
     setFilterCategory('');
     setFilterImage('all');
+    setFilterQuality('all');
     setFilterDiscount('all');
     setPriceMin('');
     setPriceMax('');
@@ -1836,6 +1920,24 @@ export function ProductManagerEmbed() {
                   <FilterPill label="All" active={filterImage === 'all'} onClick={() => setFilterImage('all')} />
                   <FilterPill label="Has Image" active={filterImage === 'has'} onClick={() => setFilterImage('has')} />
                   <FilterPill label="No Image" active={filterImage === 'none'} onClick={() => setFilterImage('none')} />
+                </div>
+              </div>
+
+              {/* Picture quality filter */}
+              <div>
+                <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-2">Picture Quality</p>
+                <div className="flex flex-wrap gap-2 items-center">
+                  <FilterPill label="Any" active={filterQuality === 'all'} onClick={() => setFilterQuality('all')} />
+                  <FilterPill label={`Low · under ${QUALITY_LOW}px (${qualityCounts.low})`} active={filterQuality === 'low'} onClick={() => setFilterQuality('low')} />
+                  <FilterPill label={`Fair (${qualityCounts.fair})`} active={filterQuality === 'fair'} onClick={() => setFilterQuality('fair')} />
+                  <FilterPill label={`Good · ${QUALITY_GOOD}px+ (${qualityCounts.good})`} active={filterQuality === 'good'} onClick={() => setFilterQuality('good')} />
+                  {qualityCounts.unchecked > 0 && <FilterPill label={`Not checked (${qualityCounts.unchecked})`} active={filterQuality === 'unchecked'} onClick={() => setFilterQuality('unchecked')} />}
+                  {qualityCounts.unchecked > 0 && (
+                    <button onClick={checkAllSizes} disabled={!!checkProg}
+                      className="text-[10px] font-black uppercase tracking-widest px-3 py-1.5 rounded-full bg-orange-50 text-[#FA5600] hover:bg-[#FA5600] hover:text-white transition disabled:opacity-60">
+                      {checkProg ? `Checking ${checkProg.done}/${checkProg.total}…` : `Check all pictures (${qualityCounts.unchecked})`}
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -1987,7 +2089,7 @@ function ListRow({ product, onEdit, onFindHd }: { product: Product; onEdit: () =
   return (
     <div className="bg-white rounded-xl border border-gray-100 hover:border-orange-200 transition flex items-center gap-3 px-4 py-3 group">
       {img ? (
-        <img src={img} alt={product.name} className="w-10 h-10 rounded-xl object-cover border border-gray-100 shrink-0" />
+        <img src={img} alt={product.name} onLoad={e => rememberSize(img, e.currentTarget.naturalWidth, e.currentTarget.naturalHeight)} className="w-10 h-10 rounded-xl object-cover border border-gray-100 shrink-0" />
       ) : (
         <div className="w-10 h-10 rounded-xl bg-gray-100 flex items-center justify-center shrink-0">
           <ImageIcon className="w-4 h-4 text-gray-300" />
@@ -1997,6 +2099,7 @@ function ListRow({ product, onEdit, onFindHd }: { product: Product; onEdit: () =
         <p className="text-sm font-black text-gray-900 truncate">{product.name}</p>
         <p className="text-[10px] text-gray-400 font-bold">{product.category}{product.subcategory ? ` › ${product.subcategory}` : ''}</p>
       </div>
+      {img && <QualityBadge url={img} className="shrink-0 hidden sm:inline-block" />}
       <div className="text-right shrink-0 mr-3">
         {hasDiscount(product) ? (
           <div className="flex items-center gap-1.5 justify-end">
