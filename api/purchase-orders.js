@@ -59,6 +59,82 @@ export default async function handler(req, res) {
     if (req.method === 'GET') {
       const { id, status } = req.query;
 
+      // ── Receive audit (read-only, changes nothing) ─────────────────────────────────────────
+      // GET /api/purchase-orders?action=receiveAudit&poNumber=PO-2026-013   (or &id=<po _id>)
+      // For every product on the PO: how many times its stock was added for this PO, and where the
+      // stock count should be now versus where it actually is. Based on the stock-movement records,
+      // so a sale or manual edit that never wrote a movement isn't counted in "expectedStock".
+      if (req.query.action === 'receiveAudit') {
+        const po = id ? await orders.findOne({ _id: new ObjectId(id) }) : await orders.findOne({ poNumber: req.query.poNumber });
+        if (!po) return res.status(404).json({ error: 'Purchase order not found — pass poNumber=PO-xxxx-xxx or id=...' });
+        const poId = String(po._id);
+        const lines = po.receivedItems || po.items || [];
+
+        const poQty = {}, names = {};
+        for (const it of lines) {
+          const q = Number(it.quantityReceived ?? it.quantity) || 0;
+          poQty[it.productId] = (poQty[it.productId] || 0) + q;
+          names[it.productId] = it.productName || it.productId;
+        }
+
+        const rows = [];
+        for (const pid of Object.keys(poQty)) {
+          const receipts = await movements.find({ productId: pid, referenceId: poId, reason: 'purchase_order' }).sort({ createdAt: 1 }).toArray();
+          const inv = await inventory.findOne({ productId: pid });
+          const first = receipts[0];
+          let otherNet = 0;
+          if (first) {
+            const others = await movements.find({ productId: pid, createdAt: { $gt: first.createdAt } }).toArray();
+            for (const m of others) {
+              if (m.referenceId === poId && m.reason === 'purchase_order') continue;
+              otherNet += (m.type === 'in' ? 1 : -1) * (Number(m.quantity) || 0);
+            }
+          }
+          const startedFrom = first ? Number(first.balanceBefore) || 0 : null;
+          const expectedStock = first ? Math.max(0, startedFrom + poQty[pid] + otherNet) : null;
+          const currentStock = inv ? inv.currentStock : null;
+          rows.push({
+            product: names[pid], productId: pid,
+            poQuantity: poQty[pid],
+            timesStockWasAdded: receipts.length,
+            stockBeforeThisPO: startedFrom,
+            otherRecordedChangesSince: otherNet,
+            expectedStock,
+            currentStock,
+            looksInflatedBy: (expectedStock !== null && currentStock !== null) ? Math.max(0, currentStock - expectedStock) : null,
+          });
+        }
+
+        const cash = await cashFlow.find({ referenceId: poId, referenceType: { $in: ['po_transport', 'purchase_order', 'po_advance'] } }).toArray();
+        const ledger = await ledgerCol.find({ referenceId: poId, referenceType: { $in: ['purchase_order', 'po_shortage', 'advance_payment'] } }).toArray();
+
+        // Advance payments can legitimately happen more than once, so these are only FLAGGED: the same
+        // amount recorded twice within a minute is far more likely a double-click than two real payments.
+        const advances = cash.filter(c => c.referenceType === 'po_advance').sort((a, b) => new Date(a.date) - new Date(b.date));
+        const possibleDuplicateAdvances = [];
+        for (let i = 1; i < advances.length; i++) {
+          const gap = Math.abs(new Date(advances[i].date) - new Date(advances[i - 1].date));
+          if (Number(advances[i].amount) === Number(advances[i - 1].amount) && gap < 60000) possibleDuplicateAdvances.push({ amount: advances[i].amount, secondsApart: Math.round(gap / 1000) });
+        }
+
+        const addedMoreThanOnce = rows.filter(r => r.timesStockWasAdded > 1);
+        const inflated = rows.filter(r => r.looksInflatedBy > 0);
+        return res.status(200).json({
+          po: po.poNumber, status: po.status,
+          summary: `${addedMoreThanOnce.length} of ${rows.length} products had stock added more than once for this PO; ${inflated.length} currently look inflated (${inflated.reduce((s, r) => s + r.looksInflatedBy, 0)} extra units in total).` + (possibleDuplicateAdvances.length ? ` ${possibleDuplicateAdvances.length} advance payment(s) look like duplicates.` : ''),
+          products: rows,
+          moneyEntries: {
+            note: 'Each of these should normally appear at most once per PO.',
+            transportExpense: cash.filter(c => c.referenceType === 'po_transport').map(c => ({ amount: c.amount, date: c.date })),
+            balancePaymentOnDelivery: cash.filter(c => c.referenceType === 'purchase_order').map(c => ({ amount: c.amount, date: c.date })),
+            advancePayments: advances.map(c => ({ amount: c.amount, paymentMode: c.paymentMode, date: c.date })),
+            possibleDuplicateAdvances,
+            poTotals: { totalAmount: po.totalAmount, paidAmount: po.paidAmount, dueAmount: po.dueAmount },
+            supplierLedger: ledger.map(l => ({ type: l.entryType, kind: l.referenceType, amount: l.amount, date: l.date })),
+          },
+        });
+      }
+
       if (id) {
         const po = await orders.findOne({ _id: new ObjectId(id) });
         if (!po) return res.status(404).json({ error: 'Purchase order not found' });
@@ -216,6 +292,20 @@ export default async function handler(req, res) {
         if (!['ordered', 'draft'].includes(po.status)) {
           return res.status(400).json({ error: 'PO cannot be received in current status' });
         }
+
+        // Atomic claim: only ONE request at a time may receive a given PO. Before this, a double-click or a
+        // retry after a slow response could each pass the status check above (the PO only flips to 'received'
+        // at the very end, after all the stock writes) and each add the full stock again. A claim older than
+        // 2 minutes counts as abandoned (e.g. the server timed out part-way), so the PO can be received again —
+        // items already received are skipped below, so nothing is added twice.
+        const claim = await orders.updateOne(
+          { _id: new ObjectId(id), status: { $in: ['ordered', 'draft'] }, receiveLockAt: { $not: { $gt: new Date(Date.now() - 120000) } } },
+          { $set: { receiveLockAt: new Date() } }
+        );
+        if (claim.modifiedCount !== 1) {
+          return res.status(409).json({ error: 'This PO is already being received. Wait a moment, refresh, and check its status before trying again.' });
+        }
+        try {
         const receivedItems = req.body.receivedItems || po.items.map(i => ({ ...i, quantityReceived: i.quantity, damageNotes: '' }));
         const { paymentMode: poPaymentMode, transportCost: rawTransportCost, transportPaymentMode, transportNotes } = req.body;
         let totalOrdered = 0, totalReceived = 0, totalReceivedValue = 0, totalShortageValue = 0;
@@ -232,7 +322,7 @@ export default async function handler(req, res) {
         const itemsReceivingStock = receivedItems.filter(item => Number(item.quantityReceived ?? item.quantity) > 0);
         const totalReceivingValue = itemsReceivingStock.reduce((sum, item) => sum + (Number(item.quantityReceived ?? item.quantity) * (Number(item.costPrice) || 0)), 0);
 
-        for (const item of receivedItems) {
+        for (const [lineIdx, item] of receivedItems.entries()) {
           const orderedQty = Number(item.quantity);
           const receivedQty = Number(item.quantityReceived ?? item.quantity);
           const shortageQty = orderedQty - receivedQty;
@@ -257,6 +347,9 @@ export default async function handler(req, res) {
           item.transportCostShare = itemTransportShare;
           item.landedCostPrice = landedCostPrice;
 
+          // This PO line already added its stock (an earlier attempt got part-way before failing)? Skip it.
+          if (await movements.findOne({ productId: item.productId, referenceId: id, reason: 'purchase_order', poLine: lineIdx })) continue;
+
           const existing = await inventory.findOne({ productId: item.productId });
           if (existing) {
             const balanceBefore = existing.currentStock;
@@ -268,18 +361,18 @@ export default async function handler(req, res) {
             else if (available <= alert) stockStatus = 'low_stock';
             // costPrice now includes this item's share of transport cost (landed cost)
             await inventory.updateOne({ productId: item.productId }, { $set: { currentStock: newStock, availableStock: existing.availableStock + receivedQty, stockStatus, costPrice: landedCostPrice || existing.costPrice, updatedAt: new Date() } });
-            await movements.insertOne({ productId: item.productId, type: 'in', quantity: receivedQty, reason: 'purchase_order', referenceId: id, balanceBefore, balanceAfter: newStock, note: `Received from PO ${po.poNumber}${transportCost > 0 ? ` — incl. ₹${perUnitTransportCost.toFixed(2)}/unit transport` : ''}${item.damageNotes ? ` — ${item.damageNotes}` : ''}`, createdAt: new Date() });
+            await movements.insertOne({ productId: item.productId, type: 'in', quantity: receivedQty, reason: 'purchase_order', poLine: lineIdx, referenceId: id, balanceBefore, balanceAfter: newStock, note: `Received from PO ${po.poNumber}${transportCost > 0 ? ` — incl. ₹${perUnitTransportCost.toFixed(2)}/unit transport` : ''}${item.damageNotes ? ` — ${item.damageNotes}` : ''}`, createdAt: new Date() });
             await syncFrontendStatusIfAuto(inventory, item.productId, { ...existing, availableStock: existing.availableStock + receivedQty });
           } else {
             await inventory.insertOne({ productId: item.productId, sku: item.sku || '', currentStock: receivedQty, reservedStock: 0, availableStock: receivedQty, lowStockAlert: 10, costPrice: landedCostPrice, unit: 'pcs', trackInventory: true, stockStatus: 'in_stock', createdAt: new Date(), updatedAt: new Date() });
-            await movements.insertOne({ productId: item.productId, type: 'in', quantity: receivedQty, reason: 'purchase_order', referenceId: id, balanceBefore: 0, balanceAfter: receivedQty, note: `First stock from PO ${po.poNumber}${transportCost > 0 ? ` — incl. ₹${perUnitTransportCost.toFixed(2)}/unit transport` : ''}`, createdAt: new Date() });
+            await movements.insertOne({ productId: item.productId, type: 'in', quantity: receivedQty, reason: 'purchase_order', poLine: lineIdx, referenceId: id, balanceBefore: 0, balanceAfter: receivedQty, note: `First stock from PO ${po.poNumber}${transportCost > 0 ? ` — incl. ₹${perUnitTransportCost.toFixed(2)}/unit transport` : ''}`, createdAt: new Date() });
           }
         }
 
         // ── Log the transport cost itself as a separate cashflow expense ──
         // (paid to a transporter/courier, not the supplier — kept out of the
         // supplier ledger so the AP balance below stays accurate to the invoice)
-        if (transportCost > 0) {
+        if (transportCost > 0 && !(await cashFlow.findOne({ referenceId: id, referenceType: 'po_transport' }))) {
           await cashFlow.insertOne({
             type: 'expense', category: 'transport_cost', amount: transportCost,
             paymentMode: transportPaymentMode || poPaymentMode || 'cash',
@@ -296,7 +389,7 @@ export default async function handler(req, res) {
         const overpaidAmount = Math.max(0, advanceAlreadyPaid - totalReceivedValue);
         // ✅ NO cashflow entry here — money already left during advance_payment
         // Only create a cashflow entry if there is remaining balance due (paid on delivery)
-        if (balanceDue > 0.01) {
+        if (balanceDue > 0.01 && !(await cashFlow.findOne({ referenceId: id, referenceType: 'purchase_order' }))) {
           await cashFlow.insertOne({
             type: 'expense', category: 'inventory_asset', amount: balanceDue,
             paymentMode: poPaymentMode || 'cash',
@@ -308,7 +401,7 @@ export default async function handler(req, res) {
         }
 
         const shortageStatus = shortageItems.length > 0 ? 'has_shortage' : 'complete';
-        await orders.updateOne({ _id: new ObjectId(id) }, { $set: { status: 'received', receivedDate: new Date(), updatedAt: new Date(), receivedItems, shortageStatus, shortageItems: shortageItems.length > 0 ? shortageItems : [], shortageValue: totalShortageValue, shortageResolved: shortageItems.length === 0, paidAmount: advanceAlreadyPaid + balanceDue, dueAmount: 0, transportCost, transportCostSplitMethod: totalReceivingValue > 0 ? 'proportional_to_value' : 'equal' } });
+        await orders.updateOne({ _id: new ObjectId(id) }, { $set: { status: 'received', receivedDate: new Date(), updatedAt: new Date(), receivedItems, shortageStatus, shortageItems: shortageItems.length > 0 ? shortageItems : [], shortageValue: totalShortageValue, shortageResolved: shortageItems.length === 0, paidAmount: advanceAlreadyPaid + balanceDue, dueAmount: 0, transportCost, transportCostSplitMethod: totalReceivingValue > 0 ? 'proportional_to_value' : 'equal' }, $unset: { receiveLockAt: '' } });
 
         // ✅ NO cashflow income for shortage — money hasn't come back yet
         // Shortage is tracked in supplier ledger as a credit note (debit on supplier)
@@ -327,7 +420,8 @@ export default async function handler(req, res) {
             // Using only totalReceivedValue here would under-credit and cause
             // the net balance to show double the shortage amount owed.
             const invoicedAmount = po.totalAmount || (totalReceivedValue + totalShortageValue);
-            await ledgerCol.insertOne({
+            const creditAlreadyThere = await ledgerCol.findOne({ referenceType: 'purchase_order', referenceId: id, entryType: 'credit' });
+            if (!creditAlreadyThere) await ledgerCol.insertOne({
               partyType: 'supplier', partyId: resolvedSupplierId,
               partyName: po.supplier?.name || '',
               entryType: 'credit',
@@ -341,7 +435,7 @@ export default async function handler(req, res) {
             // ── Shortage debit: supplier owes us for goods not delivered ──
             // This claws back the shortage portion from the invoice credit above,
             // so net = (full invoice) - (advance paid) - (shortage) = correct balance.
-            if (totalShortageValue > 0) {
+            if (totalShortageValue > 0 && !(await ledgerCol.findOne({ referenceType: 'po_shortage', referenceId: id, entryType: 'debit' }))) {
               await ledgerCol.insertOne({
                 partyType: 'supplier', partyId: resolvedSupplierId,
                 partyName: po.supplier?.name || '',
@@ -358,6 +452,11 @@ export default async function handler(req, res) {
 
         const transportNote = transportCost > 0 ? ` Transport cost of ₹${transportCost.toFixed(2)} split proportionally by item value across ${itemsReceivingStock.length} item(s) and added to landed cost.` : '';
         return res.status(200).json({ success: true, message: (shortageItems.length > 0 ? `Stock updated. ⚠️ Shortage of ₹${totalShortageValue.toFixed(2)} recorded against ${po.supplier?.name || 'supplier'}.` : 'Stock fully received and inventory updated.') + transportNote, shortageItems, totalShortageValue, transportCost });
+        } catch (receiveErr) {
+          // Let the user try again right away; lines already received are skipped on the retry.
+          await orders.updateOne({ _id: new ObjectId(id) }, { $unset: { receiveLockAt: '' } });
+          throw receiveErr;
+        }
       }
 
       // ── Edit a received PO — corrects qty/cost and adjusts stock by diff ──
