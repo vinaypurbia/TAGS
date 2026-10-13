@@ -1,6 +1,8 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { Search, Filter, SlidersHorizontal, Image as ImageIcon, Tag, ChevronDown, X, Check, Pencil, Trash2, Plus, Upload, Eye, RotateCcw, Copy, Loader2, AlertTriangle, ImagePlus, Download, Wand2 } from 'lucide-react';
+import LocalVideoInfo from '../components/LocalVideoInfo';
+import type { LocalVideoRef } from '../lib/localVideoStore';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -13,6 +15,7 @@ interface Product {
   discountedPrice?: number | string;
   description?: string;
   videoUrl?: string;
+  localVideo?: LocalVideoRef;   // where the generated video is saved on the admin's PC (not on Cloudinary)
   imageUrl?: string;
   imageUrls?: string[];
   image?: string;
@@ -712,6 +715,10 @@ function ProductCard({ product, onEdit, onFindHd }: { product: Product; onEdit: 
           </span>
         )}
         {img && <QualityBadge url={img} className="absolute bottom-2 left-2 z-10" />}
+            {product.localVideo && (
+              <span title={`Video saved on this PC: ${product.localVideo.path}`}
+                className="absolute bottom-2 right-2 z-10 bg-blue-600/90 text-white text-[9px] font-black px-2 py-0.5 rounded-full uppercase tracking-widest">🎬 On PC</span>
+            )}
         {/* Edit button overlay */}
         <button
           onClick={onEdit}
@@ -1149,6 +1156,8 @@ function EditModal({
                     {imgMsg && <p className={`text-[11px] font-bold ${imgMsg.ok ? 'text-green-600' : 'text-red-500'}`}>{imgMsg.text}</p>}
                   </div>
                 </div>
+
+                {product.localVideo && <LocalVideoInfo video={product.localVideo} />}
 
                 {/* Video URL */}
                 <div>
