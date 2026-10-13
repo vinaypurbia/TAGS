@@ -684,6 +684,16 @@ function cloudVideoUrl(raw) {
   return clean;
 }
 
+const TEMP_VIDEO_FOLDER = 'tags-temp-videos';
+
+// public_id of one of OUR temporary videos, or '' for anything else (website videos, music, other accounts)
+function tempVideoPublicId(raw) {
+  const clean = cloudVideoUrl(raw);
+  const m = clean && clean.match(/\/video\/upload\/(?:v\d+\/)?(.+?)(?:\.[^./]+)?$/);
+  const id = m ? m[1] : '';
+  return id.startsWith(`${TEMP_VIDEO_FOLDER}/`) && !id.includes('..') ? id : '';
+}
+
 // kind 'meta'  → 1080x1920 (9:16), padded with black bars, never cropped
 // kind 'plain' → original shape, max 1280px (keeps Telegram's 20MB link limit comfortable)
 function deriveVideoUrl(clean, kind) {
@@ -1571,7 +1581,9 @@ export default async function handler(req, res) {
     if (req.method === 'GET' && req.query.cloudinarySign === 'true') {
       const resourceType = req.query.resourceType === 'video' ? 'video' : 'image';
       const timestamp = Math.round(Date.now() / 1000);
-      const folder = 'tags-broadcast-videos';
+      // temp=true → a separate folder for the short-lived copies made while posting a video from the PC folder.
+      // Only that folder can be deleted by the cleanup call below, so website videos are never at risk.
+      const folder = req.query.temp === 'true' ? TEMP_VIDEO_FOLDER : 'tags-broadcast-videos';
       const signature = cloudinary.utils.api_sign_request({ timestamp, folder }, process.env.CLOUDINARY_API_SECRET);
       return res.status(200).json({
         signature, timestamp, folder, resourceType,
@@ -1949,6 +1961,23 @@ export default async function handler(req, res) {
     }
 
     // ── Facebook Feed Video Post ─────────────────────────────────────────────
+    // POST /api/products  body: { deleteTempVideos: true, urls: [...] }
+    // Deletes the temporary Cloudinary copies made while posting a video that is stored on the admin's PC.
+    // Refuses anything that is not in the temporary folder, so website videos can never be deleted by this call.
+    if (req.method === 'POST' && req.body?.deleteTempVideos === true) {
+      const urls = Array.isArray(req.body.urls) ? req.body.urls.slice(0, 25) : [];
+      const out = { deleted: 0, skipped: 0, failed: 0 };
+      for (const raw of urls) {
+        const publicId = tempVideoPublicId(raw);
+        if (!publicId) { out.skipped++; continue; }
+        try {
+          const r = await cloudinary.uploader.destroy(publicId, { resource_type: 'video', invalidate: true });
+          if (r?.result === 'ok' || r?.result === 'not found') out.deleted++; else out.failed++;
+        } catch (e) { console.warn('[deleteTempVideos]', e.message); out.failed++; }
+      }
+      return res.status(200).json(out);
+    }
+
     // POST /api/products  body: { facebookVideoPost: true, videoUrl, caption, thumbUrl? }
     // videoUrl must already be a public Cloudinary URL (uploaded via the signature route above).
     if (req.method === 'POST' && req.body?.facebookVideoPost === true) {
