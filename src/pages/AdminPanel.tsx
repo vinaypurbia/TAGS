@@ -15,8 +15,14 @@ import {
   TrendingUp, TrendingDown, Users, AlertTriangle, DollarSign, IndianRupee,
   KeyRound, EyeOff, MessageSquare, Pencil, Database, Send, Radio, Copy, Download,
   CheckCircle, RefreshCw, FileText, Sparkles, Wand2,
-  Video, ZoomIn,
+  Video, ZoomIn, FolderOpen, HardDrive,
 } from 'lucide-react';
+import {
+  isLocalFolderSupported, getStoredRoot, pickRootFolder, ensureRootPermission, getRootPathText, setRootPathText,
+  saveVideoToFolder, readVideoFromFolder, fmtBytes,
+} from '../lib/localVideoStore';
+import type { LocalVideoRef } from '../lib/localVideoStore';
+import LocalVideoInfo from '../components/LocalVideoInfo';
 
 const VISIBILITY_KEY = 'tagsAdminVisibility';
 
@@ -2293,7 +2299,7 @@ const productImageList = (p: any): string[] => {
   return out;
 };
 
-type VideoProduct = { _id: string; name: string; image: string; description?: string; category?: string; videoUrl?: string; discountedPrice?: number; originalPrice?: number };
+type VideoProduct = { _id: string; name: string; image: string; description?: string; category?: string; videoUrl?: string; localVideo?: LocalVideoRef; discountedPrice?: number; originalPrice?: number };
 
 const FONT_OPTIONS = [
   { label: 'Default (Clean)',  value: 'system-ui, sans-serif' },
@@ -2347,6 +2353,38 @@ function ProductVideoSection() {
   const [batchProgress, setBatchProgress] = useState({ current: 0, total: 0 });
   const [batchResults, setBatchResults] = useState<{ name: string; ok: boolean; error?: string }[]>([]);
 
+  // ── Where videos are saved: a folder on THIS PC (not Cloudinary) ──
+  const folderSupported = isLocalFolderSupported();
+  const [rootName, setRootName] = useState('');
+  const [rootAccess, setRootAccess] = useState<'unknown' | 'ok' | 'needs-permission' | 'none'>('unknown');
+  const [rootPath, setRootPath] = useState(getRootPathText());
+  const [folderMsg, setFolderMsg] = useState('');
+  const [savedNote, setSavedNote] = useState(false);
+  const [publishingId, setPublishingId] = useState('');
+  const [publishMsg, setPublishMsg] = useState<{ id: string; ok: boolean; text: string } | null>(null);
+
+  const refreshRoot = async () => {
+    const h = await getStoredRoot();
+    if (!h) { setRootName(''); setRootAccess('none'); return; }
+    setRootName(h.name || '');
+    setRootAccess((await ensureRootPermission(false)) ? 'ok' : 'needs-permission');
+  };
+  useEffect(() => {
+    if (folderSupported) refreshRoot(); else setRootAccess('none');
+    cleanupTempUploads(false);   // remove any leftover temporary online copies from earlier posts
+  }, []);
+  const chooseFolder = async () => {
+    setFolderMsg('');
+    try { await pickRootFolder(); await refreshRoot(); }
+    catch (e: any) { if (e?.name !== 'AbortError') setFolderMsg(e?.message || 'Could not open the folder.'); }
+  };
+  const allowFolder = async () => {
+    setFolderMsg('');
+    const h = await ensureRootPermission(true);
+    setRootAccess(h ? 'ok' : 'needs-permission');
+    if (!h) setFolderMsg('Access was not allowed.');
+  };
+
   useEffect(() => {
     // The API returns at most 100 products per request, so page through all of them
     // (a single limit=1000 call silently dropped everything past the first 100).
@@ -2364,7 +2402,7 @@ function ProductVideoSection() {
         }
         setProducts(all.map((p: any) => ({
           _id: p._id, name: p.name || '(no name)', image: productImageList(p)[0] || '',
-          description: p.description || '', category: p.category || '', videoUrl: p.videoUrl || '',
+          description: p.description || '', category: p.category || '', videoUrl: p.videoUrl || '', localVideo: p.localVideo || undefined,
           discountedPrice: p.discountedPrice, originalPrice: p.originalPrice,
         })));
       } catch { setError('Could not load your product list.'); }
@@ -2429,8 +2467,8 @@ function ProductVideoSection() {
     const price = priceValueOf(p);
     if (minVal !== null && price < minVal) return false;
     if (maxVal !== null && price > maxVal) return false;
-    if (videoFilter === 'hasvideo' && !p.videoUrl) return false;
-    if (videoFilter === 'novideo'  && p.videoUrl)  return false;
+    if (videoFilter === 'hasvideo' && !(p.videoUrl || p.localVideo)) return false;
+    if (videoFilter === 'novideo'  && (p.videoUrl || p.localVideo))  return false;
     return true;
   });
 
@@ -2447,31 +2485,57 @@ function ProductVideoSection() {
 
   const generateOne = async (
     p: VideoProduct, useStyle: VideoStyle, useParticles: ParticleEffect, musicUrl: string | null,
-    videoName: string, videoCaption: string, style_: VideoTextStyle,
-  ) => {
+    videoName: string, videoCaption: string, style_: VideoTextStyle, root: any,
+  ): Promise<{ ref: LocalVideoRef; blob: Blob }> => {
     if (!p.image) throw new Error('No image on this product');
     const { im, release } = await loadImageElement(highQualityImageUrl(p.image));
     try {
       const blob = await recordProductVideo(im, useStyle, videoName, videoCaption, useParticles, musicUrl, style_);
+      // Saved in <your folder>\<Product name>\ on this PC — nothing is uploaded to Cloudinary here.
+      const ref = await saveVideoToFolder(p.name, blob, root);
+      const putRes = await fetch('/api/products', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: p._id, localVideo: ref }),
+      });
+      if (!putRes.ok) { const err = await putRes.json().catch(() => ({})); throw new Error(err.error || 'The video was saved on your PC, but its location could not be saved to this product'); }
+      return { ref, blob };
+    } finally { release(); }
+  };
+
+  // Optional: put a copy on the website (Cloudinary) so customers can watch it on the product page
+  const publishToWebsite = async (p: VideoProduct) => {
+    if (!p.localVideo) return;
+    setPublishingId(p._id); setPublishMsg(null);
+    try {
+      const file = await readVideoFromFolder(p.localVideo, true);
       const safeName = p.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40) || 'product';
-      const url = await uploadProductVideo(blob, `pv-${safeName}`);
+      const url = await uploadProductVideo(file, `pv-${safeName}`);
       const putRes = await fetch('/api/products', {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id: p._id, videoUrl: url }),
       });
-      if (!putRes.ok) { const err = await putRes.json().catch(() => ({})); throw new Error(err.error || 'Could not save the video to this product'); }
-      return url;
-    } finally { release(); }
+      if (!putRes.ok) { const err = await putRes.json().catch(() => ({})); throw new Error(err.error || 'Could not save the website video to this product'); }
+      setProducts(ps => ps.map(x => x._id === p._id ? { ...x, videoUrl: url } : x));
+      setPublishMsg({ id: p._id, ok: true, text: 'Now showing on the website. This copy uses Cloudinary space.' });
+    } catch (e: any) {
+      setPublishMsg({ id: p._id, ok: false, text: e.message || 'Could not put the video on the website' });
+    } finally { setPublishingId(''); }
   };
 
   const handleGenerateIndividual = async () => {
     const p = products.find(x => x._id === selectedId);
     if (!p) return;
-    setWorking(true); setError(''); setResultUrl('');
+    setWorking(true); setError(''); setSavedNote(false);
+    if (resultUrl.startsWith('blob:')) URL.revokeObjectURL(resultUrl);
+    setResultUrl('');
     try {
-      const url = await generateOne(p, style, particleEffect, pickMusicUrl(musicChoice), nameOverride.trim() || p.name, captionOverride, { textColor, bgColor, fontFamily });
-      setResultUrl(url);
-      setProducts(ps => ps.map(x => x._id === p._id ? { ...x, videoUrl: url } : x));
+      // Needs a click to show the browser's "Allow" prompt, so it is asked BEFORE the 10-second recording starts
+      const root = await ensureRootPermission(true);
+      if (!root) throw new Error('First choose the folder on your PC where videos should be saved, and allow access (the "Save videos on this PC" box above).');
+      const { ref, blob } = await generateOne(p, style, particleEffect, pickMusicUrl(musicChoice), nameOverride.trim() || p.name, captionOverride, { textColor, bgColor, fontFamily }, root);
+      setResultUrl(URL.createObjectURL(blob));
+      setSavedNote(true);
+      setProducts(ps => ps.map(x => x._id === p._id ? { ...x, localVideo: ref } : x));
     } catch (e: any) {
       setError(e.message || 'Video generation failed');
     } finally { setWorking(false); }
@@ -2482,18 +2546,22 @@ function ProductVideoSection() {
   });
   const selectAllFiltered = (checked: boolean) => setBatchSelected(checked ? new Set(filtered.map(p => p._id)) : new Set());
 
+
   const handleGenerateBatch = async () => {
     const list = products.filter(p => batchSelected.has(p._id));
     if (list.length === 0) return;
+    const root = await ensureRootPermission(true);   // asked once, up front, while the click is still fresh
+    if (!root) { setBatchResults([{ name: 'Save folder', ok: false, error: 'First choose the folder on your PC where videos should be saved, and allow access (the "Save videos on this PC" box above).' }]); return; }
     setBatchWorking(true); setBatchResults([]); setBatchProgress({ current: 0, total: list.length });
     const results: { name: string; ok: boolean; error?: string }[] = [];
     for (let i = 0; i < list.length; i++) {
       try {
-        await generateOne(
+        const { ref } = await generateOne(
           list[i], batchStyle, batchParticleEffect, pickMusicUrl(batchMusicChoice),
           list[i].name, batchCaptionOverride.trim() || (list[i].description || ''),
-          { textColor: batchTextColor, bgColor: batchBgColor, fontFamily: batchFontFamily },
+          { textColor: batchTextColor, bgColor: batchBgColor, fontFamily: batchFontFamily }, root,
         );
+        setProducts(ps => ps.map(x => x._id === list[i]._id ? { ...x, localVideo: ref } : x));
         results.push({ name: list[i].name, ok: true });
       }
       catch (e: any) { results.push({ name: list[i].name, ok: false, error: e.message }); }
@@ -2584,6 +2652,43 @@ function ProductVideoSection() {
         </div>
       </div>
 
+      {/* Where videos are saved */}
+      <div className="bg-white rounded-2xl border-2 border-blue-200 shadow-sm p-4 space-y-3">
+        <div className="flex items-start gap-3">
+          <div className="w-9 h-9 bg-blue-50 rounded-xl flex items-center justify-center shrink-0"><HardDrive className="w-4 h-4 text-blue-600" /></div>
+          <div className="flex-1">
+            <p className="text-xs font-black uppercase tracking-widest text-gray-800">Save videos on this PC</p>
+            <p className="text-[11px] text-gray-500 mt-0.5">Each video is saved in a folder named after its product, inside the folder you choose below. Nothing goes to Cloudinary unless you press "Show on website".</p>
+          </div>
+        </div>
+        {!folderSupported ? (
+          <p className="text-xs font-bold text-red-600 bg-red-50 border border-red-200 rounded-xl p-3">This browser can't save into a folder on your PC. Open the admin panel in Chrome or Edge on your computer to generate videos.</p>
+        ) : (
+          <>
+            <div className="flex flex-wrap items-center gap-2">
+              <button type="button" onClick={chooseFolder} className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white text-[10px] font-black uppercase tracking-widest px-3 py-2 rounded-lg transition">
+                <FolderOpen className="w-3.5 h-3.5" /> {rootName ? 'Change folder' : 'Choose folder'}
+              </button>
+              {rootName && (
+                <span className="text-xs font-bold text-gray-700">Connected: <span className="text-blue-700">{rootName}</span></span>
+              )}
+              {rootAccess === 'ok' && <span className="text-[10px] font-black uppercase text-green-600">✓ Ready</span>}
+              {rootAccess === 'needs-permission' && (
+                <button type="button" onClick={allowFolder} className="bg-amber-500 hover:bg-amber-600 text-white text-[10px] font-black uppercase tracking-widest px-3 py-2 rounded-lg transition">Allow access</button>
+              )}
+              {rootAccess === 'none' && <span className="text-[10px] font-black uppercase text-red-500">No folder chosen yet</span>}
+            </div>
+            <div>
+              <label className="block text-[10px] font-black uppercase tracking-widest text-gray-500 mb-1">Path of that folder on this PC (type it once — used to show each video's full location)</label>
+              <input value={rootPath} onChange={e => { setRootPath(e.target.value); setRootPathText(e.target.value); }} placeholder="e.g. D:\TAGS Videos"
+                className="w-full text-xs font-bold border-2 border-gray-200 focus:border-blue-500 rounded-xl px-3 py-2 outline-none transition" />
+              <p className="text-[10px] text-gray-400 mt-1">Browsers can't read a folder's real path, so this is only used for display. Each new session, the browser asks you to press "Allow access" once.</p>
+            </div>
+          </>
+        )}
+        {folderMsg && <p className="text-[11px] font-bold text-red-500">{folderMsg}</p>}
+      </div>
+
       {showMusicManager && (
         <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 space-y-3">
           <p className="text-xs font-black uppercase tracking-widest text-gray-700">Music Library</p>
@@ -2667,7 +2772,8 @@ function ProductVideoSection() {
                   {p.image ? <img src={p.image} alt="" className="w-full h-full object-cover" /> : <Package className="w-4 h-4 text-gray-300" />}
                 </div>
                 <span className="flex-1 truncate">{p.name}</span>
-                {p.videoUrl && <span className="text-[9px] font-black uppercase text-green-600">Has video</span>}
+                {p.videoUrl && <span className="text-[9px] font-black uppercase text-green-600">On website</span>}
+                {p.localVideo && <span className="text-[9px] font-black uppercase text-blue-600">On PC</span>}
               </label>
             ))}
           </div>
@@ -2695,10 +2801,28 @@ function ProductVideoSection() {
               {error && <div className="rounded-xl p-3 text-sm font-bold text-center bg-red-50 text-red-600 border border-red-200">{error}</div>}
               {resultUrl && (
                 <div className="space-y-2">
-                  <div className="rounded-xl p-3 text-sm font-bold text-center bg-green-50 text-green-700 border border-green-200">✅ Video saved to this product.</div>
+                  {savedNote && <div className="rounded-xl p-3 text-sm font-bold text-center bg-green-50 text-green-700 border border-green-200">✅ Video saved on your PC and linked to this product. Nothing was uploaded to Cloudinary.</div>}
                   <video src={resultUrl} controls loop className="w-full rounded-xl border border-gray-200" />
                 </div>
               )}
+              {(() => {
+                const sp = products.find(x => x._id === selectedId);
+                if (!sp?.localVideo) return null;
+                return (
+                  <div className="space-y-2">
+                    <LocalVideoInfo video={sp.localVideo} />
+                    {sp.videoUrl ? (
+                      <p className="text-[11px] font-bold text-green-700">✅ Also showing on the website.</p>
+                    ) : (
+                      <button type="button" onClick={() => publishToWebsite(sp)} disabled={publishingId === sp._id}
+                        className="w-full py-2.5 border-2 border-gray-300 hover:border-[#FA5600] text-gray-700 hover:text-[#FA5600] font-black uppercase tracking-widest text-[11px] rounded-xl transition disabled:opacity-50">
+                        {publishingId === sp._id ? 'Uploading to the website…' : 'Show on website (uses Cloudinary space)'}
+                      </button>
+                    )}
+                    {publishMsg && publishMsg.id === sp._id && <p className={`text-[11px] font-bold ${publishMsg.ok ? 'text-green-600' : 'text-red-500'}`}>{publishMsg.text}</p>}
+                  </div>
+                );
+              })()}
             </>
           )}
         </div>
@@ -2722,7 +2846,8 @@ function ProductVideoSection() {
                   {p.image ? <img src={p.image} alt="" className="w-full h-full object-cover" /> : <Package className="w-4 h-4 text-gray-300" />}
                 </div>
                 <span className="flex-1 truncate">{p.name}</span>
-                {p.videoUrl && <span className="text-[9px] font-black uppercase text-green-600">Has video</span>}
+                {p.videoUrl && <span className="text-[9px] font-black uppercase text-green-600">On website</span>}
+                {p.localVideo && <span className="text-[9px] font-black uppercase text-blue-600">On PC</span>}
               </label>
             ))}
           </div>
@@ -5440,9 +5565,36 @@ function burnPriceIntoVideo(sourceUrl: string, priceLabel: string, discountLabel
   });
 }
 
-const uploadVideoFile = (file: File, onPct: (n: number) => void): Promise<string> => new Promise(async (resolve, reject) => {
+// ── Temporary online copies ──────────────────────────────────────────────────────────────────────
+// Instagram / Facebook / Telegram fetch a video from a public web address. A video saved only on the PC is
+// uploaded to a separate temporary Cloudinary folder just for posting, then deleted ~30 minutes later
+// (checked again every time the admin opens the Video or Broadcast tab). WhatsApp shares a LINK that people
+// open later, so that one copy is kept (keepTempUpload).
+const TEMP_UPLOADS_KEY = 'tags_temp_video_uploads';
+const TEMP_MAX_AGE_MS = 30 * 60 * 1000;
+type TempUpload = { url: string; at: number };
+const readTempUploads = (): TempUpload[] => { try { return JSON.parse(localStorage.getItem(TEMP_UPLOADS_KEY) || '[]'); } catch { return []; } };
+const writeTempUploads = (list: TempUpload[]) => { try { localStorage.setItem(TEMP_UPLOADS_KEY, JSON.stringify(list)); } catch { /* ignore */ } };
+const rememberTempUpload = (url: string) => writeTempUploads([...readTempUploads().filter(x => x.url !== url), { url, at: Date.now() }]);
+const keepTempUpload = (url: string) => writeTempUploads(readTempUploads().filter(x => x.url !== url));
+async function cleanupTempUploads(force: boolean): Promise<number> {
+  const due = readTempUploads().filter(x => force || Date.now() - x.at > TEMP_MAX_AGE_MS);
+  if (due.length === 0) return 0;
   try {
-    const sig = await (await fetch('/api/products?cloudinarySign=true&resourceType=video')).json();
+    const r = await fetch('/api/products', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deleteTempVideos: true, urls: due.map(x => x.url) }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (r.ok) { writeTempUploads(readTempUploads().filter(x => !due.some(y => y.url === x.url))); return d.deleted || 0; }
+  } catch { /* try again next time */ }
+  return 0;
+}
+
+const uploadVideoFile = (file: File, onPct: (n: number) => void, opts?: { keep?: boolean }): Promise<string> => new Promise(async (resolve, reject) => {
+  try {
+    const keep = !!opts?.keep;
+    const sig = await (await fetch(`/api/products?cloudinarySign=true&resourceType=video${keep ? '' : '&temp=true'}`)).json();
     if (!sig.signature) throw new Error('Could not get an upload permission from the server.');
     const form = new FormData();
     form.append('file', file);
@@ -5456,7 +5608,7 @@ const uploadVideoFile = (file: File, onPct: (n: number) => void): Promise<string
     xhr.onload = () => {
       try {
         const data = JSON.parse(xhr.responseText);
-        if (xhr.status >= 200 && xhr.status < 300 && data.secure_url) resolve(data.secure_url);
+        if (xhr.status >= 200 && xhr.status < 300 && data.secure_url) { if (!keep) rememberTempUpload(data.secure_url); resolve(data.secure_url); }
         else reject(new Error(data.error?.message || 'Cloudinary upload failed.'));
       } catch { reject(new Error('Cloudinary returned an unexpected response.')); }
     };
@@ -5478,7 +5630,7 @@ function VideoSharePanel({ product, caption, guard, onShared }: {
   // Two sources for the video: the one already generated for this product (Video tab), or a fresh
   // upload from this device. Defaults to the website video when one exists, since that's normally
   // the one you'd want to post.
-  const [mode, setMode]             = useState<'website' | 'device'>(product.videoUrl ? 'website' : 'device');
+  const [mode, setMode]             = useState<'website' | 'device' | 'local'>(product.videoUrl ? 'website' : (product.localVideo ? 'local' : 'device'));
   const [file, setFile]             = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState('');
   const [duration, setDuration]     = useState<number | null>(null);
@@ -5496,6 +5648,22 @@ function VideoSharePanel({ product, caption, guard, onShared }: {
   const [burningPct, setBurningPct] = useState<number | null>(null);
   const burnedCache = useRef<{ key: string; url: string } | null>(null);
   const activeSrc = mode === 'website' ? product.videoUrl : previewUrl;
+  const [localLoading, setLocalLoading] = useState(false);
+  const [tempCount, setTempCount] = useState(readTempUploads().length);
+  const busyRef = useRef(false);
+  busyRef.current = busy;
+
+  // Temporary online copies (made only while posting a PC-folder video) are deleted ~30 min later.
+  const resetCaches = () => { uploaded.current = null; derived.current = {}; burnedCache.current = null; };
+  const runTempCleanup = async (force: boolean) => { const n = await cleanupTempUploads(force); setTempCount(readTempUploads().length); return n; };
+  useEffect(() => {
+    runTempCleanup(false);
+    const iv = setInterval(() => {
+      if (busyRef.current) return;
+      if (readTempUploads().some(x => Date.now() - x.at > TEMP_MAX_AGE_MS)) { resetCaches(); runTempCleanup(false); }
+    }, 60_000);
+    return () => clearInterval(iv);
+  }, []);
 
   useEffect(() => () => { if (previewUrl) URL.revokeObjectURL(previewUrl); }, [previewUrl]);
   // Switching source resets everything downstream — a different video shouldn't carry over upload
@@ -5517,6 +5685,24 @@ function VideoSharePanel({ product, caption, guard, onShared }: {
   const clearFile = () => {
     setFile(null); setPreviewUrl(''); setDuration(null); setFileError(''); setWaLink(''); setStatus(IDLE_VID);
     uploaded.current = null; derived.current = {};
+  };
+
+  // Reads this product's video back from the folder on this PC (needs a click for the browser's permission prompt)
+  const loadLocal = async () => {
+    if (!product.localVideo) return;
+    setLocalLoading(true); setFileError('');
+    try {
+      const f = await readVideoFromFolder(product.localVideo, true);
+      setDuration(null); setWaLink(''); setStatus(IDLE_VID); resetCaches();
+      setFile(f); setPreviewUrl(URL.createObjectURL(f));
+    } catch (e: any) { setFileError(e?.message || 'Could not open the video from your PC folder.'); }
+    finally { setLocalLoading(false); }
+  };
+  const switchMode = (m: 'website' | 'device' | 'local') => {
+    if (busy || m === mode) return;
+    if (mode !== 'website') clearFile();
+    setMode(m);
+    if (m === 'local') loadLocal();
   };
 
   const getPostingVideoUrl = async (onStatus?: (t: string) => void): Promise<string> => {
@@ -5542,6 +5728,7 @@ function VideoSharePanel({ product, caption, guard, onShared }: {
       onStatus?.('Uploading…');
       const url = await uploadVideoFile(new File([blob], `priced-${productId}.${blob.type.includes('mp4') ? 'mp4' : 'webm'}`, { type: blob.type }), () => {});
       burnedCache.current = { key: base, url };
+      setTempCount(readTempUploads().length);
       return url;
     } finally { setBurningPct(null); }
   };
@@ -5557,6 +5744,7 @@ function VideoSharePanel({ product, caption, guard, onShared }: {
     try {
       const url = await uploadVideoFile(file, setUploadPct);
       uploaded.current = { file, url };
+      setTempCount(readTempUploads().length);
       return url;
     } finally { setUploadPct(null); }
   };
@@ -5625,6 +5813,7 @@ function VideoSharePanel({ product, caption, guard, onShared }: {
       }
       setTarget('whatsapp', { state: 'working', text: 'Uploading…' });
       const original = await getPostingVideoUrl(t => setTarget('whatsapp', { state: 'working', text: t }));
+      keepTempUpload(original); setTempCount(readTempUploads().length);   // people open this link later, so it is NOT auto-deleted
       const link = `https://wa.me/?text=${encodeURIComponent(`${waLinkText(caption)}\n\n▶ Watch the video:\n${original}`)}`;
       setWaLink(link);
       window.open(link, '_blank');
@@ -5674,13 +5863,17 @@ function VideoSharePanel({ product, caption, guard, onShared }: {
     <div className="p-4 space-y-4">
       {/* Source: this product's existing website video, or a fresh upload from this device */}
       <div className="flex gap-2 bg-gray-100 rounded-xl p-1">
-        <button onClick={() => setMode('website')} disabled={!product.videoUrl || busy}
+        <button onClick={() => switchMode('website')} disabled={!product.videoUrl || busy}
           className={`flex-1 flex items-center justify-center gap-1.5 text-[10px] font-black uppercase tracking-widest py-2 rounded-lg transition disabled:opacity-40 ${mode === 'website' ? 'bg-white text-[#FA5600] shadow-sm' : 'text-gray-400 hover:text-gray-600'}`}>
           <Video className="w-3.5 h-3.5" /> Website Video
         </button>
-        <button onClick={() => setMode('device')} disabled={busy}
+        <button onClick={() => switchMode('device')} disabled={busy}
           className={`flex-1 flex items-center justify-center gap-1.5 text-[10px] font-black uppercase tracking-widest py-2 rounded-lg transition disabled:opacity-40 ${mode === 'device' ? 'bg-white text-[#FA5600] shadow-sm' : 'text-gray-400 hover:text-gray-600'}`}>
           <Upload className="w-3.5 h-3.5" /> Upload From Device
+        </button>
+        <button onClick={() => switchMode('local')} disabled={!product.localVideo || busy}
+          className={`flex-1 flex items-center justify-center gap-1.5 text-[10px] font-black uppercase tracking-widest py-2 rounded-lg transition disabled:opacity-40 ${mode === 'local' ? 'bg-white text-[#FA5600] shadow-sm' : 'text-gray-400 hover:text-gray-600'}`}>
+          <FolderOpen className="w-3.5 h-3.5" /> PC Folder
         </button>
       </div>
 
@@ -5698,6 +5891,25 @@ function VideoSharePanel({ product, caption, guard, onShared }: {
         </label>
       )}
 
+      {mode === 'local' && !file && (
+        <div className="border-2 border-dashed border-gray-300 rounded-xl p-4 text-center space-y-2">
+          {product.localVideo ? (
+            <>
+              <p className="text-xs font-bold text-gray-600 break-all">Saved on this PC: {product.localVideo.path}</p>
+              <button onClick={loadLocal} disabled={localLoading}
+                className="bg-[#FA5600] hover:bg-[#E04A00] text-white text-[10px] font-black uppercase tracking-widest px-4 py-2 rounded-lg transition disabled:opacity-50">
+                {localLoading ? 'Opening…' : 'Load video from PC folder'}
+              </button>
+            </>
+          ) : (
+            <p className="text-xs font-bold text-gray-500">No video has been saved on this PC for this product yet — generate one in the Video tab.</p>
+          )}
+        </div>
+      )}
+      {mode === 'local' && file && (
+        <p className="text-[10px] text-gray-400 font-bold">Loaded from your PC folder. Posting uses a temporary online copy that is deleted about 30 minutes afterwards (WhatsApp shares a link people open later, so that copy is kept). To send the file itself on WhatsApp, drag it from your product folder into WhatsApp Web.</p>
+      )}
+
       {hasVideo && (
         <div className="space-y-2">
           <div className="flex items-center gap-3">
@@ -5707,7 +5919,7 @@ function VideoSharePanel({ product, caption, guard, onShared }: {
             <div className="flex-1 min-w-0">
               <p className="text-xs font-black text-gray-800 truncate">{mode === 'website' ? `${product.name} — website video` : file?.name}</p>
               <p className="text-[10px] text-gray-400 font-bold">
-                {mode === 'device' && file ? `${(file.size / 1048576).toFixed(1)} MB` : 'Already on the website'}{duration !== null ? ` · ${Math.round(duration)}s` : ''}
+                {mode !== 'website' && file ? `${(file.size / 1048576).toFixed(1)} MB` : 'Already on the website'}{duration !== null ? ` · ${Math.round(duration)}s` : ''}
               </p>
               {uploadPct !== null && (
                 <div className="mt-2">
@@ -5723,6 +5935,13 @@ function VideoSharePanel({ product, caption, guard, onShared }: {
           {storyWarn && !reelWarn && <p className="text-[10px] font-bold text-yellow-600">Over 60 seconds — video stories may be rejected. Reels are fine.</p>}
           {storyWarn && reelWarn && <p className="text-[10px] font-bold text-yellow-600">Over 60 seconds — video stories may be rejected.</p>}
         </div>
+      )}
+      {tempCount > 0 && (
+        <p className="text-[10px] text-gray-500 font-bold">
+          🧹 {tempCount} temporary online cop{tempCount === 1 ? 'y' : 'ies'} will be deleted automatically about 30 minutes after posting.
+          <button type="button" disabled={busy} onClick={async () => { resetCaches(); await runTempCleanup(true); }}
+            className="ml-1 font-black text-[#FA5600] underline disabled:opacity-40">Delete now</button>
+        </p>
       )}
       {hasVideo && (
         <div className="space-y-1.5">
@@ -6134,8 +6353,8 @@ function BroadcastSection() {
     if (priceMax && price > parseFloat(priceMax)) return false;
     if (stockFilter === 'instock'    && stock !== null && stock <= 0) return false;
     if (stockFilter === 'outofstock' && stock !== null && stock > 0)  return false;
-    if (videoFilter === 'hasvideo' && !p.videoUrl) return false;
-    if (videoFilter === 'novideo'  && p.videoUrl)  return false;
+    if (videoFilter === 'hasvideo' && !(p.videoUrl || p.localVideo)) return false;
+    if (videoFilter === 'novideo'  && (p.videoUrl || p.localVideo))  return false;
     const h = shareHistory[String(p._id)];
     const inShared = isRecentShare(h);
     if (shareTab === 'toshare' && inShared) return false;
@@ -6548,6 +6767,11 @@ function BroadcastSection() {
                     {p.videoUrl && (
                       <span title="Has a website video" className="absolute bottom-0 right-0 w-4 h-4 bg-[#FA5600] rounded-tl-md flex items-center justify-center">
                         <Video className="w-2.5 h-2.5 text-white" />
+                      </span>
+                    )}
+                    {!p.videoUrl && p.localVideo && (
+                      <span title="Has a video saved on this PC" className="absolute bottom-0 right-0 w-4 h-4 bg-blue-600 rounded-tl-md flex items-center justify-center">
+                        <HardDrive className="w-2.5 h-2.5 text-white" />
                       </span>
                     )}
                   </button>
