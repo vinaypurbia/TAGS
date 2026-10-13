@@ -1,5 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
+import LocalVideoInfo from '../components/LocalVideoInfo';
+import type { LocalVideoRef } from '../lib/localVideoStore';
 
 const ADMIN_PASSWORD = import.meta.env.VITE_ADMIN_PASSWORD ?? '';
 
@@ -91,6 +93,7 @@ export function EditProductForm() {
   });
 
   const [existingImageUrls, setExistingImageUrls] = useState<string[]>([]);
+  const [localVideo, setLocalVideo] = useState<LocalVideoRef | null>(null);   // where the video is saved on this PC
   const [imageFiles, setImageFiles]               = useState<(File | null)[]>([null, null, null]);
   const [imagePreviews, setImagePreviews]         = useState<(string | null)[]>([null, null, null]);
   const [compressionInfo, setCompressionInfo]     = useState<(CompressionInfo | null)[]>([null, null, null]);
@@ -115,6 +118,7 @@ export function EditProductForm() {
       .then(data => {
         const product = data.find((p: any) => p._id === id);
         if (product) {
+          setLocalVideo(product.localVideo || null);
           setFormData({
             name: product.name || '', originalPrice: product.originalPrice || '',
             discountedPrice: product.discountedPrice || '', category: product.category || '',
@@ -505,6 +509,8 @@ export function EditProductForm() {
                 {imgMsg && <p className={`text-xs font-semibold ${imgMsg.ok ? 'text-green-600' : 'text-red-500'}`}>{imgMsg.text}</p>}
               </div>
             </div>
+
+            {localVideo && <div className="mb-4"><LocalVideoInfo video={localVideo} /></div>}
 
             {/* Video URL */}
             <div className="md:col-span-2">
