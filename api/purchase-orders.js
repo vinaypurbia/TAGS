@@ -70,38 +70,58 @@ export default async function handler(req, res) {
         const poId = String(po._id);
         const lines = po.receivedItems || po.items || [];
 
-        const poQty = {}, names = {};
+        const poQty = {}, names = {}, lineCount = {};
         for (const it of lines) {
           const q = Number(it.quantityReceived ?? it.quantity) || 0;
           poQty[it.productId] = (poQty[it.productId] || 0) + q;
           names[it.productId] = it.productName || it.productId;
+          lineCount[it.productId] = (lineCount[it.productId] || 0) + 1;
         }
 
         const rows = [];
         for (const pid of Object.keys(poQty)) {
           const receipts = await movements.find({ productId: pid, referenceId: poId, reason: 'purchase_order' }).sort({ createdAt: 1 }).toArray();
           const inv = await inventory.findOne({ productId: pid });
-          const first = receipts[0];
+          const first = receipts[0], last = receipts[receipts.length - 1];
+          const duplicated = receipts.length > lineCount[pid];
           let otherNet = 0;
+          let adjustments = [];
           if (first) {
             const others = await movements.find({ productId: pid, createdAt: { $gt: first.createdAt } }).toArray();
             for (const m of others) {
               if (m.referenceId === poId && m.reason === 'purchase_order') continue;
               otherNet += (m.type === 'in' ? 1 : -1) * (Number(m.quantity) || 0);
             }
+            // Changes made from the Inventory screen (manual edits, delivery backfills) only go into the
+            // product's own adjustment log, never into stock movements. PO edits/returns/deletes write to
+            // BOTH, so those are skipped here to avoid counting them twice.
+            adjustments = (inv?.adjustmentLog || [])
+              .filter(l => new Date(l.date) > new Date(first.createdAt) && !/^(PO Edit —|Return to supplier —|PO Deleted —)/.test(l.reason || ''))
+              .map(l => ({ adjustment: l.adjustment, reason: l.reason, date: l.date }));
           }
           const startedFrom = first ? Number(first.balanceBefore) || 0 : null;
           const expectedStock = first ? Math.max(0, startedFrom + poQty[pid] + otherNet) : null;
           const currentStock = inv ? inv.currentStock : null;
+          // The number to trust most: what this PO's own receipts did to the stock, beyond what the PO
+          // calls for. Last receipt's balance-after minus first receipt's balance-before, minus the PO
+          // quantity. Uses only this PO's records, so sales and manual edits can't skew it; if other
+          // changes landed in between it can only UNDER-count, never over-count.
+          const extraFromDuplicates = duplicated ? Math.max(0, (Number(last.balanceAfter) || 0) - (Number(first.balanceBefore) || 0) - poQty[pid]) : 0;
           rows.push({
             product: names[pid], productId: pid,
             poQuantity: poQty[pid],
             timesStockWasAdded: receipts.length,
+            timesExpected: lineCount[pid],
             stockBeforeThisPO: startedFrom,
-            otherRecordedChangesSince: otherNet,
-            expectedStock,
+            extraUnitsFromDuplicateReceipts: extraFromDuplicates,
             currentStock,
-            looksInflatedBy: (expectedStock !== null && currentStock !== null) ? Math.max(0, currentStock - expectedStock) : null,
+            approximate: {
+              note: 'Counts only recorded stock movements, so it can be thrown off by sales or manual edits — see inventoryScreenAdjustmentsSince.',
+              otherRecordedChangesSince: otherNet,
+              expectedStock,
+              looksInflatedBy: (expectedStock !== null && currentStock !== null) ? Math.max(0, currentStock - expectedStock) : null,
+            },
+            inventoryScreenAdjustmentsSince: adjustments,
           });
         }
 
@@ -117,11 +137,17 @@ export default async function handler(req, res) {
           if (Number(advances[i].amount) === Number(advances[i - 1].amount) && gap < 60000) possibleDuplicateAdvances.push({ amount: advances[i].amount, secondsApart: Math.round(gap / 1000) });
         }
 
-        const addedMoreThanOnce = rows.filter(r => r.timesStockWasAdded > 1);
-        const inflated = rows.filter(r => r.looksInflatedBy > 0);
+        const duplicatedRows = rows.filter(r => r.timesStockWasAdded > r.timesExpected);
+        const extraTotal = rows.reduce((t, r) => t + r.extraUnitsFromDuplicateReceipts, 0);
+        const transportCount = cash.filter(c => c.referenceType === 'po_transport').length;
+        const balanceCount = cash.filter(c => c.referenceType === 'purchase_order').length;
         return res.status(200).json({
           po: po.poNumber, status: po.status,
-          summary: `${addedMoreThanOnce.length} of ${rows.length} products had stock added more than once for this PO; ${inflated.length} currently look inflated (${inflated.reduce((s, r) => s + r.looksInflatedBy, 0)} extra units in total).` + (possibleDuplicateAdvances.length ? ` ${possibleDuplicateAdvances.length} advance payment(s) look like duplicates.` : ''),
+          summary: `${duplicatedRows.length} of ${rows.length} products had their stock added more times than the PO calls for; ${extraTotal} extra units in total come from that.`
+            + (transportCount > 1 ? ` Transport expense was recorded ${transportCount} times.` : '')
+            + (balanceCount > 1 ? ` The delivery balance payment was recorded ${balanceCount} times.` : '')
+            + (possibleDuplicateAdvances.length ? ` ${possibleDuplicateAdvances.length} advance payment(s) look like duplicates.` : ''),
+          howToRead: 'extraUnitsFromDuplicateReceipts is the number to trust: it uses only this PO\'s own receipt records. Everything under "approximate" is a cross-check, not a verdict.',
           products: rows,
           moneyEntries: {
             note: 'Each of these should normally appear at most once per PO.',
