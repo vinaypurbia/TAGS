@@ -50,6 +50,25 @@ export default async function handler(req, res) {
     const movements = db.collection('stockMovements');
     const cashFlow = db.collection('cashFlow');
     const ledgerCol = db.collection('ledgerEntries');
+    const archive = db.collection('correctionArchive');
+
+    // What did this PO's receipts do to one product, and how much of that has already been corrected?
+    // Uses only the PO's own receipt records (balance before the first receipt, balance after the last),
+    // so sales and manual edits can't skew it; if other changes landed in between it can only UNDER-count.
+    const CORRECTION_PREFIX = 'Duplicate receipt correction — ';
+    const receiptFacts = async (pid, poId, poNumber, lineCountForPid, poQtyForPid) => {
+      const receipts = await movements.find({ productId: pid, referenceId: poId, reason: 'purchase_order' }).sort({ createdAt: 1 }).toArray();
+      const inv = await inventory.findOne({ productId: pid });
+      const first = receipts[0], last = receipts[receipts.length - 1];
+      const duplicated = receipts.length > lineCountForPid;
+      const extra = duplicated ? Math.max(0, (Number(last.balanceAfter) || 0) - (Number(first.balanceBefore) || 0) - poQtyForPid) : 0;
+      // The correction is recorded in the product's adjustment log in the SAME write that lowers the stock,
+      // so "already corrected" can never be out of step with the stock itself.
+      const corrected = (inv?.adjustmentLog || [])
+        .filter(l => (l.reason || '').startsWith(CORRECTION_PREFIX + poNumber))
+        .reduce((t, l) => t + Math.abs(Number(l.adjustment) || 0), 0);
+      return { receipts, inv, first, last, duplicated, extra, corrected, uncorrected: Math.max(0, extra - corrected) };
+    };
 
     // ─────────────────────────────────────────────
     // GET /api/purchase-orders
@@ -58,6 +77,122 @@ export default async function handler(req, res) {
     // ─────────────────────────────────────────────
     if (req.method === 'GET') {
       const { id, status } = req.query;
+
+      // ── Correct a PO whose receipt got recorded more than once ─────────────────────────────────
+      // GET /api/purchase-orders?action=fixDuplicateReceipts&poNumber=PO-2026-013             → PREVIEW (changes nothing)
+      // GET /api/purchase-orders?action=fixDuplicateReceipts&poNumber=PO-2026-013&apply=FIX   → applies it
+      // Stock: each product is lowered by the extra units this PO added (compare-and-set, so a sale that lands
+      //   mid-correction stops it instead of being overwritten) and the change is written to its adjustment log.
+      // Money: repeat transport / balance-payment / supplier-ledger entries are removed ONLY when they match the
+      //   first one exactly; a copy of each is archived first. Safe to run more than once — nothing is corrected twice.
+      if (req.query.action === 'fixDuplicateReceipts') {
+        const po = id ? await orders.findOne({ _id: new ObjectId(id) }) : await orders.findOne({ poNumber: req.query.poNumber });
+        if (!po) return res.status(404).json({ error: 'Purchase order not found — pass poNumber=PO-xxxx-xxx or id=...' });
+        const poId = String(po._id);
+        const apply = req.query.apply === 'FIX';
+        const lines = po.receivedItems || po.items || [];
+
+        const poQty = {}, names = {}, lineCount = {};
+        for (const it of lines) {
+          const q = Number(it.quantityReceived ?? it.quantity) || 0;
+          poQty[it.productId] = (poQty[it.productId] || 0) + q;
+          names[it.productId] = it.productName || it.productId;
+          lineCount[it.productId] = (lineCount[it.productId] || 0) + 1;
+        }
+
+        // ── 1. what to do to each product's stock ──
+        const stockPlan = [];
+        for (const pid of Object.keys(poQty)) {
+          const f = await receiptFacts(pid, poId, po.poNumber, lineCount[pid], poQty[pid]);
+          const base = { product: names[pid], productId: pid };
+          if (!f.inv) { stockPlan.push({ ...base, action: 'skipped', why: 'no inventory record for this product' }); continue; }
+          const cur = Number(f.inv.currentStock) || 0;
+          if (f.uncorrected <= 0) { stockPlan.push({ ...base, action: f.corrected > 0 ? 'already corrected' : 'nothing to fix', currentStock: cur }); continue; }
+          if (cur < f.uncorrected) { stockPlan.push({ ...base, action: 'skipped', why: `current stock (${cur}) is lower than the extra (${f.uncorrected}) — check this one by hand`, currentStock: cur }); continue; }
+          stockPlan.push({ ...base, action: 'correct', currentStock: cur, removeUnits: f.uncorrected, willBecome: cur - f.uncorrected, timesRecorded: f.receipts.length, _inv: f.inv });
+        }
+
+        // ── 2. which repeat money entries to remove (keep the earliest; only remove exact-amount repeats) ──
+        const sameAmount = (a, b) => Math.abs((Number(a.amount) || 0) - (Number(b.amount) || 0)) < 0.005;
+        const moneyPlans = [];
+        for (const [label, col, coll, filter] of [
+          ['Transport expense',                       cashFlow,  'cashFlow',      { referenceId: poId, referenceType: 'po_transport' }],
+          ['Delivery balance payment',                cashFlow,  'cashFlow',      { referenceId: poId, referenceType: 'purchase_order' }],
+          ["Supplier ledger: 'goods received' credit", ledgerCol, 'ledgerEntries', { referenceId: poId, referenceType: 'purchase_order', entryType: 'credit' }],
+          ['Supplier ledger: shortage debit',         ledgerCol, 'ledgerEntries', { referenceId: poId, referenceType: 'po_shortage', entryType: 'debit' }],
+        ]) {
+          const all = (await col.find(filter).toArray()).sort((a, b) => (new Date(a.date) - new Date(b.date)) || String(a._id).localeCompare(String(b._id)));
+          const keep = all[0];
+          const remove = all.slice(1).filter(d => sameAmount(d, keep));
+          const differentAmount = all.slice(1).filter(d => !sameAmount(d, keep));
+          moneyPlans.push({ label, col, coll, found: all.length, keep, remove, differentAmount });
+        }
+
+        const toCorrect = stockPlan.filter(x => x.action === 'correct');
+        const totalUnits = toCorrect.reduce((t, x) => t + x.removeUnits, 0);
+        const publicStock = stockPlan.map(({ _inv, ...rest }) => rest);
+        const publicMoney = moneyPlans.map(m => ({
+          what: m.label, entriesFound: m.found, repeatsToRemove: m.remove.length, amountEach: m.keep ? m.keep.amount : null,
+          ...(m.differentAmount.length ? { leftAloneCheckByHand: `${m.differentAmount.length} entr${m.differentAmount.length === 1 ? 'y has' : 'ies have'} a different amount, so nothing was removed for ${m.differentAmount.length === 1 ? 'it' : 'them'}` } : {}),
+        }));
+
+        if (!apply) {
+          return res.status(200).json({
+            mode: 'PREVIEW — nothing has been changed',
+            po: po.poNumber,
+            summary: `${toCorrect.length} products would be lowered by ${totalUnits} units in total; ${moneyPlans.reduce((t, m) => t + m.remove.length, 0)} repeat money entries would be removed.`,
+            stock: publicStock,
+            money: publicMoney,
+            toApply: `Open the same link with &apply=FIX added at the end: /api/purchase-orders?action=fixDuplicateReceipts&poNumber=${po.poNumber}&apply=FIX`,
+          });
+        }
+
+        // ── 3. apply ──
+        const done = { stock: [], money: [] };
+        for (const item of toCorrect) {
+          const inv = item._inv, cur = item.currentStock, remove = item.removeUnits, newStock = cur - remove;
+          const reserved = Number(inv.reservedStock) || 0;
+          const available = Math.max(0, newStock - reserved);
+          const alert = inv.lowStockAlert || 5;
+          let stockStatus = 'in_stock';
+          if (available === 0) stockStatus = 'out_of_stock';
+          else if (available <= alert) stockStatus = 'low_stock';
+
+          const w = await inventory.updateOne(
+            { productId: item.productId, currentStock: cur },   // only if nobody has changed the stock since we looked
+            {
+              $set: { currentStock: newStock, availableStock: available, stockStatus, updatedAt: new Date() },
+              $push: { adjustmentLog: { adjustment: -remove, reason: `${CORRECTION_PREFIX}${po.poNumber} (receipt was recorded ${item.timesRecorded} times)`, date: new Date(), stockAfter: newStock } },
+            }
+          );
+          if (w.matchedCount !== 1) { done.stock.push({ product: item.product, result: 'NOT applied — the stock changed while correcting (a sale?). Run the link again.' }); continue; }
+          await movements.insertOne({
+            productId: item.productId, type: 'out', quantity: remove, reason: 'duplicate_receipt_correction', referenceId: poId,
+            balanceBefore: cur, balanceAfter: newStock, note: `PO ${po.poNumber} was received ${item.timesRecorded} times — extra ${remove} removed`, createdAt: new Date(),
+          });
+          await syncFrontendStatusIfAuto(inventory, item.productId, { ...inv, availableStock: available });
+          done.stock.push({ product: item.product, result: `${cur} → ${newStock}` });
+        }
+        for (const m of moneyPlans) {
+          for (const d of m.remove) {
+            await archive.insertOne({ archivedAt: new Date(), reason: `Repeat of an entry already recorded for ${po.poNumber}`, poNumber: po.poNumber, fromCollection: m.coll, original: d });
+            const del = await m.col.deleteOne({ _id: d._id });
+            done.money.push({ what: m.label, amount: d.amount, removed: del.deletedCount === 1 });
+          }
+        }
+        await orders.updateOne({ _id: po._id }, { $set: { duplicateReceiptCorrection: { at: new Date(), unitsRemoved: totalUnits } } });
+
+        return res.status(200).json({
+          mode: 'APPLIED',
+          po: po.poNumber,
+          summary: `Corrected ${done.stock.filter(x => x.result.includes('→')).length} products (${totalUnits} units) and removed ${done.money.filter(x => x.removed).length} repeat money entries.`
+            + (stockPlan.some(x => x.action === 'skipped') ? ` ${stockPlan.filter(x => x.action === 'skipped').length} product(s) were SKIPPED and need checking by hand — see "skipped".` : ''),
+          stock: done.stock,
+          skipped: stockPlan.filter(x => x.action === 'skipped').map(({ _inv, ...rest }) => rest),
+          money: done.money,
+          next: `Open /api/purchase-orders?action=receiveAudit&poNumber=${po.poNumber} again — it should now say 0 products still need correcting.`,
+        });
+      }
 
       // ── Receive audit (read-only, changes nothing) ─────────────────────────────────────────
       // GET /api/purchase-orders?action=receiveAudit&poNumber=PO-2026-013   (or &id=<po _id>)
@@ -84,12 +219,14 @@ export default async function handler(req, res) {
           const inv = await inventory.findOne({ productId: pid });
           const first = receipts[0], last = receipts[receipts.length - 1];
           const duplicated = receipts.length > lineCount[pid];
+          const f = await receiptFacts(pid, poId, po.poNumber, lineCount[pid], poQty[pid]); // how much of the extra has already been corrected
           let otherNet = 0;
           let adjustments = [];
           if (first) {
             const others = await movements.find({ productId: pid, createdAt: { $gt: first.createdAt } }).toArray();
             for (const m of others) {
               if (m.referenceId === poId && m.reason === 'purchase_order') continue;
+              if (m.reason === 'duplicate_receipt_correction') continue; // this audit's own fix — not a real sale/edit
               otherNet += (m.type === 'in' ? 1 : -1) * (Number(m.quantity) || 0);
             }
             // Changes made from the Inventory screen (manual edits, delivery backfills) only go into the
@@ -114,6 +251,8 @@ export default async function handler(req, res) {
             timesExpected: lineCount[pid],
             stockBeforeThisPO: startedFrom,
             extraUnitsFromDuplicateReceipts: extraFromDuplicates,
+            alreadyCorrectedUnits: f.corrected,
+            stillToCorrect: f.uncorrected,
             currentStock,
             approximate: {
               note: 'Counts only recorded stock movements, so it can be thrown off by sales or manual edits — see inventoryScreenAdjustmentsSince.',
@@ -141,11 +280,14 @@ export default async function handler(req, res) {
         const extraTotal = rows.reduce((t, r) => t + r.extraUnitsFromDuplicateReceipts, 0);
         const transportCount = cash.filter(c => c.referenceType === 'po_transport').length;
         const balanceCount = cash.filter(c => c.referenceType === 'purchase_order').length;
+        const creditCount = ledger.filter(l => l.referenceType === 'purchase_order' && l.entryType === 'credit').length;
         return res.status(200).json({
           po: po.poNumber, status: po.status,
           summary: `${duplicatedRows.length} of ${rows.length} products had their stock added more times than the PO calls for; ${extraTotal} extra units in total come from that.`
+            + ` ${rows.filter(r => r.stillToCorrect > 0).length} of ${rows.length} products still need their stock corrected (${rows.reduce((t, r) => t + r.stillToCorrect, 0)} extra units); ${rows.filter(r => r.alreadyCorrectedUnits > 0).length} already corrected.`
             + (transportCount > 1 ? ` Transport expense was recorded ${transportCount} times.` : '')
             + (balanceCount > 1 ? ` The delivery balance payment was recorded ${balanceCount} times.` : '')
+            + (creditCount > 1 ? ` The supplier ledger has ${creditCount} 'goods received' credits for this PO.` : '')
             + (possibleDuplicateAdvances.length ? ` ${possibleDuplicateAdvances.length} advance payment(s) look like duplicates.` : ''),
           howToRead: 'extraUnitsFromDuplicateReceipts is the number to trust: it uses only this PO\'s own receipt records. Everything under "approximate" is a cross-check, not a verdict.',
           products: rows,
