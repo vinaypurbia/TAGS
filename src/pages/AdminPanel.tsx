@@ -3427,9 +3427,14 @@ function ImportProductsSection() {
   const [status,   setStatus]   = useState<'idle'|'loading'|'success'|'error'>('idle');
   const [progress, setProgress] = useState({ current: 0, total: 0 });
   const [results,  setResults]  = useState<{ name: string; ok: boolean; error?: string }[]>([]);
-  const [preview,  setPreview]  = useState<any[]>([]);
+  const [csvRows,  setCsvRows]  = useState<Record<string, string>[]>([]); // full parsed rows — editable, used for the actual import
   const [message,  setMessage]  = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
+
+  // Click-to-find HD picture (same lookup the Invoice tab already uses) — per-row status.
+  const [imgStatus, setImgStatus] = useState<Record<number, 'idle' | 'loading' | 'done' | 'error'>>({});
+  const [supplierSite, setSupplierSite] = useState('');
+  const normalizeCsvSite = (v: string) => { const s = v.trim(); return !s ? '' : /^https?:\/\//i.test(s) ? s : `https://${s}`; };
 
   const CSV_COLUMNS = ['name','category','subcategory','originalPrice','discountedPrice','description','videoUrl','imageUrl'];
 
@@ -3453,17 +3458,41 @@ function ImportProductsSection() {
 
   const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]; if (!file) return;
-    setStatus('idle'); setMessage(''); setPreview([]); setResults([]);
+    setStatus('idle'); setMessage(''); setCsvRows([]); setResults([]); setImgStatus({});
     const reader = new FileReader();
     reader.onload = (ev) => {
       try {
         const rows = parseCSV(ev.target?.result as string);
         if (rows.length === 0) { setMessage('❌ No valid rows found. Check your CSV has a "name" column.'); return; }
-        setPreview(rows.slice(0, 5));
-        setMessage(`✅ ${rows.length} products ready to import. Preview shows first 5.`);
+        setCsvRows(rows);
+        setMessage(`✅ ${rows.length} products ready to import. Click any picture box below to find a better photo from a supplier site.`);
       } catch { setMessage('❌ Could not parse CSV. Please check the format.'); }
     };
     reader.readAsText(file);
+  };
+
+  // Same supplier-website lookup the Invoice (AI) tab uses — triggered per row by clicking its picture box.
+  const findHdPicture = async (idx: number) => {
+    const row = csvRows[idx];
+    if (!row?.name?.trim()) { setImgStatus(s => ({ ...s, [idx]: 'error' })); return; }
+    const site = normalizeCsvSite(supplierSite);
+    if (!site) { setImgStatus(s => ({ ...s, [idx]: 'error' })); return; } // lookup needs a supplier website, same as the Invoice tab
+    setImgStatus(s => ({ ...s, [idx]: 'loading' }));
+    try {
+      const res = await fetch('/api/products?supplierImage=true', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: row.name, siteUrl: site }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (data.found && data.imageUrl) {
+        setCsvRows(rs => rs.map((r, i) => i === idx ? { ...r, imageUrl: data.imageUrl } : r));
+        setImgStatus(s => ({ ...s, [idx]: 'done' }));
+      } else {
+        setImgStatus(s => ({ ...s, [idx]: 'error' }));
+      }
+    } catch {
+      setImgStatus(s => ({ ...s, [idx]: 'error' }));
+    }
   };
 
   const saveProduct = async (row: Record<string, string>) => {
@@ -3476,8 +3505,9 @@ function ImportProductsSection() {
   };
 
   const handleImport = async () => {
-    const file = fileRef.current?.files?.[0]; if (!file) return;
-    const rows = parseCSV(await file.text());
+    // Uses the editable csvRows state — not a fresh re-read of the file — so any picture
+    // found via the "find HD picture" click actually makes it into what gets imported.
+    const rows = csvRows; if (rows.length === 0) return;
     setStatus('loading'); setProgress({ current: 0, total: rows.length }); setResults([]); setMessage('');
     const newResults: { name: string; ok: boolean; error?: string }[] = [];
     for (let i = 0; i < rows.length; i++) {
@@ -3490,7 +3520,7 @@ function ImportProductsSection() {
     setStatus(failed === 0 ? 'success' : 'error');
     setMessage(failed === 0 ? `✅ All ${rows.length} products imported successfully!` : `⚠️ ${rows.length - failed} imported, ${failed} failed.`);
     if (fileRef.current) fileRef.current.value = '';
-    setPreview([]);
+    setCsvRows([]);
   };
 
   const downloadTemplate = () => {
@@ -3561,13 +3591,41 @@ function ImportProductsSection() {
             <div className="w-full bg-gray-100 rounded-full h-3"><div className="bg-[#FA5600] h-3 rounded-full transition-all" style={{ width: `${pct}%` }} /></div>
           </div>
         )}
-        {preview.length > 0 && status === 'idle' && (
-          <div className="overflow-x-auto rounded-xl border border-gray-100">
-            <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 px-3 pt-2">Preview (first 5 rows)</p>
-            <table className="w-full text-xs mt-1">
-              <thead><tr className="bg-gray-50">{Object.keys(preview[0]).map(h => <th key={h} className="text-left px-3 py-2 font-black uppercase tracking-widest text-gray-500 whitespace-nowrap">{h}</th>)}</tr></thead>
-              <tbody className="divide-y divide-gray-100">{preview.map((row, i) => <tr key={i} className="hover:bg-gray-50">{Object.values(row).map((val: any, j) => <td key={j} className="px-3 py-2 text-gray-600 truncate max-w-[100px]">{val}</td>)}</tr>)}</tbody>
-            </table>
+        {csvRows.length > 0 && status === 'idle' && (
+          <div className="space-y-2">
+            <div>
+              <span className="text-[10px] font-black uppercase tracking-widest text-gray-500">Supplier website (for finding HD pictures)</span>
+              <input value={supplierSite} onChange={e => setSupplierSite(e.target.value)}
+                placeholder="e.g. suppliername.com — optional, used when you click a picture box"
+                className="w-full mt-1 border-2 border-gray-200 rounded-lg px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none" />
+            </div>
+            <div className="rounded-xl border border-gray-100 overflow-hidden">
+              <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 px-3 pt-2">{csvRows.length} rows — click a picture box to find a better photo</p>
+              <div className="max-h-96 overflow-y-auto divide-y divide-gray-100 mt-1">
+                {csvRows.map((row, i) => {
+                  const st = imgStatus[i] || 'idle';
+                  return (
+                    <div key={i} className="flex items-center gap-3 px-3 py-2 hover:bg-gray-50">
+                      <button type="button" onClick={() => findHdPicture(i)} disabled={st === 'loading'}
+                        title={row.imageUrl ? 'Click to look for a better photo' : 'Click to find a photo from the supplier site'}
+                        className={`relative w-14 h-14 shrink-0 rounded-lg overflow-hidden border-2 bg-gray-50 flex items-center justify-center transition ${st === 'error' ? 'border-red-300' : st === 'done' ? 'border-green-400' : 'border-gray-200 hover:border-[#FA5600]'}`}>
+                        {st === 'loading'
+                          ? <RefreshCw className="w-4 h-4 text-[#FA5600] animate-spin" />
+                          : row.imageUrl
+                            ? <img src={row.imageUrl} alt="" className="w-full h-full object-cover" onError={e => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }} />
+                            : <Image className="w-5 h-5 text-gray-300" />}
+                      </button>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs font-bold text-gray-800 truncate">{row.name}</p>
+                        <p className="text-[10px] text-gray-400 truncate">{[row.category, row.subcategory].filter(Boolean).join(' › ') || 'no category'} · ₹{row.discountedPrice || row.originalPrice || '—'}</p>
+                        {st === 'error' && <p className="text-[10px] text-red-500">No match found{supplierSite.trim() ? '' : ' — add a supplier website above and try again'}.</p>}
+                        {st === 'done' && <p className="text-[10px] text-green-600 font-bold">Photo found and applied.</p>}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
           </div>
         )}
         {results.length > 0 && (
@@ -3580,9 +3638,9 @@ function ImportProductsSection() {
             ))}
           </div>
         )}
-        {preview.length > 0 && status === 'idle' && (
+        {csvRows.length > 0 && status === 'idle' && (
           <button onClick={handleImport} className="w-full py-3 bg-[#FA5600] text-white font-black uppercase tracking-widest text-sm rounded-xl hover:bg-[#E04A00] transition flex items-center justify-center gap-2">
-            <Upload className="w-4 h-4" /> Import All Products
+            <Upload className="w-4 h-4" /> Import All {csvRows.length} Products
           </button>
         )}
       </div>
