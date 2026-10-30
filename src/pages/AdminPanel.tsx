@@ -5196,6 +5196,35 @@ function renderStatusCard(im: HTMLImageElement, it: BulkItem): HTMLCanvasElement
   return c;
 }
 
+// TAGS community links — always added to the Bulk WhatsApp captions and text messages.
+const TAGS_TELEGRAM_LINK = 'https://t.me/tagsstoreudr';
+const TAGS_WA_COMMUNITY_LINK = 'https://chat.whatsapp.com/InjzhVTUO251ZY5IRbiKuc';
+const TAGS_WA_CHANNEL_LINK = 'https://whatsapp.com/channel/0029VbDao0tGU3BR6vva160h';
+const normalizeWaLink = (v: string) => {
+  const t = (v || '').trim();
+  if (!t) return '';
+  if (/^https?:\/\//i.test(t)) return t;
+  return `https://${t.replace(/^\/+/, '')}`;
+};
+const normalizeTelegramLink = (v: string) => {
+  const t = (v || '').trim();
+  if (!t) return '';
+  if (/^https?:\/\//i.test(t)) return t;
+  if (/^t\.me\//i.test(t) || /^telegram\.me\//i.test(t)) return `https://${t}`;
+  return `https://t.me/${t.replace(/^@/, '')}`;
+};
+
+// Puts a picture on the clipboard (browsers only accept PNG there), so it can be pasted straight into WhatsApp Web / Desktop
+async function copyImageFileToClipboard(file: File) {
+  if (!(navigator.clipboard && (window as any).ClipboardItem)) throw new Error('This browser cannot copy pictures');
+  const bmp = await createImageBitmap(file);
+  const c = document.createElement('canvas');
+  c.width = bmp.width; c.height = bmp.height;
+  c.getContext('2d')!.drawImage(bmp, 0, 0);
+  const png: Blob = await new Promise((ok, bad) => c.toBlob(b => b ? ok(b) : bad(new Error('convert failed')), 'image/png'));
+  await navigator.clipboard.write([new (window as any).ClipboardItem({ 'image/png': png })]);
+}
+
 function BulkWhatsAppModal({ items, onClose, guard, onShared }: { items: BulkItem[]; onClose: () => void; guard: ShareGuard; onShared: OnShared }) {
   const [mode, setMode]           = useState<'cards' | 'status' | 'captions'>('cards');
   const [perPart, setPerPart]     = useState(5);
@@ -5205,8 +5234,15 @@ function BulkWhatsAppModal({ items, onClose, guard, onShared }: { items: BulkIte
   const [files, setFiles]         = useState<Record<string, BulkFiles | null>>({});
   const [prepared, setPrepared]   = useState(0);
   const [notice, setNotice]       = useState('');
+  const [captionHelp, setCaptionHelp]   = useState<null | { id: string; imageOk: boolean; captionCopied: boolean }>(null);
+  // "Stay connected" block — only the links you have filled in are included
+  const tgLine =
+    `🔔 *Stay connected with TAGS:*` +
+    `\n📢 Telegram: ${normalizeTelegramLink(TAGS_TELEGRAM_LINK)}` +
+    `\n👥 WhatsApp Community: ${normalizeWaLink(TAGS_WA_COMMUNITY_LINK)}` +
+    `\n📣 WhatsApp Channel: ${normalizeWaLink(TAGS_WA_CHANNEL_LINK)}`;
 
-  useEffect(() => { setSent(new Set()); setNotice(''); }, [mode, perPart, intro, items.length]);
+  useEffect(() => { setSent(new Set()); setNotice(''); setCaptionHelp(null); }, [mode, perPart, intro, items.length]);
 
   // Pre-build every product's photo + picture card so sharing can start instantly on click
   const idKey = items.map(i => i.id).join(',');
@@ -5255,7 +5291,9 @@ function BulkWhatsAppModal({ items, onClose, guard, onShared }: { items: BulkIte
     const disc = it.origPrice > it.price && it.price > 0 ? Math.round(((it.origPrice - it.price) / it.origPrice) * 100) : 0;
     let t = `*${it.name}*\n`;
     if (it.price > 0) t += `💰 ₹${it.price.toFixed(0)}` + (disc > 0 ? ` ~₹${it.origPrice.toFixed(0)}~ (${disc}% OFF)` : '') + '\n';
-    t += `🔗 https://ta-gs.online/products/${it.id}\n\n📞 To order: wa.me/916350021226\n📍 TAGS, Hathipole, Udaipur`;
+    t += `🔗 https://ta-gs.online/products/${it.id}\n\n📞 To order: wa.me/916350021226\n`;
+    if (tgLine) t += `\n${tgLine}\n\n`;
+    t += `📍 TAGS, Hathipole, Udaipur`;
     return t;
   };
 
@@ -5265,7 +5303,9 @@ function BulkWhatsAppModal({ items, onClose, guard, onShared }: { items: BulkIte
     let msg = intro.trim() ? intro.trim() + '\n\n' : '';
     // numbering restarts in every message, and is skipped when a message holds a single product
     msg += chunk.map((it, j) => productLine(it, chunk.length > 1 ? j + 1 : 0)).join('\n\n');
-    msg += `\n\n📞 To order, WhatsApp us:\nwa.me/916350021226\n\n✨ *TAGS — Toys · Adventure · Gadgets · Sports*\n📍 Hathipole, Udaipur`;
+    msg += `\n\n📞 To order, WhatsApp us:\nwa.me/916350021226\n\n`;
+    if (tgLine) msg += `${tgLine}\n\n`;
+    msg += `✨ *TAGS — Toys · Adventure · Gadgets · Sports*\n📍 Hathipole, Udaipur`;
     return msg;
   });
 
@@ -5335,15 +5375,36 @@ function BulkWhatsAppModal({ items, onClose, guard, onShared }: { items: BulkIte
   };
   const downloadAllStatus = () => guard(items.map(it => it.id), doDownloadAllStatus);
 
-  // Mode 2 — real WhatsApp caption: one product at a time; caption is copied, paste it in the message box
-  const doSendWithCaption = (it: BulkItem) => {
-    const f = files[it.id]?.photo;
+  // Mode 2 — picture with its caption ATTACHED (one product at a time).
+  //   Phone: one share with the picture + caption → WhatsApp shows the caption under the picture.
+  //   Computer: WhatsApp Web/Desktop can't receive a caption from a web page, so the picture is copied to the clipboard;
+  //   paste it in the chat and WhatsApp opens it with a caption box — the caption goes in THAT box (not the message box).
+  const doSendWithCaption = async (it: BulkItem) => {
+    const f = files[it.id]?.status;     // the same 9:16 picture as the Status images: photo, description, price, discount, contact
     if (!f) { setNotice('❌ This product has no picture that could be loaded.'); return; }
     const cap = captionFor(it);
-    navigator.clipboard.writeText(cap).catch(() => {});
-    shareOrSave([f], cap, `c${it.id}`, [it.id],
-      '✓ Caption copied. In WhatsApp pick the chat(s), click the message box, paste (Ctrl+V) and send. Then come back for the next product.',
-      '✓ Picture saved and caption copied. Attach the picture in WhatsApp and paste the caption.');
+    setCaptionHelp(null);
+    if (isMobileDevice() && navigator.canShare && navigator.canShare({ files: [f] })) {
+      setNotice('✓ Pick the chat(s) in WhatsApp — the caption is attached under the picture. Then come back for the next product.');
+      navigator.share({ files: [f], text: cap })
+        .then(() => { markSent(`c${it.id}`); onShared([it.id], 'whatsapp'); })
+        .catch((e: any) => { if (e?.name === 'AbortError') setNotice(''); else setNotice('❌ ' + (e?.message || 'Share failed')); });
+      return;
+    }
+    let imageOk = true;
+    try { await copyImageFileToClipboard(f); }
+    catch { imageOk = false; downloadFiles([f]); }
+    markSent(`c${it.id}`); onShared([it.id], 'whatsapp');
+    setCaptionHelp({ id: it.id, imageOk, captionCopied: false });
+    setNotice('');
+  };
+  const copyCaptionFor = (it: BulkItem) => {
+    navigator.clipboard.writeText(captionFor(it)).then(() => setCaptionHelp(h => h && h.id === it.id ? { ...h, captionCopied: true } : h));
+  };
+  const copyPictureAgain = async (it: BulkItem) => {
+    const f = files[it.id]?.status; if (!f) return;
+    try { await copyImageFileToClipboard(f); setCaptionHelp({ id: it.id, imageOk: true, captionCopied: false }); }
+    catch { downloadFiles([f]); setCaptionHelp({ id: it.id, imageOk: false, captionCopied: false }); }
   };
 
   const sendWithCaption = (it: BulkItem) => guard([it.id], () => doSendWithCaption(it));
@@ -5376,8 +5437,17 @@ function BulkWhatsAppModal({ items, onClose, guard, onShared }: { items: BulkIte
                 ? 'Each picture is rebuilt with its name, price, discount and contact printed underneath, so all pictures go in one share.'
                 : mode === 'status'
                 ? 'Attractive full-screen (9:16) images with photo, description, price and contact — download them, or pick "My Status" in the share window.'
-                : 'Real WhatsApp captions with clickable links. WhatsApp allows one caption box per share, so you send each product separately.'}
+                : 'A Status-style picture (like the Status images) with the caption attached underneath it — not a separate message. Sent one product at a time.'}
             </p>
+          </div>
+
+          {/* Quick links: your WhatsApp Channel and Community — WhatsApp has no way to post to a Channel automatically, so these open them for you to post the same picture + caption */}
+          <div className="flex gap-2 flex-wrap items-center">
+            <span className="text-[10px] font-black uppercase tracking-widest text-gray-500">Post the same way to</span>
+            <a href={TAGS_WA_CHANNEL_LINK} target="_blank" rel="noopener noreferrer"
+              className="text-[10px] font-black uppercase tracking-widest px-3 py-1.5 rounded-lg bg-green-50 text-green-700 hover:bg-[#25D366] hover:text-white transition">📣 My WhatsApp Channel ↗</a>
+            <a href={TAGS_WA_COMMUNITY_LINK} target="_blank" rel="noopener noreferrer"
+              className="text-[10px] font-black uppercase tracking-widest px-3 py-1.5 rounded-lg bg-green-50 text-green-700 hover:bg-[#25D366] hover:text-white transition">👥 My Community ↗</a>
           </div>
 
           {notice && <p className="text-[11px] font-bold text-gray-700 bg-orange-50 border border-orange-100 rounded-xl px-3 py-2">{notice}</p>}
@@ -5487,22 +5557,47 @@ function BulkWhatsAppModal({ items, onClose, guard, onShared }: { items: BulkIte
 
           {mode === 'captions' && (
             <div className="space-y-2">
-              {items.map((it, n) => (
-                <div key={it.id} className={`rounded-xl border-2 p-3 flex items-center gap-3 ${sent.has(`c${it.id}`) ? 'border-green-200 bg-green-50/50' : 'border-gray-100'}`}>
-                  <div className="shrink-0 w-14 h-14 rounded-lg overflow-hidden bg-gray-100 border border-gray-200">
-                    {it.image ? <img src={it.image} alt="" className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center text-gray-300"><Package className="w-4 h-4" /></div>}
+              {items.map((it, n) => {
+                const help = captionHelp?.id === it.id ? captionHelp : null;
+                return (
+                  <div key={it.id} className={`rounded-xl border-2 p-3 ${sent.has(`c${it.id}`) ? 'border-green-200 bg-green-50/50' : 'border-gray-100'}`}>
+                    <div className="flex items-center gap-3">
+                      <div className="shrink-0 w-12 rounded-lg overflow-hidden bg-gray-100 border border-gray-200" style={{ aspectRatio: '9 / 16' }}>
+                        {files[it.id]?.statusUrl
+                          ? <img src={files[it.id]!.statusUrl} alt="" className="w-full h-full object-cover" />
+                          : it.image ? <img src={it.image} alt="" className="w-full h-full object-cover opacity-60" /> : <div className="w-full h-full flex items-center justify-center text-gray-300"><Package className="w-4 h-4" /></div>}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-[10px] font-black uppercase tracking-widest text-gray-400">Product {n + 1} of {items.length} {sent.has(`c${it.id}`) && <span className="text-green-600 normal-case">· done ✓</span>}</p>
+                        <p className="font-black text-sm text-gray-900 truncate">{it.name}</p>
+                        <p className="text-xs font-black text-[#FA5600]">₹{it.price.toFixed(0)}</p>
+                      </div>
+                      <button onClick={() => sendWithCaption(it)} disabled={!ready}
+                        className="shrink-0 bg-[#25D366] text-white font-black text-[10px] uppercase tracking-widest px-3 py-2.5 rounded-xl hover:bg-[#20bd5a] transition-all disabled:opacity-50">
+                        {ready ? (isMobileDevice() ? 'Send' : 'Copy picture') : '…'}
+                      </button>
+                    </div>
+                    {help && (
+                      <div className="mt-3 rounded-lg bg-orange-50 border border-orange-100 p-2.5 space-y-2">
+                        <p className="text-[11px] font-bold text-gray-700">
+                          {help.imageOk
+                            ? <>① <span className="text-green-600">Picture copied.</span> Open the chat in WhatsApp and press <b>Ctrl+V</b> — it opens with a caption box.</>
+                            : <>① The picture was downloaded (copying wasn't possible here). In WhatsApp attach it from your Downloads folder — it opens with a caption box.</>}
+                        </p>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <button onClick={() => copyCaptionFor(it)}
+                            className={`text-[10px] font-black uppercase tracking-widest px-3 py-2 rounded-lg transition ${help.captionCopied ? 'bg-green-100 text-green-600' : 'bg-[#FA5600] text-white hover:bg-[#e04d00]'}`}>
+                            {help.captionCopied ? '✓ Caption copied' : '② Copy caption'}
+                          </button>
+                          <span className="text-[11px] font-bold text-gray-500">then click the <b>caption box</b> under the picture, press <b>Ctrl+V</b> and Send.</span>
+                        </div>
+                        <p className="text-[10px] font-bold text-gray-500">For your <b>Channel</b>: open it with the 📣 button above, then do the same — paste the picture, paste the caption into its caption box, post.</p>
+                        <button onClick={() => copyPictureAgain(it)} className="text-[10px] font-black uppercase tracking-widest text-gray-400 hover:text-[#FA5600]">Copy the picture again</button>
+                      </div>
+                    )}
                   </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-[10px] font-black uppercase tracking-widest text-gray-400">Product {n + 1} of {items.length} {sent.has(`c${it.id}`) && <span className="text-green-600 normal-case">· done ✓</span>}</p>
-                    <p className="font-black text-sm text-gray-900 truncate">{it.name}</p>
-                    <p className="text-xs font-black text-[#FA5600]">₹{it.price.toFixed(0)}</p>
-                  </div>
-                  <button onClick={() => sendWithCaption(it)} disabled={!ready}
-                    className="shrink-0 bg-[#25D366] text-white font-black text-[10px] uppercase tracking-widest px-3 py-2.5 rounded-xl hover:bg-[#20bd5a] transition-all disabled:opacity-50">
-                    {ready ? 'Send' : '…'}
-                  </button>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
 
