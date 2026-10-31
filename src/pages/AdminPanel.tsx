@@ -5200,20 +5200,12 @@ function renderStatusCard(im: HTMLImageElement, it: BulkItem): HTMLCanvasElement
 const TAGS_TELEGRAM_LINK = 'https://t.me/tagsstoreudr';
 const TAGS_WA_COMMUNITY_LINK = 'https://chat.whatsapp.com/InjzhVTUO251ZY5IRbiKuc';
 const TAGS_WA_CHANNEL_LINK = 'https://whatsapp.com/channel/0029VbDao0tGU3BR6vva160h';
-const normalizeWaLink = (v: string) => {
-  const t = (v || '').trim();
-  if (!t) return '';
-  if (/^https?:\/\//i.test(t)) return t;
-  return `https://${t.replace(/^\/+/, '')}`;
-};
-const normalizeTelegramLink = (v: string) => {
-  const t = (v || '').trim();
-  if (!t) return '';
-  if (/^https?:\/\//i.test(t)) return t;
-  if (/^t\.me\//i.test(t) || /^telegram\.me\//i.test(t)) return `https://${t}`;
-  return `https://t.me/${t.replace(/^@/, '')}`;
-};
-
+// One shared "Stay connected" block, used by every message template (single product, bulk captions, bulk text)
+const tagsStayConnectedBlock = () =>
+  `🔔 *Stay connected with TAGS:*` +
+  `\n📢 Telegram: ${TAGS_TELEGRAM_LINK}` +
+  `\n👥 WhatsApp Community: ${TAGS_WA_COMMUNITY_LINK}` +
+  `\n📣 WhatsApp Channel: ${TAGS_WA_CHANNEL_LINK}`;
 // Puts a picture on the clipboard (browsers only accept PNG there), so it can be pasted straight into WhatsApp Web / Desktop
 async function copyImageFileToClipboard(file: File) {
   if (!(navigator.clipboard && (window as any).ClipboardItem)) throw new Error('This browser cannot copy pictures');
@@ -5236,11 +5228,7 @@ function BulkWhatsAppModal({ items, onClose, guard, onShared }: { items: BulkIte
   const [notice, setNotice]       = useState('');
   const [captionHelp, setCaptionHelp]   = useState<null | { id: string; imageOk: boolean; captionCopied: boolean }>(null);
   // "Stay connected" block — only the links you have filled in are included
-  const tgLine =
-    `🔔 *Stay connected with TAGS:*` +
-    `\n📢 Telegram: ${normalizeTelegramLink(TAGS_TELEGRAM_LINK)}` +
-    `\n👥 WhatsApp Community: ${normalizeWaLink(TAGS_WA_COMMUNITY_LINK)}` +
-    `\n📣 WhatsApp Channel: ${normalizeWaLink(TAGS_WA_CHANNEL_LINK)}`;
+  const tgLine = tagsStayConnectedBlock();
 
   useEffect(() => { setSent(new Set()); setNotice(''); setCaptionHelp(null); }, [mode, perPart, intro, items.length]);
 
@@ -6546,6 +6534,7 @@ function BroadcastSection() {
     if (p.category) msg += `🏷️ Category: ${p.category}\n`;
     msg += `\n🔗 View Product:\n${productUrl}\n\n`;
     msg += `📞 To Order, WhatsApp us:\nwa.me/916350021226\n\n`;
+    msg += `${tagsStayConnectedBlock()}\n\n`;
     msg += `✨ *TAGS — Toys · Adventure · Gadgets · Sports*\n`;
     msg += `📍 Hathipole, Udaipur`;
     return msg;
