@@ -5363,28 +5363,35 @@ function BulkWhatsAppModal({ items, onClose, guard, onShared }: { items: BulkIte
   };
   const downloadAllStatus = () => guard(items.map(it => it.id), doDownloadAllStatus);
 
-  // Mode 2 — picture with its caption ATTACHED (one product at a time).
-  //   Phone: one share with the picture + caption → WhatsApp shows the caption under the picture.
-  //   Computer: WhatsApp Web/Desktop can't receive a caption from a web page, so the picture is copied to the clipboard;
-  //   paste it in the chat and WhatsApp opens it with a caption box — the caption goes in THAT box (not the message box).
-  const doSendWithCaption = async (it: BulkItem) => {
-    const f = files[it.id]?.status;     // the same 9:16 picture as the Status images: photo, description, price, discount, contact
+  // Mode 2 — picture + caption, one product at a time.
+  //   Tap Send → the device's share window opens with WhatsApp (phone: share sheet · Windows: share window / WhatsApp app),
+  //   the picture and its caption are passed together, and you search your Community / chat and send — same as before.
+  //   The caption is ALSO copied, so if WhatsApp ever shows the picture without it, just paste it into the caption box.
+  //   Only if this browser cannot open a share window at all does it fall back to "copy picture, then paste".
+  const copyFlow = async (it: BulkItem) => {
+    const f = files[it.id]?.status;
     if (!f) { setNotice('❌ This product has no picture that could be loaded.'); return; }
-    const cap = captionFor(it);
-    setCaptionHelp(null);
-    if (isMobileDevice() && navigator.canShare && navigator.canShare({ files: [f] })) {
-      setNotice('✓ Pick the chat(s) in WhatsApp — the caption is attached under the picture. Then come back for the next product.');
-      navigator.share({ files: [f], text: cap })
-        .then(() => { markSent(`c${it.id}`); onShared([it.id], 'whatsapp'); })
-        .catch((e: any) => { if (e?.name === 'AbortError') setNotice(''); else setNotice('❌ ' + (e?.message || 'Share failed')); });
-      return;
-    }
     let imageOk = true;
     try { await copyImageFileToClipboard(f); }
     catch { imageOk = false; downloadFiles([f]); }
     markSent(`c${it.id}`); onShared([it.id], 'whatsapp');
     setCaptionHelp({ id: it.id, imageOk, captionCopied: false });
     setNotice('');
+  };
+  const doSendWithCaption = async (it: BulkItem) => {
+    const f = files[it.id]?.status;     // the 9:16 picture: photo, description, price, discount, contact
+    if (!f) { setNotice('❌ This product has no picture that could be loaded.'); return; }
+    const cap = captionFor(it);
+    setCaptionHelp(null);
+    navigator.clipboard.writeText(cap).catch(() => {});   // backup copy of the caption
+    if (navigator.canShare && navigator.canShare({ files: [f] })) {
+      setNotice('✓ WhatsApp is opening — choose your Community / chat and send. (Caption is attached, and also copied: if the picture shows without it, paste it into the caption box with Ctrl+V.)');
+      navigator.share({ files: [f], text: cap })
+        .then(() => { markSent(`c${it.id}`); onShared([it.id], 'whatsapp'); })
+        .catch((e: any) => { if (e?.name === 'AbortError') setNotice(''); else { setNotice('❌ ' + (e?.message || 'Share failed') + ' — using copy instead.'); copyFlow(it); } });
+      return;
+    }
+    await copyFlow(it);
   };
   const copyCaptionFor = (it: BulkItem) => {
     navigator.clipboard.writeText(captionFor(it)).then(() => setCaptionHelp(h => h && h.id === it.id ? { ...h, captionCopied: true } : h));
@@ -5562,9 +5569,12 @@ function BulkWhatsAppModal({ items, onClose, guard, onShared }: { items: BulkIte
                       </div>
                       <button onClick={() => sendWithCaption(it)} disabled={!ready}
                         className="shrink-0 bg-[#25D366] text-white font-black text-[10px] uppercase tracking-widest px-3 py-2.5 rounded-xl hover:bg-[#20bd5a] transition-all disabled:opacity-50">
-                        {ready ? (isMobileDevice() ? 'Send' : 'Copy picture') : '…'}
+                        {ready ? 'Send' : '…'}
                       </button>
                     </div>
+                    {ready && !help && (
+                      <button onClick={() => copyFlow(it)} className="mt-1.5 text-[10px] font-black uppercase tracking-widest text-gray-400 hover:text-[#FA5600]">Copy picture + caption instead</button>
+                    )}
                     {help && (
                       <div className="mt-3 rounded-lg bg-orange-50 border border-orange-100 p-2.5 space-y-2">
                         <p className="text-[11px] font-bold text-gray-700">
