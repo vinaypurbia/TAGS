@@ -5374,11 +5374,14 @@ function BulkWhatsAppModal({ items, onClose, guard, onShared }: { items: BulkIte
   const downloadAllStatus = () => guard(items.map(it => it.id), doDownloadAllStatus);
 
   // Mode 2 — picture + caption, one product at a time.
-  //   Tap Send → the device's share window opens with WhatsApp (phone: share sheet · Windows: share window / WhatsApp app),
-  //   the picture and its caption are passed together, and you search your Community / chat and send — same as before.
-  //   The caption is ALSO copied, so if WhatsApp ever shows the picture without it, just paste it into the caption box.
-  //   Only if this browser cannot open a share window at all does it fall back to "copy picture, then paste".
-  const copyFlow = async (it: BulkItem) => {
+  //   PHONE: one share with picture + caption → WhatsApp puts the caption under the picture.
+  //   COMPUTER: WhatsApp Desktop's share window sends the text and the picture as TWO separate messages (WhatsApp's own behaviour,
+  //   a web page can't change it). The only way to get a real attached caption is to paste the picture into the chat — WhatsApp then
+  //   opens it with a caption box. So here: the picture is copied, WhatsApp is opened for you, and the caption is one click away.
+  const openWhatsAppApp = () => {
+    try { const a = document.createElement('a'); a.href = 'whatsapp://'; document.body.appendChild(a); a.click(); a.remove(); } catch { /* app not installed / blocked */ }
+  };
+  const copyFlow = async (it: BulkItem, openApp = false) => {
     const f = files[it.id]?.status;
     if (!f) { setNotice('❌ This product has no picture that could be loaded.'); return; }
     let imageOk = true;
@@ -5387,21 +5390,32 @@ function BulkWhatsAppModal({ items, onClose, guard, onShared }: { items: BulkIte
     markSent(`c${it.id}`); onShared([it.id], 'whatsapp');
     setCaptionHelp({ id: it.id, imageOk, captionCopied: false });
     setNotice('');
+    if (openApp) openWhatsAppApp();
+  };
+  // Quick share window (computer): fast, but WhatsApp Desktop may deliver the caption as a separate message
+  const quickShare = async (it: BulkItem) => {
+    const f = files[it.id]?.status;
+    if (!f) { setNotice('❌ This product has no picture that could be loaded.'); return; }
+    const cap = captionFor(it);
+    navigator.clipboard.writeText(cap).catch(() => {});
+    if (navigator.canShare && navigator.canShare({ files: [f] })) {
+      navigator.share({ files: [f], text: cap })
+        .then(() => { markSent(`c${it.id}`); onShared([it.id], 'whatsapp'); })
+        .catch((e: any) => { if (e?.name !== 'AbortError') setNotice('❌ ' + (e?.message || 'Share failed')); });
+    } else { await copyFlow(it, true); }
   };
   const doSendWithCaption = async (it: BulkItem) => {
     const f = files[it.id]?.status;     // the 9:16 picture: photo, description, price, discount, contact
     if (!f) { setNotice('❌ This product has no picture that could be loaded.'); return; }
-    const cap = captionFor(it);
     setCaptionHelp(null);
-    navigator.clipboard.writeText(cap).catch(() => {});   // backup copy of the caption
-    if (navigator.canShare && navigator.canShare({ files: [f] })) {
-      setNotice('✓ WhatsApp is opening — choose your Community / chat and send. (Caption is attached, and also copied: if the picture shows without it, paste it into the caption box with Ctrl+V.)');
-      navigator.share({ files: [f], text: cap })
+    if (isMobileDevice() && navigator.canShare && navigator.canShare({ files: [f] })) {
+      setNotice('✓ Pick the chat(s) in WhatsApp — the caption is attached under the picture. Then come back for the next product.');
+      navigator.share({ files: [f], text: captionFor(it) })
         .then(() => { markSent(`c${it.id}`); onShared([it.id], 'whatsapp'); })
-        .catch((e: any) => { if (e?.name === 'AbortError') setNotice(''); else { setNotice('❌ ' + (e?.message || 'Share failed') + ' — using copy instead.'); copyFlow(it); } });
+        .catch((e: any) => { if (e?.name === 'AbortError') setNotice(''); else { setNotice('❌ ' + (e?.message || 'Share failed') + ' — using copy instead.'); copyFlow(it, false); } });
       return;
     }
-    await copyFlow(it);
+    await copyFlow(it, true);
   };
   const copyCaptionFor = (it: BulkItem) => {
     navigator.clipboard.writeText(captionFor(it)).then(() => setCaptionHelp(h => h && h.id === it.id ? { ...h, captionCopied: true } : h));
@@ -5442,7 +5456,7 @@ function BulkWhatsAppModal({ items, onClose, guard, onShared }: { items: BulkIte
                 ? 'Each picture is rebuilt with its name, price, discount and contact printed underneath, so all pictures go in one share.'
                 : mode === 'status'
                 ? 'Attractive full-screen (9:16) images with photo, description, price and contact — download them, or pick "My Status" in the share window.'
-                : 'A Status-style picture (like the Status images) with the caption attached underneath it — not a separate message. Sent one product at a time.'}
+                : 'A Status-style picture with its caption attached underneath. Phone: one tap shares both. Computer: the picture is copied and WhatsApp opens — paste the picture, then paste the caption into its caption box.'}
             </p>
           </div>
 
@@ -5589,17 +5603,17 @@ function BulkWhatsAppModal({ items, onClose, guard, onShared }: { items: BulkIte
                       </div>
                       <button onClick={() => sendWithCaption(it)} disabled={!ready}
                         className="shrink-0 bg-[#25D366] text-white font-black text-[10px] uppercase tracking-widest px-3 py-2.5 rounded-xl hover:bg-[#20bd5a] transition-all disabled:opacity-50">
-                        {ready ? 'Send' : '…'}
+                        {ready ? (isMobileDevice() ? 'Send' : 'Copy & open WhatsApp') : '…'}
                       </button>
                     </div>
                     {ready && !help && (
-                      <button onClick={() => copyFlow(it)} className="mt-1.5 text-[10px] font-black uppercase tracking-widest text-gray-400 hover:text-[#FA5600]">Copy picture + caption instead</button>
+                      <button onClick={() => (isMobileDevice() ? copyFlow(it, false) : quickShare(it))} className="mt-1.5 text-[10px] font-black uppercase tracking-widest text-gray-400 hover:text-[#FA5600]">{isMobileDevice() ? 'Copy picture + caption instead' : 'Quick share window (caption may arrive as a separate message)'}</button>
                     )}
                     {help && (
                       <div className="mt-3 rounded-lg bg-orange-50 border border-orange-100 p-2.5 space-y-2">
                         <p className="text-[11px] font-bold text-gray-700">
                           {help.imageOk
-                            ? <>① <span className="text-green-600">Picture copied.</span> Open the chat in WhatsApp and press <b>Ctrl+V</b> — it opens with a caption box.</>
+                            ? <>① <span className="text-green-600">Picture copied — WhatsApp is opening.</span> Search your Community / chat, click the message box and press <b>Ctrl+V</b>. The picture opens with a caption box.</>
                             : <>① The picture was downloaded (copying wasn't possible here). In WhatsApp attach it from your Downloads folder — it opens with a caption box.</>}
                         </p>
                         <div className="flex items-center gap-2 flex-wrap">
