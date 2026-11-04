@@ -5207,13 +5207,21 @@ const tagsStayConnectedBlock = () =>
   `\n👥 WhatsApp Community: ${TAGS_WA_COMMUNITY_LINK}` +
   `\n📣 WhatsApp Channel: ${TAGS_WA_CHANNEL_LINK}`;
 // Puts a picture on the clipboard (browsers only accept PNG there), so it can be pasted straight into WhatsApp Web / Desktop
-async function copyImageFileToClipboard(file: File) {
+async function copyImageFileToClipboard(file: File, caption?: string) {
   if (!(navigator.clipboard && (window as any).ClipboardItem)) throw new Error('This browser cannot copy pictures');
   const bmp = await createImageBitmap(file);
   const c = document.createElement('canvas');
   c.width = bmp.width; c.height = bmp.height;
   c.getContext('2d')!.drawImage(bmp, 0, 0);
   const png: Blob = await new Promise((ok, bad) => c.toBlob(b => b ? ok(b) : bad(new Error('convert failed')), 'image/png'));
+  // The picture AND the caption text go on the clipboard together in one item. Some WhatsApp versions put the text into the
+  // picture's caption box when you paste; if yours doesn't, the caption stays one click away (② Copy caption).
+  if (caption) {
+    try {
+      await navigator.clipboard.write([new (window as any).ClipboardItem({ 'image/png': png, 'text/plain': new Blob([caption], { type: 'text/plain' }) })]);
+      return;
+    } catch { /* this browser only accepts the picture — fall through */ }
+  }
   await navigator.clipboard.write([new (window as any).ClipboardItem({ 'image/png': png })]);
 }
 
@@ -5381,16 +5389,17 @@ function BulkWhatsAppModal({ items, onClose, guard, onShared }: { items: BulkIte
   const openWhatsAppApp = () => {
     try { const a = document.createElement('a'); a.href = 'whatsapp://'; document.body.appendChild(a); a.click(); a.remove(); } catch { /* app not installed / blocked */ }
   };
-  const copyFlow = async (it: BulkItem, openApp = false) => {
+  const copyFlow = async (it: BulkItem, openApp: boolean | 'channel' = false) => {
     const f = files[it.id]?.status;
     if (!f) { setNotice('❌ This product has no picture that could be loaded.'); return; }
     let imageOk = true;
-    try { await copyImageFileToClipboard(f); }
+    try { await copyImageFileToClipboard(f, captionFor(it)); }
     catch { imageOk = false; downloadFiles([f]); }
     markSent(`c${it.id}`); onShared([it.id], 'whatsapp');
     setCaptionHelp({ id: it.id, imageOk, captionCopied: false });
     setNotice('');
-    if (openApp) openWhatsAppApp();
+    if (openApp === 'channel') window.open(TAGS_WA_CHANNEL_LINK, '_blank');
+    else if (openApp) openWhatsAppApp();
   };
   // Quick share window (computer): fast, but WhatsApp Desktop may deliver the caption as a separate message
   const quickShare = async (it: BulkItem) => {
@@ -5422,7 +5431,7 @@ function BulkWhatsAppModal({ items, onClose, guard, onShared }: { items: BulkIte
   };
   const copyPictureAgain = async (it: BulkItem) => {
     const f = files[it.id]?.status; if (!f) return;
-    try { await copyImageFileToClipboard(f); setCaptionHelp({ id: it.id, imageOk: true, captionCopied: false }); }
+    try { await copyImageFileToClipboard(f, captionFor(it)); setCaptionHelp({ id: it.id, imageOk: true, captionCopied: false }); }
     catch { downloadFiles([f]); setCaptionHelp({ id: it.id, imageOk: false, captionCopied: false }); }
   };
 
@@ -5462,11 +5471,11 @@ function BulkWhatsAppModal({ items, onClose, guard, onShared }: { items: BulkIte
 
           {/* Quick links: your WhatsApp Channel and Community — WhatsApp has no way to post to a Channel automatically, so these open them for you to post the same picture + caption */}
           <div className="flex gap-2 flex-wrap items-center">
-            <span className="text-[10px] font-black uppercase tracking-widest text-gray-500">Post the same way to</span>
+            <span className="text-[10px] font-black uppercase tracking-widest text-gray-500">Just opens (does not post)</span>
             <a href={TAGS_WA_CHANNEL_LINK} target="_blank" rel="noopener noreferrer"
-              className="text-[10px] font-black uppercase tracking-widest px-3 py-1.5 rounded-lg bg-green-50 text-green-700 hover:bg-[#25D366] hover:text-white transition">📣 My WhatsApp Channel ↗</a>
+              className="text-[10px] font-black uppercase tracking-widest px-3 py-1.5 rounded-lg bg-green-50 text-green-700 hover:bg-[#25D366] hover:text-white transition">📣 Open my Channel ↗</a>
             <a href={TAGS_WA_COMMUNITY_LINK} target="_blank" rel="noopener noreferrer"
-              className="text-[10px] font-black uppercase tracking-widest px-3 py-1.5 rounded-lg bg-green-50 text-green-700 hover:bg-[#25D366] hover:text-white transition">👥 My Community ↗</a>
+              className="text-[10px] font-black uppercase tracking-widest px-3 py-1.5 rounded-lg bg-green-50 text-green-700 hover:bg-[#25D366] hover:text-white transition">👥 Open my Community ↗</a>
           </div>
 
           {ready && loadedCount < items.length && (
@@ -5606,6 +5615,9 @@ function BulkWhatsAppModal({ items, onClose, guard, onShared }: { items: BulkIte
                         {ready ? (isMobileDevice() ? 'Send' : 'Copy & open WhatsApp') : '…'}
                       </button>
                     </div>
+                    {ready && (
+                      <button onClick={() => copyFlow(it, 'channel')} className="mt-1.5 mr-3 text-[10px] font-black uppercase tracking-widest text-green-700 hover:text-[#25D366]">📣 Copy &amp; open my Channel</button>
+                    )}
                     {ready && !help && (
                       <button onClick={() => (isMobileDevice() ? copyFlow(it, false) : quickShare(it))} className="mt-1.5 text-[10px] font-black uppercase tracking-widest text-gray-400 hover:text-[#FA5600]">{isMobileDevice() ? 'Copy picture + caption instead' : 'Quick share window (caption may arrive as a separate message)'}</button>
                     )}
@@ -5613,7 +5625,7 @@ function BulkWhatsAppModal({ items, onClose, guard, onShared }: { items: BulkIte
                       <div className="mt-3 rounded-lg bg-orange-50 border border-orange-100 p-2.5 space-y-2">
                         <p className="text-[11px] font-bold text-gray-700">
                           {help.imageOk
-                            ? <>① <span className="text-green-600">Picture copied — WhatsApp is opening.</span> Search your Community / chat, click the message box and press <b>Ctrl+V</b>. The picture opens with a caption box.</>
+                            ? <>① <span className="text-green-600">Picture + caption copied — WhatsApp is opening.</span> Search your Community / chat, click the message box and press <b>Ctrl+V</b>. The picture opens with a caption box — <b>if the box is already filled, just send</b>.</>
                             : <>① The picture was downloaded (copying wasn't possible here). In WhatsApp attach it from your Downloads folder — it opens with a caption box.</>}
                         </p>
                         <div className="flex items-center gap-2 flex-wrap">
@@ -5621,9 +5633,9 @@ function BulkWhatsAppModal({ items, onClose, guard, onShared }: { items: BulkIte
                             className={`text-[10px] font-black uppercase tracking-widest px-3 py-2 rounded-lg transition ${help.captionCopied ? 'bg-green-100 text-green-600' : 'bg-[#FA5600] text-white hover:bg-[#e04d00]'}`}>
                             {help.captionCopied ? '✓ Caption copied' : '② Copy caption'}
                           </button>
-                          <span className="text-[11px] font-bold text-gray-500">then click the <b>caption box</b> under the picture, press <b>Ctrl+V</b> and Send.</span>
+                          <span className="text-[11px] font-bold text-gray-500">only if the caption box is <b>empty</b>: press this, click the caption box, press <b>Ctrl+V</b> and Send.</span>
                         </div>
-                        <p className="text-[10px] font-bold text-gray-500">For your <b>Channel</b>: open it with the 📣 button above, then do the same — paste the picture, paste the caption into its caption box, post.</p>
+                        <p className="text-[10px] font-bold text-gray-500">For your <b>Channel</b>: use <b>📣 Copy &amp; open my Channel</b> — it copies this picture and opens the Channel; then paste the same way and post.</p>
                         <button onClick={() => copyPictureAgain(it)} className="text-[10px] font-black uppercase tracking-widest text-gray-400 hover:text-[#FA5600]">Copy the picture again</button>
                       </div>
                     )}
