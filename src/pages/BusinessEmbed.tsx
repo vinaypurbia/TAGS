@@ -95,10 +95,32 @@ function ProductSearchRow({ item, index, products, onUpdate, onRemove, showCost 
 }) {
   const [search, setSearch] = useState('');
   const [open, setOpen] = useState(false);
-  const filtered = products.filter(p =>
-    p.name?.toLowerCase().includes(search.toLowerCase()) ||
-    p.sku?.toLowerCase().includes(search.toLowerCase())
-  );
+  // The preloaded `products` list is capped (newest 500) and loaded once, so an older or newly added
+  // product can be missing from it. We also ask the server directly (uncapped) as the user types.
+  const [remote, setRemote] = useState<any[]>([]);
+  const [searching, setSearching] = useState(false);
+  const norm = (s: any) => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
+
+  useEffect(() => {
+    const term = search.trim();
+    if (term.length < 2) { setRemote([]); setSearching(false); return; }
+    let cancelled = false;
+    setSearching(true);
+    const t = setTimeout(() => {
+      fetch(`/api/products?adminView=true&search=${encodeURIComponent(term)}`)
+        .then(r => r.json())
+        .then(d => { if (!cancelled) setRemote(Array.isArray(d) ? d : (d.products || [])); })
+        .catch(() => { if (!cancelled) setRemote([]); })
+        .finally(() => { if (!cancelled) setSearching(false); });
+    }, 250);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [search]);
+
+  const q = norm(search);
+  const matches = (p: any) => norm(p.name).includes(q) || norm(p.sku).includes(q);
+  const local = products.filter(matches);
+  const seen = new Set(local.map(p => String(p._id)));
+  const filtered = [...local, ...remote.filter(p => !seen.has(String(p._id)) && matches(p))];
   return (
     <div className="flex gap-2 items-start">
       {/* Thumbnail for the currently selected product — quick visual confirmation */}
@@ -121,7 +143,7 @@ function ProductSearchRow({ item, index, products, onUpdate, onRemove, showCost 
         {open && (
           <div className="absolute z-30 left-0 right-0 bg-white border-2 border-[#FA5600] rounded-xl mt-1 shadow-xl max-h-48 overflow-y-auto">
             {filtered.length === 0
-              ? <p className="px-3 py-2 text-xs text-gray-400 font-bold">No products found</p>
+              ? <p className="px-3 py-2 text-xs text-gray-400 font-bold">{searching ? 'Searching…' : 'No products found'}</p>
               : filtered.map(p => (
                 <button key={p._id} type="button"
                   onMouseDown={() => { onUpdate(index, '__product__', JSON.stringify(p)); setSearch(''); setOpen(false); }}
