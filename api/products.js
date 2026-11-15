@@ -1834,7 +1834,9 @@ export default async function handler(req, res) {
         mongoFilter.subcategory = { $regex: `^${subcategory.trim()}$`, $options: 'i' };
       }
       if (search && search.trim() !== '') {
-        const q = search.trim();
+        // Escape regex characters (so "(" or "+" can't break the query) and let any run of spaces match
+        // any whitespace, so "carrom striker" still finds "Carrom  Striker - 1".
+        const q = search.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+');
         mongoFilter.$or = [
           { name:        { $regex: q, $options: 'i' } },
           { description: { $regex: q, $options: 'i' } },
