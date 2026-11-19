@@ -24,38 +24,55 @@ function invoiceBufferHash(buffer) {
   return crypto.createHash('md5').update(buffer).digest('hex').slice(0, 16);
 }
 
+// Reading a table from a photo is plain extraction, so reasoning is switched down to the minimum.
+// Gemini 3.x Flash: thinkingLevel "minimal" (3 Pro can't go below "low"); Gemini 2.5: thinkingBudget 0.
+// This is what made reads slow enough to time out. If a model rejects the setting we retry without it.
+function thinkingConfigFor(model) {
+  const m = String(model || '').toLowerCase();
+  if (/gemini-3/.test(m)) return { thinkingLevel: /pro/.test(m) ? 'low' : 'minimal' };
+  if (/gemini-2\.5/.test(m)) return { thinkingBudget: 0 };
+  return null;
+}
+
 async function callGemini(parts) {
   if (!GEMINI_API_KEY) throw new Error('GEMINI_API_KEY is not configured on the server');
-  const body = JSON.stringify({
-    contents: [{ parts }],
-    generationConfig: { responseMimeType: 'application/json', temperature: 0.1 },
-  });
 
   // Total time budget for Gemini. The function is limited to 60s (maxDuration), and cropping +
   // uploading item photos happens afterwards, so stop retrying well before that and fail cleanly
   // (a Vercel timeout returns a plain-text page, which the admin panel cannot read as JSON).
-  const deadline = Date.now() + 40000;
+  const deadline = Date.now() + 45000;
+  const PER_ATTEMPT_MS = 24000; // one slow model must not eat the whole budget: after this, try the next model
 
-  let lastErr, hitQuota = false;
+  let lastErr, hitQuota = false, timedOut = false;
   for (const model of GEMINI_MODELS) {
     let waitedFor429 = false;
+    let useThinking = true;
     for (let attempt = 0; attempt < 3; attempt++) {
       const remaining = deadline - Date.now();
-      if (remaining < 4000) throw lastErr || new Error('Google is taking too long to respond. Please try again in a minute.');
+      if (remaining < 4000) break;
+      const generationConfig = { responseMimeType: 'application/json', temperature: 0.1 };
+      const tc = useThinking ? thinkingConfigFor(model) : null;
+      if (tc) generationConfig.thinkingConfig = tc;
+      const body = JSON.stringify({ contents: [{ parts }], generationConfig });
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
       let r, data;
       try {
-        r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, signal: AbortSignal.timeout(remaining) });
+        r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, signal: AbortSignal.timeout(Math.min(remaining, PER_ATTEMPT_MS)) });
         data = await r.json();
       } catch (e) {
-        throw new Error('Google is taking too long to respond. Please try again in a minute.');
+        const isTimeout = e?.name === 'TimeoutError' || e?.name === 'AbortError';
+        console.error(`Gemini ${model} ${isTimeout ? 'timed out' : 'request failed'}:`, e?.message || e);
+        lastErr = new Error(isTimeout ? 'Google is taking too long to respond. Please try again in a minute.' : `Could not reach Google's AI service (${e?.message || 'network error'}).`);
+        timedOut = isTimeout;
+        break; // try the next model
       }
       if (r.ok) {
-        const text = (data.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('');
+        const text = (data.candidates?.[0]?.content?.parts || []).filter(p => !p.thought).map(p => p.text || '').join('');
         try { return JSON.parse(text); }
         catch { throw new Error('Could not read structured items from this invoice — try a clearer photo or scan'); }
       }
       lastErr = new Error(data.error?.message || `Gemini error (${r.status})`);
+      if (r.status === 400 && useThinking && tc && /think/i.test(data.error?.message || '')) { useThinking = false; continue; } // model doesn't accept the thinking setting
       if (r.status === 429) {
         // Free-tier limit. Every retry is another counted request, so don't hammer it: wait once if Google
         // says it clears within seconds, otherwise switch to the next model (each model has its own quota).
@@ -79,7 +96,8 @@ async function callGemini(parts) {
     console.error('Gemini quota error:', lastErr?.message);
     throw new Error("Google's free AI limit has been reached for now. Wait a minute and try again. If it keeps happening today, the daily free limit is used up (it resets around 12:30 pm IST), or you can enable billing on the Google AI project.");
   }
-  throw lastErr;
+  if (timedOut) throw new Error('Google is taking too long to respond. Please try again in a minute.');
+  throw lastErr || new Error('Google is taking too long to respond. Please try again in a minute.');
 }
 
 // For a photo/scan, also asks Gemini to locate each item's own product photo on the page (a tight
