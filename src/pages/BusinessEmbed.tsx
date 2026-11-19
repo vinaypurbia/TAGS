@@ -142,7 +142,20 @@ function ProductSearchRow({ item, index, products, onUpdate, onRemove, showCost,
           className={`w-full border-2 rounded-lg px-2 py-2 text-sm font-bold focus:border-[#FA5600] outline-none ${item.productName && !item.productId ? 'border-amber-400 bg-amber-50' : 'border-gray-200'}`}
         />
         {item.productName && !item.productId && (
-          <p className="text-[10px] font-black text-amber-600 mt-0.5">⚠ Not in your products — search &amp; pick the right product</p>
+          <div className="mt-0.5">
+            <p className="text-[10px] font-black text-amber-600">⚠ Not linked to a product — {item.suggestions?.length ? 'tap the right one below, or search' : 'search & pick the right product'}</p>
+            {item.suggestions?.length > 0 && (
+              <div className="flex flex-wrap gap-1 mt-1">
+                {item.suggestions.map((sg: any) => (
+                  <button key={sg._id} type="button" onClick={() => onUpdate(index, '__product__', JSON.stringify(sg))}
+                    className="flex items-center gap-1 bg-white border border-amber-300 hover:bg-amber-50 rounded-full pl-1 pr-2 py-0.5 text-[11px] font-bold text-gray-700">
+                    {(sg.image || sg.imageUrl) ? <img src={sg.image || sg.imageUrl} alt="" className="w-5 h-5 rounded-full object-cover" /> : <span className="w-5 h-5 rounded-full bg-gray-100 text-[7px] text-gray-400 flex items-center justify-center">IMG</span>}
+                    {sg.name}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         )}
         {open && (
           <div className="absolute z-30 left-0 right-0 bg-white border-2 border-[#FA5600] rounded-xl mt-1 shadow-xl max-h-48 overflow-y-auto">
@@ -1932,21 +1945,37 @@ function PurchaseOrdersModule({ showMsg }: any) {
 
   // Careful matching: a wrong match would add stock to the wrong product, so when in doubt we leave the
   // line unmatched and let you pick it. exact = same name; close = one product's words all appear in the other.
+  const NAME_NOISE = new Set(['bulk', 'video', 'videos', 'boxed', 'wholesale', 'lot', 'pkt', 'cartoon', 'cartoons']);
   const normName = (s: any) => String(s || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
-  const matchProduct = (name: string): { product: any; kind: 'exact' | 'close' } | null => {
-    const n = normName(name);
-    if (!n) return null;
-    const exact = products.filter(p => normName(p.name) === n);
-    if (exact.length === 1) return { product: exact[0], kind: 'exact' };
-    if (exact.length > 1) return null;
-    const nt = n.split(' ');
+  const keyTokens = (s: any) => normName(s).split(' ').filter(t => t && !NAME_NOISE.has(t));
+  const uniqProducts = (arr: any[]) => { const m = new Map<string, any>(); arr.forEach(p => m.set(String(p._id), p)); return Array.from(m.values()); };
+  const matchAgainst = (name: string, pool: any[]): { product: any; kind: 'exact' | 'close' } | null => {
+    const nt = keyTokens(name);
+    if (nt.length === 0) return null;
+    const nk = nt.join(' ');
+    const ex = uniqProducts(pool.filter(p => keyTokens(p.name).join(' ') === nk));
+    if (ex.length === 1) return { product: ex[0], kind: 'exact' };
+    if (ex.length > 1) return null;
     if (nt.length < 2) return null;
-    const close = products.filter(p => {
-      const pt = normName(p.name).split(' ');
+    const close = uniqProducts(pool.filter(p => {
+      const pt = keyTokens(p.name);
       return nt.every(t => pt.includes(t)) || (pt.length >= 2 && pt.every(t => nt.includes(t)));
-    });
+    }));
     return close.length === 1 ? { product: close[0], kind: 'close' } : null;
   };
+  // Products whose names share words with the invoice line, offered as one-tap suggestions
+  const suggestFrom = (name: string, pool: any[]): any[] => {
+    const nt = new Set(keyTokens(name));
+    return uniqProducts(pool).map(p => {
+      const pt = new Set(keyTokens(p.name));
+      let inter = 0; nt.forEach(t => { if (pt.has(t)) inter++; });
+      const union = nt.size + pt.size - inter;
+      return { p, score: union ? inter / union : 0 };
+    }).filter(x => x.score >= 0.34).sort((x, y) => y.score - x.score).slice(0, 4).map(x => x.p);
+  };
+  // The loaded product list only holds the newest 500, so ask the server (which searches ALL products)
+  const searchServer = (term: string): Promise<any[]> =>
+    fetch(`/api/products?adminView=true&search=${encodeURIComponent(term)}`).then(r => r.json()).then(d => Array.isArray(d) ? d : (d.products || [])).catch(() => []);
 
   const handleInvoiceFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files: File[] = Array.from(e.target.files || []);
@@ -1977,19 +2006,38 @@ function PurchaseOrdersModule({ showMsg }: any) {
 
       if (allItems.length === 0) { setImportIsError(true); setImportNote('Nothing was imported. ' + (reasons.join(' | ') || 'No items were found in the selected pictures.')); return; }
 
-      let exact = 0, close = 0, unmatched = 0;
-      const rows = allItems.map((it: any) => {
-        const m = matchProduct(it.name);
-        if (!m) unmatched++; else if (m.kind === 'exact') exact++; else close++;
-        return {
-          productId: m ? String(m.product._id) : '',
-          productName: m ? m.product.name : it.name,
-          sku: m ? (m.product.sku || '') : '',
-          quantity: String(it.quantity ?? 1),
-          costPrice: it.unitCost != null ? String(it.unitCost) : '',
-          imageUrl: m ? (m.product.image || m.product.imageUrl || '') : '',
-        };
-      });
+      setImportNote(`Matching ${allItems.length} items with your products…`);
+      const rows: any[] = allItems.map((it: any) => ({
+        productId: '', productName: it.name, sku: '', imageUrl: '', suggestions: [] as any[],
+        quantity: String(it.quantity ?? 1),
+        costPrice: it.unitCost != null ? String(it.unitCost) : '',
+        _kind: '' as '' | 'exact' | 'close',
+      }));
+      const applyMatch = (r: any, m: { product: any; kind: 'exact' | 'close' }) => {
+        r.productId = String(m.product._id); r.productName = m.product.name; r.sku = m.product.sku || '';
+        r.imageUrl = m.product.image || m.product.imageUrl || ''; r._kind = m.kind; r.suggestions = [];
+      };
+      // Pass 1: the products already loaded in the page
+      rows.forEach((r, i) => { const m = matchAgainst(allItems[i].name, products); if (m) applyMatch(r, m); });
+      // Pass 2: anything still unmatched is searched in the WHOLE catalogue on the server (a few at a time)
+      const pending = rows.map((r, i) => i).filter(i => !rows[i].productId);
+      for (let k = 0; k < pending.length; k += 4) {
+        await Promise.all(pending.slice(k, k + 4).map(async i => {
+          const name = allItems[i].name;
+          let found = await searchServer(name);
+          if (found.length === 0) {
+            const toks = keyTokens(name).filter(t => t.length >= 3).sort((x, y) => y.length - x.length).slice(0, 2);
+            for (const t of toks) found = found.concat(await searchServer(t));
+          }
+          const pool = uniqProducts([...found, ...products]);
+          const m = matchAgainst(name, pool);
+          if (m) applyMatch(rows[i], m); else rows[i].suggestions = suggestFrom(name, pool);
+        }));
+      }
+      const exact = rows.filter(r => r._kind === 'exact').length;
+      const close = rows.filter(r => r._kind === 'close').length;
+      const unmatched = rows.filter(r => !r.productId).length;
+      rows.forEach(r => { delete r._kind; });
 
       // Same product appearing twice (e.g. a page photographed twice, or pages that overlap)
       const seen = new Map<string, number>(); const dupNames: string[] = [];
@@ -2000,7 +2048,7 @@ function PurchaseOrdersModule({ showMsg }: any) {
       setForm(f => ({ ...f, items: [...f.items.filter(i => i.productName || i.costPrice), ...rows] }));
       setImportNote(`Imported ${rows.length} item${rows.length === 1 ? '' : 's'} from ${files.length - failed.length} picture${files.length - failed.length === 1 ? '' : 's'}: ${exact} matched`
         + (close ? `, ${close} matched by similar name (please check the picture)` : '')
-        + (unmatched ? `, ${unmatched} need a product picked (orange rows)` : '')
+        + (unmatched ? `, ${unmatched} not found in your products (orange rows: tap a suggestion or search)` : '')
         + '.'
         + (failed.length ? ` ⚠ Could not read: ${reasons.join(' | ')} — import those again.` : '')
         + (dupNames.length ? ` ⚠ Appears more than once: ${dupNames.slice(0, 4).join(', ')}${dupNames.length > 4 ? '…' : ''} — delete the repeat if a page was uploaded twice.` : '')
