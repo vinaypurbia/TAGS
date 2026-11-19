@@ -1846,9 +1846,45 @@ function PurchaseOrdersModule({ showMsg }: any) {
   const fetchPOs = () => { setLoading(true); fetch('/api/purchase-orders').then(r => r.json()).then(data => setPos(Array.isArray(data) ? data : [])).catch(() => {}).finally(() => setLoading(false)); };
   useEffect(() => {
     fetchPOs();
-    fetch('/api/products?limit=500&adminView=true').then(r => r.json()).then(data => setProducts(Array.isArray(data) ? data : (data.products || []))).catch(() => {});
+    fetch('/api/products?limit=500&adminView=true').then(r => r.json()).then(data => setProducts(Array.isArray(data) ? data : (data.products || []))).catch(() => {}).finally(() => setProductsLoaded(true));
     fetch('/api/business?module=suppliers').then(r => r.json()).then(data => setSuppliers(Array.isArray(data) ? data : [])).catch(() => {});
   }, []);
+
+  // ── Pictures on old POs ─────────────────────────────────────────────────────────────
+  // POs never stored a picture, only the productId. So pictures are looked up from the product itself
+  // every time a PO is shown: nothing in the database is changed, and old POs pick up each product's
+  // current picture automatically (including pictures added after the PO was made).
+  const [productsLoaded, setProductsLoaded] = useState(false);
+  const [extraImages, setExtraImages] = useState<Record<string, string>>({});
+  const triedImageIds = useRef<Set<string>>(new Set());
+  const imageById: Record<string, string> = {};
+  products.forEach(p => { const u = p.image || p.imageUrl; if (u) imageById[String(p._id)] = u; });
+  const imgFor = (item: any): string => item?.imageUrl || (item?.productId ? (imageById[String(item.productId)] || extraImages[String(item.productId)] || '') : '');
+
+  // The product list above is capped (newest 500). For older products used on a PO, fetch just those few directly.
+  useEffect(() => {
+    if (!productsLoaded || pos.length === 0) return;
+    const have = new Set(products.map(p => String(p._id)));
+    const missing = new Set<string>();
+    pos.forEach(po => [...(po.items || []), ...(po.receivedItems || [])].forEach((it: any) => {
+      const id = it?.productId ? String(it.productId) : '';
+      if (id && !it.imageUrl && !have.has(id) && !triedImageIds.current.has(id)) missing.add(id);
+    }));
+    if (missing.size === 0) return;
+    missing.forEach(id => triedImageIds.current.add(id));
+    let cancelled = false;
+    (async () => {
+      const found: Record<string, string> = {};
+      const ids = Array.from(missing);
+      for (let k = 0; k < ids.length; k += 5) {
+        await Promise.all(ids.slice(k, k + 5).map(id =>
+          fetch(`/api/products?id=${encodeURIComponent(id)}`).then(r => r.ok ? r.json() : null).then(p => { const u = p && (p.image || p.imageUrl); if (u) found[id] = u; }).catch(() => {})
+        ));
+      }
+      if (!cancelled && Object.keys(found).length) setExtraImages(prev => ({ ...prev, ...found }));
+    })();
+    return () => { cancelled = true; };
+  }, [pos, products, productsLoaded]);
 
   const addItem = () => setForm(f => ({ ...f, items: [...f.items, { productId: '', productName: '', sku: '', quantity: '1', costPrice: '', imageUrl: '' }] }));
   const removeItem = (i: number) => setForm(f => ({ ...f, items: f.items.filter((_, idx) => idx !== i) }));
@@ -1866,6 +1902,7 @@ function PurchaseOrdersModule({ showMsg }: any) {
   // unit cost per line (transport, packing, GST, discounts and totals are skipped by its prompt).
   const [importing, setImporting] = useState(false);
   const [importNote, setImportNote] = useState('');
+  const [importIsError, setImportIsError] = useState(false);
   const invoiceFileRef = useRef<HTMLInputElement>(null);
 
   // Phone photos are huge and Vercel rejects request bodies over ~4.5 MB, so shrink photos first.
@@ -1915,10 +1952,10 @@ function PurchaseOrdersModule({ showMsg }: any) {
     const files: File[] = Array.from(e.target.files || []);
     e.target.value = '';
     if (files.length === 0) return;
-    setImporting(true); setImportNote('');
+    setImporting(true); setImportNote(''); setImportIsError(false);
     const allItems: any[] = [];
     const failed: string[] = [];
-    let lastError = '';
+    const reasons: string[] = [];
     try {
       // One page at a time: keeps each request small and stays inside the AI's free-tier rate limit.
       for (let n = 0; n < files.length; n++) {
@@ -1934,11 +1971,11 @@ function PurchaseOrdersModule({ showMsg }: any) {
           allItems.push(...(data.items || []));
         } catch (err: any) {
           failed.push(`${n + 1} (${file.name})`);
-          lastError = err?.message || 'failed';
+          reasons.push(`Picture ${n + 1} (${file.name}): ${err?.message || 'failed'}`);
         }
       }
 
-      if (allItems.length === 0) { setImportNote(''); showMsg(lastError || 'No items found in the selected pictures.', 'error'); return; }
+      if (allItems.length === 0) { setImportIsError(true); setImportNote('Nothing was imported. ' + (reasons.join(' | ') || 'No items were found in the selected pictures.')); return; }
 
       let exact = 0, close = 0, unmatched = 0;
       const rows = allItems.map((it: any) => {
@@ -1965,9 +2002,11 @@ function PurchaseOrdersModule({ showMsg }: any) {
         + (close ? `, ${close} matched by similar name (please check the picture)` : '')
         + (unmatched ? `, ${unmatched} need a product picked (orange rows)` : '')
         + '.'
-        + (failed.length ? ` ⚠ Could not read picture ${failed.join(', ')} — ${lastError} Import those again.` : '')
+        + (failed.length ? ` ⚠ Could not read: ${reasons.join(' | ')} — import those again.` : '')
         + (dupNames.length ? ` ⚠ Appears more than once: ${dupNames.slice(0, 4).join(', ')}${dupNames.length > 4 ? '…' : ''} — delete the repeat if a page was uploaded twice.` : '')
         + ' Check each line total against the invoice, delete rows you did not order, then Create PO.');
+    } catch (err: any) {
+      setImportIsError(true); setImportNote('Import failed: ' + (err?.message || 'unknown error'));
     } finally {
       setImporting(false);
     }
@@ -1976,7 +2015,7 @@ function PurchaseOrdersModule({ showMsg }: any) {
   const openEdit = (po: any) => {
     setEditingPO(po);
     const sourceItems = po.status === 'received' ? (po.receivedItems || po.items) : po.items;
-    setForm({ supplierName: po.supplier?.name || '', supplierContact: po.supplier?.contact || '', notes: po.notes || '', expectedDate: po.expectedDate ? new Date(po.expectedDate).toISOString().split('T')[0] : '', items: sourceItems.map((i: any) => ({ productId: i.productId || '', productName: i.productName || '', sku: i.sku || '', quantity: String(i.quantityReceived ?? i.quantity), costPrice: String(i.costPrice), imageUrl: i.imageUrl || '' })) });
+    setForm({ supplierName: po.supplier?.name || '', supplierContact: po.supplier?.contact || '', notes: po.notes || '', expectedDate: po.expectedDate ? new Date(po.expectedDate).toISOString().split('T')[0] : '', items: sourceItems.map((i: any) => ({ productId: i.productId || '', productName: i.productName || '', sku: i.sku || '', quantity: String(i.quantityReceived ?? i.quantity), costPrice: String(i.costPrice), imageUrl: imgFor(i) })) });
     setShowForm(true); setExpandedId(null);
   };
 
@@ -2143,7 +2182,7 @@ function PurchaseOrdersModule({ showMsg }: any) {
                 </>
               )}
             </div>
-            {importNote && <p className="text-xs text-blue-700 font-bold bg-blue-50 rounded-lg px-3 py-2 mb-2">{importNote}</p>}
+            {importNote && <p className={`text-xs font-bold rounded-lg px-3 py-2 mb-2 ${importIsError ? 'text-red-700 bg-red-50 border border-red-200' : 'text-blue-700 bg-blue-50'}`}>{importNote}</p>}
             <div className="space-y-2">
               {form.items.map((item, i) => (
                 <div key={i} className="flex gap-2 items-start">
@@ -2198,7 +2237,7 @@ function PurchaseOrdersModule({ showMsg }: any) {
                     <div className="space-y-1.5">
                       {po.items?.map((item: any, i: number) => (
                         <div key={i} className="flex justify-between items-center bg-gray-50 rounded-lg px-3 py-2">
-                          <div className="flex items-center gap-2"><span className="text-[10px] font-black text-gray-400 w-4 shrink-0">{i + 1}.</span><div><p className="text-xs font-bold text-gray-800">{item.productName}</p><p className="text-[10px] text-gray-400">Cost: {fmt(item.costPrice)} · Qty: {item.quantity}</p></div></div>
+                          <div className="flex items-center gap-2"><span className="text-[10px] font-black text-gray-400 w-4 shrink-0">{i + 1}.</span><div className="w-10 h-10 rounded-lg border border-gray-200 overflow-hidden shrink-0 bg-white flex items-center justify-center">{imgFor(item) ? <img src={imgFor(item)} alt={item.productName} loading="lazy" className="w-full h-full object-cover" /> : <span className="text-[8px] text-gray-300 font-bold">IMG</span>}</div><div><p className="text-xs font-bold text-gray-800">{item.productName}</p><p className="text-[10px] text-gray-400">Cost: {fmt(item.costPrice)} · Qty: {item.quantity}</p></div></div>
                           <p className="font-black text-xs text-[#FA5600]">{fmt(item.totalCost)}</p>
                         </div>
                       ))}
@@ -2346,7 +2385,10 @@ function PurchaseOrdersModule({ showMsg }: any) {
                           <input value={item.productName} onChange={e => updateRecvItem(i, 'productName', e.target.value)}
                             placeholder="Product name..." className="text-sm font-black text-gray-800 bg-transparent border-b border-blue-300 outline-none w-full" />
                         ) : (
-                          <p className="text-sm font-black text-gray-800">{item.productName}</p>
+                          <div className="flex items-center gap-2">
+                            {imgFor(item) && <img src={imgFor(item)} alt={item.productName} className="w-9 h-9 rounded-md border border-gray-200 object-cover shrink-0" />}
+                            <p className="text-sm font-black text-gray-800">{item.productName}</p>
+                          </div>
                         )}
                         {item.isExtra
                           ? <span className="text-[10px] text-blue-500 font-bold">➕ Extra item from supplier</span>
