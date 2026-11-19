@@ -87,11 +87,12 @@ const fmt = (n: number) => `₹${Number(n || 0).toLocaleString('en-IN', { minimu
 const fmtQty = (n: number) => Number(n || 0).toLocaleString('en-IN');
 
 // ─── SHARED: Searchable product row (Sales & PO) ──────────────────────────────
-function ProductSearchRow({ item, index, products, onUpdate, onRemove, showCost }: {
+function ProductSearchRow({ item, index, products, onUpdate, onRemove, showCost, showLineTotal }: {
   item: any; index: number; products: any[];
   onUpdate: (i: number, field: string, value: string) => void;
   onRemove: (i: number) => void;
   showCost?: boolean;
+  showLineTotal?: boolean;
 }) {
   const [search, setSearch] = useState('');
   const [open, setOpen] = useState(false);
@@ -138,8 +139,11 @@ function ProductSearchRow({ item, index, products, onUpdate, onRemove, showCost 
           onFocus={() => setOpen(true)}
           onBlur={() => setTimeout(() => setOpen(false), 150)}
           placeholder="Search product..."
-          className="w-full border-2 border-gray-200 rounded-lg px-2 py-2 text-sm font-bold focus:border-[#FA5600] outline-none"
+          className={`w-full border-2 rounded-lg px-2 py-2 text-sm font-bold focus:border-[#FA5600] outline-none ${item.productName && !item.productId ? 'border-amber-400 bg-amber-50' : 'border-gray-200'}`}
         />
+        {item.productName && !item.productId && (
+          <p className="text-[10px] font-black text-amber-600 mt-0.5">⚠ Not in your products — search &amp; pick the right product</p>
+        )}
         {open && (
           <div className="absolute z-30 left-0 right-0 bg-white border-2 border-[#FA5600] rounded-xl mt-1 shadow-xl max-h-48 overflow-y-auto">
             {filtered.length === 0
@@ -173,6 +177,13 @@ function ProductSearchRow({ item, index, products, onUpdate, onRemove, showCost 
         onChange={e => onUpdate(index, showCost ? 'costPrice' : 'price', e.target.value)}
         placeholder={showCost ? 'Cost ₹' : '₹'}
         className="w-20 border-2 border-gray-200 rounded-lg px-2 py-2 text-sm font-bold focus:border-[#FA5600] outline-none" />
+      {showLineTotal && (
+        <div className="w-24 shrink-0 h-10 flex items-center justify-end mt-0.5">
+          <span className="text-xs sm:text-sm font-black text-gray-800 whitespace-nowrap">
+            = {fmt((parseFloat(item.costPrice || '0') || 0) * (parseInt(item.quantity || '0') || 0))}
+          </span>
+        </div>
+      )}
       <button type="button" onClick={() => onRemove(index)} className="mt-2">
         <X className="w-4 h-4 text-red-400" />
       </button>
@@ -1850,6 +1861,95 @@ function PurchaseOrdersModule({ showMsg }: any) {
     });
   };
 
+  // ── Import items from a supplier invoice (PDF / photo) ─────────────────────────────────
+  // Uses the same AI reader as Products → Invoice Import. It returns ONLY product name, quantity and
+  // unit cost per line (transport, packing, GST, discounts and totals are skipped by its prompt).
+  const [importing, setImporting] = useState(false);
+  const [importNote, setImportNote] = useState('');
+  const invoiceFileRef = useRef<HTMLInputElement>(null);
+
+  // Phone photos are huge and Vercel rejects request bodies over ~4.5 MB, so shrink photos first.
+  const prepareInvoiceFile = (file: File): Promise<{ fileBase64: string; mimeType: string }> => new Promise((resolve, reject) => {
+    if (file.type === 'application/pdf') {
+      if (file.size > 3 * 1024 * 1024) { reject(new Error('This PDF is over 3 MB. Upload a photo/screenshot of the invoice instead, or a smaller PDF.')); return; }
+      const r = new FileReader();
+      r.onload = () => resolve({ fileBase64: String(r.result).split(',')[1], mimeType: 'application/pdf' });
+      r.onerror = () => reject(new Error('Could not read the file'));
+      r.readAsDataURL(file);
+      return;
+    }
+    if (!file.type.startsWith('image/')) { reject(new Error('Upload a PDF or a photo (JPEG/PNG) of the invoice')); return; }
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const scale = Math.min(1, 2000 / Math.max(img.width, img.height));
+      const c = document.createElement('canvas');
+      c.width = Math.round(img.width * scale); c.height = Math.round(img.height * scale);
+      c.getContext('2d')!.drawImage(img, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(url);
+      resolve({ fileBase64: c.toDataURL('image/jpeg', 0.85).split(',')[1], mimeType: 'image/jpeg' });
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Could not open this image')); };
+    img.src = url;
+  });
+
+  // Careful matching: a wrong match would add stock to the wrong product, so when in doubt we leave the
+  // line unmatched and let you pick it. exact = same name; close = one product's words all appear in the other.
+  const normName = (s: any) => String(s || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+  const matchProduct = (name: string): { product: any; kind: 'exact' | 'close' } | null => {
+    const n = normName(name);
+    if (!n) return null;
+    const exact = products.filter(p => normName(p.name) === n);
+    if (exact.length === 1) return { product: exact[0], kind: 'exact' };
+    if (exact.length > 1) return null;
+    const nt = n.split(' ');
+    if (nt.length < 2) return null;
+    const close = products.filter(p => {
+      const pt = normName(p.name).split(' ');
+      return nt.every(t => pt.includes(t)) || (pt.length >= 2 && pt.every(t => nt.includes(t)));
+    });
+    return close.length === 1 ? { product: close[0], kind: 'close' } : null;
+  };
+
+  const handleInvoiceFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setImporting(true); setImportNote('');
+    try {
+      const { fileBase64, mimeType } = await prepareInvoiceFile(file);
+      const res = await fetch('/api/products?invoiceExtract=true', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fileBase64, mimeType }) });
+      const text = await res.text();
+      let data: any;
+      try { data = JSON.parse(text); } catch { throw new Error('The server took too long or sent an error. Please try again.'); }
+      if (!res.ok || !data.success) throw new Error(data.error || 'Could not read the invoice');
+
+      let exact = 0, close = 0, unmatched = 0;
+      const rows = (data.items || []).map((it: any) => {
+        const m = matchProduct(it.name);
+        if (!m) unmatched++; else if (m.kind === 'exact') exact++; else close++;
+        return {
+          productId: m ? String(m.product._id) : '',
+          productName: m ? m.product.name : it.name,
+          sku: m ? (m.product.sku || '') : '',
+          quantity: String(it.quantity ?? 1),
+          costPrice: it.unitCost != null ? String(it.unitCost) : '',
+          imageUrl: m ? (m.product.image || m.product.imageUrl || '') : '',
+        };
+      });
+      // Keep any rows you already filled in; drop only the empty starter row
+      setForm(f => ({ ...f, items: [...f.items.filter(i => i.productName || i.costPrice), ...rows] }));
+      setImportNote(`Imported ${rows.length} item${rows.length === 1 ? '' : 's'}: ${exact} matched`
+        + (close ? `, ${close} matched by similar name (please check the picture)` : '')
+        + (unmatched ? `, ${unmatched} need a product picked (orange rows)` : '')
+        + '. Check each line total against the invoice, delete any rows you did not order, then Create PO.');
+    } catch (err: any) {
+      showMsg(err?.message || 'Invoice import failed.', 'error');
+    } finally {
+      setImporting(false);
+    }
+  };
+
   const openEdit = (po: any) => {
     setEditingPO(po);
     const sourceItems = po.status === 'received' ? (po.receivedItems || po.items) : po.items;
@@ -1858,6 +1958,10 @@ function PurchaseOrdersModule({ showMsg }: any) {
   };
 
   const handleCreate = async () => {
+    const unpicked = form.items.filter(i => i.productName && !i.productId);
+    if (unpicked.length > 0) { showMsg(`${unpicked.length} item${unpicked.length === 1 ? ' is' : 's are'} not linked to a product (orange rows). Search and pick the product for each, or remove the row.`, 'error'); return; }
+    const incomplete = form.items.filter(i => i.productName && (!i.quantity || !i.costPrice));
+    if (incomplete.length > 0) { showMsg(`${incomplete.length} item${incomplete.length === 1 ? ' is' : 's are'} missing a quantity or cost price (e.g. "${incomplete[0].productName}"). Fill it in or remove the row.`, 'error'); return; }
     const validItems = form.items.filter(i => i.productName && i.quantity && i.costPrice);
     if (validItems.length === 0) { showMsg('Add at least one item with cost price.', 'error'); return; }
     const payload = { supplier: { name: form.supplierName, contact: form.supplierContact }, items: validItems.map(i => ({ productId: i.productId, productName: i.productName, sku: i.sku, quantity: parseInt(i.quantity), quantityReceived: parseInt(i.quantity), costPrice: parseFloat(i.costPrice) })), notes: form.notes, expectedDate: form.expectedDate };
@@ -1975,7 +2079,7 @@ function PurchaseOrdersModule({ showMsg }: any) {
     <div className="space-y-4">
       <div className="flex justify-between items-center">
         <p className="text-sm text-gray-500 font-bold">{pos.length} purchase orders</p>
-        <button onClick={() => { setShowForm(!showForm); setEditingPO(null); setForm({ supplierName: '', supplierContact: '', notes: '', expectedDate: '', items: [{ productId: '', productName: '', sku: '', quantity: '1', costPrice: '', imageUrl: '' }] }); }}
+        <button onClick={() => { setShowForm(!showForm); setEditingPO(null); setImportNote(''); setForm({ supplierName: '', supplierContact: '', notes: '', expectedDate: '', items: [{ productId: '', productName: '', sku: '', quantity: '1', costPrice: '', imageUrl: '' }] }); }}
           className="flex items-center gap-2 bg-[#FA5600] text-white font-black text-xs uppercase tracking-widest px-4 py-2 rounded-xl hover:bg-[#E04A00] transition">
           <Plus className="w-4 h-4" /> New PO
         </button>
@@ -2003,7 +2107,20 @@ function PurchaseOrdersModule({ showMsg }: any) {
             </div>
           </div>
           <div>
-            <label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-2">Items *</label>
+            <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
+              <label className="block text-xs font-black uppercase tracking-widest text-gray-500">Items *</label>
+              {!editingPO && (
+                <>
+                  <input ref={invoiceFileRef} type="file" accept="application/pdf,image/*" className="hidden" onChange={handleInvoiceFile} />
+                  <button type="button" disabled={importing} onClick={() => invoiceFileRef.current?.click()}
+                    className="flex items-center gap-1.5 bg-gray-900 text-white text-[11px] font-black uppercase tracking-widest px-3 py-1.5 rounded-lg hover:bg-gray-700 transition disabled:opacity-60 disabled:cursor-wait">
+                    {importing && <span className="w-3 h-3 border-2 border-white/40 border-t-white rounded-full animate-spin" />}
+                    {importing ? 'Reading invoice…' : '📄 Import from Invoice'}
+                  </button>
+                </>
+              )}
+            </div>
+            {importNote && <p className="text-xs text-blue-700 font-bold bg-blue-50 rounded-lg px-3 py-2 mb-2">{importNote}</p>}
             <div className="space-y-2">
               {form.items.map((item, i) => (
                 <div key={i} className="flex gap-2 items-start">
@@ -2011,7 +2128,7 @@ function PurchaseOrdersModule({ showMsg }: any) {
                     <span className="text-xs font-black text-gray-400">{i + 1}.</span>
                   </div>
                   <div className="flex-1">
-                    <ProductSearchRow item={item} index={i} products={products} onUpdate={updateItem} onRemove={removeItem} showCost={true} />
+                    <ProductSearchRow item={item} index={i} products={products} onUpdate={updateItem} onRemove={removeItem} showCost={true} showLineTotal={true} />
                   </div>
                 </div>
               ))}
@@ -2020,6 +2137,7 @@ function PurchaseOrdersModule({ showMsg }: any) {
           </div>
           <div className="bg-orange-50 rounded-xl p-3 text-right">
             <p className="text-xs text-gray-500 font-bold uppercase">Total Cost</p>
+            <p className="text-[11px] text-gray-400 font-bold">{form.items.filter(i => i.productName).length} items · {form.items.reduce((s, i) => s + (i.productName ? (parseInt(i.quantity || '0') || 0) : 0), 0)} units</p>
             <p className="text-2xl font-black text-[#FA5600]">{fmt(form.items.reduce((s, i) => s + (parseFloat(i.costPrice || '0') * parseInt(i.quantity || '1')), 0))}</p>
           </div>
           <div><label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">Notes</label>
