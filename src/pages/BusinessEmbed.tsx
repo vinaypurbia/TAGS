@@ -1912,20 +1912,36 @@ function PurchaseOrdersModule({ showMsg }: any) {
   };
 
   const handleInvoiceFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+    const files: File[] = Array.from(e.target.files || []);
     e.target.value = '';
-    if (!file) return;
+    if (files.length === 0) return;
     setImporting(true); setImportNote('');
+    const allItems: any[] = [];
+    const failed: string[] = [];
+    let lastError = '';
     try {
-      const { fileBase64, mimeType } = await prepareInvoiceFile(file);
-      const res = await fetch('/api/products?invoiceExtract=true', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fileBase64, mimeType }) });
-      const text = await res.text();
-      let data: any;
-      try { data = JSON.parse(text); } catch { throw new Error('The server took too long or sent an error. Please try again.'); }
-      if (!res.ok || !data.success) throw new Error(data.error || 'Could not read the invoice');
+      // One page at a time: keeps each request small and stays inside the AI's free-tier rate limit.
+      for (let n = 0; n < files.length; n++) {
+        const file = files[n];
+        setImportNote(`Reading page ${n + 1} of ${files.length}…`);
+        try {
+          const { fileBase64, mimeType } = await prepareInvoiceFile(file);
+          const res = await fetch('/api/products?invoiceExtract=true', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fileBase64, mimeType }) });
+          const text = await res.text();
+          let data: any;
+          try { data = JSON.parse(text); } catch { throw new Error('The server took too long or sent an error. Please try again.'); }
+          if (!res.ok || !data.success) throw new Error(data.error || 'Could not read the invoice');
+          allItems.push(...(data.items || []));
+        } catch (err: any) {
+          failed.push(`${n + 1} (${file.name})`);
+          lastError = err?.message || 'failed';
+        }
+      }
+
+      if (allItems.length === 0) { setImportNote(''); showMsg(lastError || 'No items found in the selected pictures.', 'error'); return; }
 
       let exact = 0, close = 0, unmatched = 0;
-      const rows = (data.items || []).map((it: any) => {
+      const rows = allItems.map((it: any) => {
         const m = matchProduct(it.name);
         if (!m) unmatched++; else if (m.kind === 'exact') exact++; else close++;
         return {
@@ -1937,14 +1953,21 @@ function PurchaseOrdersModule({ showMsg }: any) {
           imageUrl: m ? (m.product.image || m.product.imageUrl || '') : '',
         };
       });
+
+      // Same product appearing twice (e.g. a page photographed twice, or pages that overlap)
+      const seen = new Map<string, number>(); const dupNames: string[] = [];
+      rows.forEach((r: any) => { const k = normName(r.productName); seen.set(k, (seen.get(k) || 0) + 1); });
+      seen.forEach((c, k) => { if (c > 1) dupNames.push(rows.find((r: any) => normName(r.productName) === k).productName); });
+
       // Keep any rows you already filled in; drop only the empty starter row
       setForm(f => ({ ...f, items: [...f.items.filter(i => i.productName || i.costPrice), ...rows] }));
-      setImportNote(`Imported ${rows.length} item${rows.length === 1 ? '' : 's'}: ${exact} matched`
+      setImportNote(`Imported ${rows.length} item${rows.length === 1 ? '' : 's'} from ${files.length - failed.length} picture${files.length - failed.length === 1 ? '' : 's'}: ${exact} matched`
         + (close ? `, ${close} matched by similar name (please check the picture)` : '')
         + (unmatched ? `, ${unmatched} need a product picked (orange rows)` : '')
-        + '. Check each line total against the invoice, delete any rows you did not order, then Create PO.');
-    } catch (err: any) {
-      showMsg(err?.message || 'Invoice import failed.', 'error');
+        + '.'
+        + (failed.length ? ` ⚠ Could not read picture ${failed.join(', ')} — ${lastError} Import those again.` : '')
+        + (dupNames.length ? ` ⚠ Appears more than once: ${dupNames.slice(0, 4).join(', ')}${dupNames.length > 4 ? '…' : ''} — delete the repeat if a page was uploaded twice.` : '')
+        + ' Check each line total against the invoice, delete rows you did not order, then Create PO.');
     } finally {
       setImporting(false);
     }
@@ -2111,11 +2134,11 @@ function PurchaseOrdersModule({ showMsg }: any) {
               <label className="block text-xs font-black uppercase tracking-widest text-gray-500">Items *</label>
               {!editingPO && (
                 <>
-                  <input ref={invoiceFileRef} type="file" accept="application/pdf,image/*" className="hidden" onChange={handleInvoiceFile} />
+                  <input ref={invoiceFileRef} type="file" accept="application/pdf,image/*" multiple className="hidden" onChange={handleInvoiceFile} />
                   <button type="button" disabled={importing} onClick={() => invoiceFileRef.current?.click()}
                     className="flex items-center gap-1.5 bg-gray-900 text-white text-[11px] font-black uppercase tracking-widest px-3 py-1.5 rounded-lg hover:bg-gray-700 transition disabled:opacity-60 disabled:cursor-wait">
                     {importing && <span className="w-3 h-3 border-2 border-white/40 border-t-white rounded-full animate-spin" />}
-                    {importing ? 'Reading invoice…' : '📄 Import from Invoice'}
+                    {importing ? 'Reading invoice…' : '📄 Import from Invoice (1 or more pictures)'}
                   </button>
                 </>
               )}
