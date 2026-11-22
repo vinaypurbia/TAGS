@@ -1854,6 +1854,11 @@ function PurchaseOrdersModule({ showMsg }: any) {
   const [recvPayMode, setRecvPayMode] = useState('cash');
   const [recvTransportCost, setRecvTransportCost] = useState('');
   const [resolveModal, setResolveModal] = useState<{ open: boolean; po: any | null }>({ open: false, po: null });
+  // Add / correct transport cost on a PO that is already received
+  const [trModal, setTrModal] = useState<{ open: boolean; po: any | null }>({ open: false, po: null });
+  const [trForm, setTrForm] = useState({ amount: '', paymentMode: 'cash', notes: '' });
+  const [trSaving, setTrSaving] = useState(false);
+  const [trError, setTrError] = useState('');
   const [resolveForm, setResolveForm] = useState({ resolveType: 'refund', amount: '', paymentMode: 'cash', notes: '' });
 
   const fetchPOs = () => { setLoading(true); fetch('/api/purchase-orders').then(r => r.json()).then(data => setPos(Array.isArray(data) ? data : [])).catch(() => {}).finally(() => setLoading(false)); };
@@ -2178,6 +2183,26 @@ function PurchaseOrdersModule({ showMsg }: any) {
     }
   };
 
+  const openTransport = (po: any) => {
+    const prev = Number(po.transportCost) || 0;
+    setTrForm({ amount: prev > 0 ? String(prev) : '', paymentMode: po.transportPaymentMode || 'cash', notes: po.transportNotes || '' });
+    setTrError(''); setTrModal({ open: true, po });
+  };
+
+  const submitTransport = async () => {
+    const amt = Number(trForm.amount);
+    if (trForm.amount === '' || !Number.isFinite(amt) || amt < 0) { setTrError('Enter the transport amount.'); return; }
+    setTrSaving(true); setTrError('');
+    try {
+      const res = await fetch('/api/purchase-orders', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: trModal.po._id, action: 'add_transport', transportCost: amt, transportPaymentMode: trForm.paymentMode, transportNotes: trForm.notes }) });
+      const text = await res.text();
+      let data: any; try { data = JSON.parse(text); } catch { data = { error: 'The server sent an unexpected reply. Please refresh and check before trying again.' }; }
+      if (data.success) { showMsg(data.message || 'Transport saved.', 'success'); setTrModal({ open: false, po: null }); fetchPOs(); }
+      else setTrError(data.error || 'Could not save transport.');
+    } catch { setTrError('Network problem — please check your connection and try again.'); }
+    finally { setTrSaving(false); }
+  };
+
   const submitResolve = async () => {
     const data = await handleAction(resolveModal.po._id, 'resolve_shortage', { resolveType: resolveForm.resolveType, amount: Number(resolveForm.amount), paymentMode: resolveForm.paymentMode, notes: resolveForm.notes });
     if (data.success) { setResolveModal({ open: false, po: null }); setResolveForm({ resolveType: 'refund', amount: '', paymentMode: 'cash', notes: '' }); }
@@ -2329,6 +2354,11 @@ function PurchaseOrdersModule({ showMsg }: any) {
                         <Edit2 className="w-3 h-3" /> Fix Items
                       </button>
                     )}
+                    {po.status === 'received' && (
+                      <button onClick={() => openTransport(po)} className="flex items-center gap-1 text-xs text-purple-600 font-bold border border-purple-200 px-3 py-1.5 rounded-full hover:bg-purple-50 transition">
+                        🚚 {Number(po.transportCost) > 0 ? `Transport ${fmt(po.transportCost)} · Change` : 'Add Transport Cost'}
+                      </button>
+                    )}
                     {po.status === 'draft' && (
                       <>
                         <button onClick={() => withDupCheck(`po-order-${po._id}`, 'Mark Ordered', () => handleAction(po._id, 'order'))} className="text-xs bg-blue-500 text-white font-bold px-3 py-1.5 rounded-full hover:bg-blue-600 transition">Mark Ordered</button>
@@ -2359,6 +2389,62 @@ function PurchaseOrdersModule({ showMsg }: any) {
           ))}
         </div>
       )}
+
+      {/* Add / correct transport on a received PO */}
+      {trModal.open && trModal.po && (() => {
+        const lines = (trModal.po.receivedItems || trModal.po.items || []).filter((i: any) => (Number(i.quantityReceived ?? i.quantity) || 0) > 0);
+        const qtyOf = (i: any) => Number(i.quantityReceived ?? i.quantity) || 0;
+        const valOf = (i: any) => qtyOf(i) * (Number(i.costPrice) || 0);
+        const totalVal = lines.reduce((t: number, i: any) => t + valOf(i), 0);
+        const amt = Number(trForm.amount) || 0;
+        const prev = Number(trModal.po.transportCost) || 0;
+        const shareOf = (i: any) => totalVal > 0 ? (valOf(i) / totalVal) * amt : (lines.length ? amt / lines.length : 0);
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4">
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md max-h-[90vh] overflow-y-auto p-6 space-y-4">
+              <div className="flex justify-between items-start">
+                <div>
+                  <h3 className="font-black text-gray-900 text-sm uppercase tracking-widest">{prev > 0 ? 'Change Transport Cost' : 'Add Transport Cost'}</h3>
+                  <p className="text-xs text-gray-400 mt-0.5">{trModal.po.poNumber} · {trModal.po.supplier?.name}</p>
+                </div>
+                <button onClick={() => setTrModal({ open: false, po: null })} className="text-gray-400 hover:text-gray-600 font-black text-xl">✕</button>
+              </div>
+              {prev > 0 && <div className="bg-purple-50 rounded-xl px-3 py-2 text-xs font-bold text-purple-700">Currently recorded: {fmt(prev)}. Enter the correct TOTAL below; only the difference is applied.</div>}
+              <div><label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">Transport / Freight Total (₹)</label>
+                <input type="number" min="0" value={trForm.amount} onChange={e => setTrForm(f => ({ ...f, amount: e.target.value }))} placeholder="0" autoFocus
+                  className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none" /></div>
+              <div className="grid grid-cols-2 gap-3">
+                <div><label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">Paid By</label>
+                  <select value={trForm.paymentMode} onChange={e => setTrForm(f => ({ ...f, paymentMode: e.target.value }))} className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none bg-white">
+                    <option value="cash">Cash</option><option value="upi">UPI</option><option value="bank">Bank Transfer</option><option value="cheque">Cheque</option>
+                  </select></div>
+                <div><label className="block text-xs font-black uppercase tracking-widest text-gray-500 mb-1">Note</label>
+                  <input value={trForm.notes} onChange={e => setTrForm(f => ({ ...f, notes: e.target.value }))} placeholder="e.g. Tempo charges" className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold focus:border-[#FA5600] outline-none" /></div>
+              </div>
+              {amt > 0 && lines.length > 0 && (
+                <div className="bg-gray-50 rounded-xl p-3 space-y-1">
+                  <p className="text-[10px] font-black uppercase tracking-widest text-gray-500">Split by item value → new cost price per unit</p>
+                  {lines.map((i: any, k: number) => {
+                    const q = qtyOf(i); const perUnit = q ? shareOf(i) / q : 0;
+                    return (
+                      <div key={k} className="flex justify-between gap-2 text-xs">
+                        <span className="text-gray-700 font-bold truncate">{i.productName}</span>
+                        <span className="text-gray-500 font-bold whitespace-nowrap">{fmt(Number(i.costPrice) || 0)} + {fmt(perUnit)} = <span className="text-gray-900 font-black">{fmt((Number(i.costPrice) || 0) + perUnit)}</span></span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              <p className="text-[10px] text-gray-400 font-bold">This adds a Transport expense to Cash Flow and raises each product's cost price (landed cost). Stock quantities are not changed; sales already made keep their old cost.</p>
+              {trError && <p className="text-xs font-bold text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{trError}</p>}
+              <div className="flex gap-2">
+                <button onClick={submitTransport} disabled={trSaving} className="flex-1 bg-[#FA5600] text-white font-black text-xs uppercase tracking-widest py-3 rounded-xl hover:bg-[#E04A00] transition disabled:opacity-60">{trSaving ? 'Saving…' : 'Save Transport Cost'}</button>
+                <button onClick={() => setTrModal({ open: false, po: null })} className="px-5 bg-gray-100 text-gray-600 font-black text-xs uppercase rounded-xl hover:bg-gray-200">Cancel</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Advance Payment Modal */}
       {advModal.open && advModal.po && (
