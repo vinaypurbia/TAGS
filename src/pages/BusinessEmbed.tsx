@@ -1859,6 +1859,8 @@ function PurchaseOrdersModule({ showMsg }: any) {
   const [trForm, setTrForm] = useState({ amount: '', paymentMode: 'cash', notes: '' });
   const [trSaving, setTrSaving] = useState(false);
   const [trError, setTrError] = useState('');
+  // Review & update Stock cost prices from a received PO
+  const [rcModal, setRcModal] = useState<{ open: boolean; po: any | null; phase: 'loading' | 'review' | 'applying' | 'done' | 'error'; rows: any[]; selected: Record<string, boolean>; message: string }>({ open: false, po: null, phase: 'loading', rows: [], selected: {}, message: '' });
   const [resolveForm, setResolveForm] = useState({ resolveType: 'refund', amount: '', paymentMode: 'cash', notes: '' });
 
   const fetchPOs = () => { setLoading(true); fetch('/api/purchase-orders').then(r => r.json()).then(data => setPos(Array.isArray(data) ? data : [])).catch(() => {}).finally(() => setLoading(false)); };
@@ -2204,19 +2206,35 @@ function PurchaseOrdersModule({ showMsg }: any) {
   };
 
   // Set Stock cost prices from a received PO's current prices (+ its transport share)
-  const recalcCost = async (po: any) => {
+  const rcCall = async (po: any, dryRun: boolean, productIds?: string[]) => {
     try {
-      const call = (dryRun: boolean) => fetch('/api/purchase-orders', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: po._id, action: 'recalc_cost', dryRun }) }).then(r => r.json());
-      const prev = await call(true);
-      if (!prev.success) { showMsg(prev.error || 'Could not check cost prices.', 'error'); return; }
-      if (!prev.changes?.length) { showMsg(`Stock cost prices already match ${po.poNumber}.` + (prev.skipped?.length ? ` ${prev.skipped.length} skipped (received again on a later PO).` : ''), 'success'); return; }
-      const lines = prev.changes.slice(0, 12).map((c: any) => `• ${c.product}: ₹${c.from.toFixed(2)} → ₹${c.to.toFixed(2)}`).join('\n');
-      const more = prev.changes.length > 12 ? `\n…and ${prev.changes.length - 12} more` : '';
-      const skip = prev.skipped?.length ? `\n\nSkipped (${prev.skipped.length}): received again on a later PO or no stock record.` : '';
-      if (!confirm(`Set Stock cost price from ${po.poNumber}?\n\n${lines}${more}${skip}`)) return;
-      const done = await call(false);
-      if (done.success) { showMsg(done.message || 'Cost prices updated.', 'success'); fetchPOs(); } else showMsg(done.error || 'Failed.', 'error');
-    } catch { showMsg('Network problem — please try again.', 'error'); }
+      const res = await fetch('/api/purchase-orders', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: po._id, action: 'recalc_cost', dryRun, ...(productIds ? { productIds } : {}) }) });
+      const text = await res.text();
+      try { return JSON.parse(text); } catch { return { error: 'The server sent an unexpected reply (it may have timed out). Please try again.' }; }
+    } catch { return { error: 'Network problem — please check your connection and try again.' }; }
+  };
+
+  // Opens the review window straight away, then fills it in
+  const recalcCost = async (po: any) => {
+    setRcModal({ open: true, po, phase: 'loading', rows: [], selected: {}, message: '' });
+    const d = await rcCall(po, true);
+    if (!d.success) {
+      setRcModal(m => ({ ...m, phase: 'error', message: d.error === 'Method not allowed' ? 'The server has not been updated yet. Replace api/purchase-orders.js on GitHub, wait until Vercel shows the deployment as Ready, then refresh this page and try again.' : (d.error || 'Could not check the cost prices.') }));
+      return;
+    }
+    const rows: any[] = d.rows || [];
+    const selected: Record<string, boolean> = {};
+    rows.filter(r => r.status === 'change').forEach(r => { selected[r.productId] = true; });
+    setRcModal(m => ({ ...m, phase: 'review', rows, selected }));
+  };
+
+  const applyRecalc = async () => {
+    const ids = Object.keys(rcModal.selected).filter(k => rcModal.selected[k]);
+    if (ids.length === 0 || !rcModal.po) return;
+    setRcModal(m => ({ ...m, phase: 'applying' }));
+    const d = await rcCall(rcModal.po, false, ids);
+    if (d.success) { setRcModal(m => ({ ...m, phase: 'done', message: d.message || 'Cost prices updated.' })); fetchPOs(); }
+    else setRcModal(m => ({ ...m, phase: 'error', message: d.error || 'The update failed. Nothing further was changed.' }));
   };
 
   const submitResolve = async () => {
@@ -2410,6 +2428,126 @@ function PurchaseOrdersModule({ showMsg }: any) {
           ))}
         </div>
       )}
+
+      {/* Review & update Stock cost prices from a received PO */}
+      {rcModal.open && rcModal.po && (() => {
+        const changeRows = rcModal.rows.filter(r => r.status === 'change');
+        const skippedRows = rcModal.rows.filter(r => r.status === 'skipped');
+        const unchangedCount = rcModal.rows.filter(r => r.status === 'unchanged').length;
+        const pickedCount = changeRows.filter(r => rcModal.selected[r.productId]).length;
+        const allPicked = changeRows.length > 0 && pickedCount === changeRows.length;
+        const busy = rcModal.phase === 'loading' || rcModal.phase === 'applying';
+        const close = () => { if (rcModal.phase !== 'applying') setRcModal(m => ({ ...m, open: false })); };
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-3">
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[92vh] flex flex-col overflow-hidden">
+              <div className="flex justify-between items-start px-5 pt-5 pb-3 border-b border-gray-100">
+                <div>
+                  <h3 className="font-black text-gray-900 text-sm uppercase tracking-widest">Update Stock Cost from PO</h3>
+                  <p className="text-xs text-gray-400 mt-0.5">{rcModal.po.poNumber} · {rcModal.po.supplier?.name || 'No supplier'} · Compare each product's current Stock cost with this PO's price{Number(rcModal.po.transportCost) > 0 ? ` (incl. ${fmt(rcModal.po.transportCost)} transport)` : ''}</p>
+                </div>
+                <button onClick={close} disabled={rcModal.phase === 'applying'} className="text-gray-400 hover:text-gray-600 font-black text-xl disabled:opacity-30">✕</button>
+              </div>
+
+              <div className="flex-1 overflow-y-auto px-5 py-4">
+                {rcModal.phase === 'loading' && (
+                  <div className="py-16 flex flex-col items-center gap-3">
+                    <span className="w-9 h-9 border-4 border-gray-200 border-t-[#FA5600] rounded-full animate-spin" />
+                    <p className="text-sm font-bold text-gray-500">Checking Stock cost prices…</p>
+                  </div>
+                )}
+                {rcModal.phase === 'applying' && (
+                  <div className="py-16 flex flex-col items-center gap-3">
+                    <span className="w-9 h-9 border-4 border-gray-200 border-t-[#FA5600] rounded-full animate-spin" />
+                    <p className="text-sm font-black text-gray-700">Updating {pickedCount} product{pickedCount === 1 ? '' : 's'}…</p>
+                    <p className="text-xs text-gray-400 font-bold">Please don't close this window</p>
+                  </div>
+                )}
+                {rcModal.phase === 'error' && (
+                  <div className="py-6"><p className="text-sm font-bold text-red-700 bg-red-50 border border-red-200 rounded-xl px-4 py-3">{rcModal.message}</p></div>
+                )}
+                {rcModal.phase === 'done' && (
+                  <div className="py-14 flex flex-col items-center gap-2 text-center">
+                    <div className="w-14 h-14 rounded-full bg-green-100 text-green-600 flex items-center justify-center text-3xl">✓</div>
+                    <p className="text-base font-black text-gray-800">Stock cost prices updated</p>
+                    <p className="text-sm text-gray-500 font-bold">{rcModal.message}</p>
+                  </div>
+                )}
+                {rcModal.phase === 'review' && (
+                  <div className="space-y-4">
+                    <div className="flex flex-wrap gap-2 text-xs font-black">
+                      <span className="bg-orange-50 text-[#FA5600] rounded-full px-3 py-1">{changeRows.length} will change</span>
+                      <span className="bg-green-50 text-green-700 rounded-full px-3 py-1">{unchangedCount} already correct</span>
+                      {skippedRows.length > 0 && <span className="bg-gray-100 text-gray-600 rounded-full px-3 py-1">{skippedRows.length} skipped</span>}
+                    </div>
+
+                    {changeRows.length === 0 ? (
+                      <p className="text-sm font-bold text-gray-500 bg-gray-50 rounded-xl px-4 py-6 text-center">Nothing to change: every product's Stock cost already matches this PO.</p>
+                    ) : (
+                      <div className="border border-gray-200 rounded-xl overflow-hidden">
+                        <div className="flex items-center gap-3 bg-gray-50 px-3 py-2 text-[10px] font-black uppercase tracking-widest text-gray-500">
+                          <input type="checkbox" checked={allPicked} onChange={e => { const v = e.target.checked; setRcModal(m => ({ ...m, selected: Object.fromEntries(changeRows.map(r => [r.productId, v])) })); }} className="w-4 h-4 accent-[#FA5600]" />
+                          <span className="flex-1">Product</span>
+                          <span className="w-24 text-right">Current cost</span>
+                          <span className="w-24 text-right">New cost</span>
+                          <span className="w-16 text-right hidden sm:block">Change</span>
+                        </div>
+                        <div className="divide-y divide-gray-100">
+                          {changeRows.map(r => {
+                            const diff = r.to - r.from;
+                            const img = imgFor({ productId: r.productId });
+                            return (
+                              <label key={r.productId} className={`flex items-center gap-3 px-3 py-2 cursor-pointer ${rcModal.selected[r.productId] ? '' : 'opacity-50'}`}>
+                                <input type="checkbox" checked={!!rcModal.selected[r.productId]} onChange={e => { const v = e.target.checked; setRcModal(m => ({ ...m, selected: { ...m.selected, [r.productId]: v } })); }} className="w-4 h-4 accent-[#FA5600] shrink-0" />
+                                <div className="w-10 h-10 rounded-lg border border-gray-200 overflow-hidden bg-white shrink-0 flex items-center justify-center">
+                                  {img ? <img src={img} alt="" className="w-full h-full object-cover" /> : <span className="text-[8px] text-gray-300 font-bold">IMG</span>}
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-xs font-black text-gray-800 truncate">{r.product}</p>
+                                  <p className="text-[10px] text-gray-400 font-bold">PO: {r.qty} × {fmt(r.poCost)}{r.perUnitTransport > 0 ? ` + ${fmt(r.perUnitTransport)} transport` : ''}</p>
+                                </div>
+                                <span className="w-24 text-right text-xs font-bold text-gray-500 line-through decoration-gray-300">{fmt(r.from)}</span>
+                                <span className="w-24 text-right text-sm font-black text-gray-900">{fmt(r.to)}</span>
+                                <span className={`w-16 text-right text-[11px] font-black hidden sm:block ${diff < 0 ? 'text-green-600' : 'text-red-500'}`}>{diff < 0 ? '▼' : '▲'} {fmt(Math.abs(diff))}</span>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
+                    {skippedRows.length > 0 && (
+                      <details className="text-xs">
+                        <summary className="cursor-pointer font-black text-gray-500 uppercase tracking-widest text-[10px]">Skipped products ({skippedRows.length}) — not changed</summary>
+                        <div className="mt-2 space-y-1">
+                          {skippedRows.map(r => <p key={r.productId + r.product} className="text-gray-500 font-bold"><span className="text-gray-800">{r.product}</span> — {r.why}</p>)}
+                        </div>
+                      </details>
+                    )}
+                    <p className="text-[10px] text-gray-400 font-bold">Only the cost price in Stock changes. Stock quantities, this PO and items already sold are not affected. Untick any product you want to leave as it is.</p>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex gap-2 px-5 py-4 border-t border-gray-100 bg-white">
+                {rcModal.phase === 'review' && changeRows.length > 0 ? (
+                  <>
+                    <button onClick={applyRecalc} disabled={pickedCount === 0} className="flex-1 bg-[#FA5600] text-white font-black text-xs uppercase tracking-widest py-3 rounded-xl hover:bg-[#E04A00] transition disabled:opacity-50 disabled:cursor-not-allowed">Confirm & Update {pickedCount} Product{pickedCount === 1 ? '' : 's'}</button>
+                    <button onClick={close} className="px-5 bg-gray-100 text-gray-600 font-black text-xs uppercase rounded-xl hover:bg-gray-200">Cancel</button>
+                  </>
+                ) : rcModal.phase === 'error' ? (
+                  <>
+                    <button onClick={() => recalcCost(rcModal.po)} className="flex-1 bg-gray-900 text-white font-black text-xs uppercase tracking-widest py-3 rounded-xl hover:bg-gray-700">Try Again</button>
+                    <button onClick={close} className="px-5 bg-gray-100 text-gray-600 font-black text-xs uppercase rounded-xl hover:bg-gray-200">Close</button>
+                  </>
+                ) : (
+                  <button onClick={close} disabled={busy} className="flex-1 bg-gray-100 text-gray-600 font-black text-xs uppercase tracking-widest py-3 rounded-xl hover:bg-gray-200 disabled:opacity-40">{rcModal.phase === 'done' ? 'Done' : 'Close'}</button>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Add / correct transport on a received PO */}
       {trModal.open && trModal.po && (() => {
