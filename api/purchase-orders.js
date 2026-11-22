@@ -731,6 +731,7 @@ export default async function handler(req, res) {
       if (action === 'recalc_cost') {
         if (po.status !== 'received') return res.status(400).json({ error: 'Only a received PO can set Stock cost prices.' });
         const dryRun = req.body.dryRun === true;
+        const only = Array.isArray(req.body.productIds) ? new Set(req.body.productIds.map(String)) : null; // apply just these products
         const T = Number(po.transportCost) || 0;
         const lines = (po.receivedItems || po.items || []).map(i => ({ ...i }));
         const qtyOf = i => Number(i.quantityReceived ?? i.quantity) || 0;
@@ -739,30 +740,40 @@ export default async function handler(req, res) {
         const totalValue = receiving.reduce((t, i) => t + valueOf(i), 0);
         const shareOf = i => totalValue > 0 ? (valueOf(i) / totalValue) * T : (receiving.length ? T / receiving.length : 0);
 
-        const changes = [], skipped = [], unchanged = [];
+        const rows = [];
         for (const it of receiving) {
           const q = qtyOf(it);
+          const poCost = Number(it.costPrice) || 0;
           const newShare = shareOf(it);
-          const newLanded = (Number(it.costPrice) || 0) + newShare / q;
+          const newLanded = poCost + newShare / q;
           it.transportCostShare = newShare; it.landedCostPrice = newLanded;
+          const base = { productId: String(it.productId), product: it.productName, qty: q, poCost: Number(poCost.toFixed(2)), perUnitTransport: Number((newShare / q).toFixed(2)), to: Number(newLanded.toFixed(2)) };
           const inv = await inventory.findOne({ productId: it.productId });
-          if (!inv) { skipped.push({ product: it.productName, why: 'no inventory record' }); continue; }
+          if (!inv) { rows.push({ ...base, status: 'skipped', why: 'No stock record for this product' }); continue; }
           const mine = await movements.find({ productId: it.productId, referenceId: id, reason: 'purchase_order' }).sort({ createdAt: -1 }).limit(1).toArray();
           const since = mine[0]?.createdAt || po.receivedDate || po.createdAt;
           const later = since ? await movements.findOne({ productId: it.productId, reason: 'purchase_order', referenceId: { $ne: id }, createdAt: { $gt: new Date(since) } }) : null;
-          if (later) { skipped.push({ product: it.productName, why: 'received again on a later PO, which sets its cost' }); continue; }
           const from = Number(inv.costPrice) || 0;
-          if (Math.abs(from - newLanded) < 0.005) { unchanged.push(it.productName); continue; }
-          changes.push({ productId: it.productId, product: it.productName, from: Number(from.toFixed(2)), to: Number(newLanded.toFixed(2)) });
+          if (later) { rows.push({ ...base, from: Number(from.toFixed(2)), status: 'skipped', why: 'Received again on a later PO, which sets its cost' }); continue; }
+          if (Math.abs(from - newLanded) < 0.005) { rows.push({ ...base, from: Number(from.toFixed(2)), status: 'unchanged' }); continue; }
+          rows.push({ ...base, from: Number(from.toFixed(2)), status: 'change' });
         }
+
+        const changes = rows.filter(r => r.status === 'change');
+        let applied = 0;
         if (!dryRun) {
-          for (const c of changes) await inventory.updateOne({ productId: c.productId }, { $set: { costPrice: c.to, updatedAt: new Date() } });
+          for (const c of changes) {
+            if (only && !only.has(c.productId)) continue;
+            await inventory.updateOne({ productId: c.productId }, { $set: { costPrice: c.to, updatedAt: new Date() } });
+            applied++;
+          }
           // Re-save landed figures on the PO lines so later transport changes start from the right numbers
           await orders.updateOne({ _id: new ObjectId(id) }, { $set: { receivedItems: lines, updatedAt: new Date() } });
         }
         return res.status(200).json({
-          success: true, dryRun, changes, skipped, unchangedCount: unchanged.length,
-          message: dryRun ? `${changes.length} product(s) would change.` : `Cost price in Stock updated for ${changes.length} product(s)` + (skipped.length ? `; ${skipped.length} skipped (${skipped.map(x => x.product).join(', ')}).` : '.'),
+          success: true, dryRun, rows, applied,
+          counts: { change: changes.length, unchanged: rows.filter(r => r.status === 'unchanged').length, skipped: rows.filter(r => r.status === 'skipped').length },
+          message: dryRun ? `${changes.length} product(s) would change.` : `Cost price in Stock updated for ${applied} product(s).`,
         });
       }
 
