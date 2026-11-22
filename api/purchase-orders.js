@@ -723,6 +723,49 @@ export default async function handler(req, res) {
         }
       }
 
+      // ── Set Stock cost prices from this received PO's CURRENT prices (repair / refresh) ──────────
+      // Body: { id, action: 'recalc_cost', dryRun?: true }
+      // cost price = the PO line's price + its share of the PO's transport (the same landed-cost rule as receiving).
+      // A product that was received again on a LATER PO is skipped (that later PO owns its cost).
+      // dryRun:true only reports what would change.
+      if (action === 'recalc_cost') {
+        if (po.status !== 'received') return res.status(400).json({ error: 'Only a received PO can set Stock cost prices.' });
+        const dryRun = req.body.dryRun === true;
+        const T = Number(po.transportCost) || 0;
+        const lines = (po.receivedItems || po.items || []).map(i => ({ ...i }));
+        const qtyOf = i => Number(i.quantityReceived ?? i.quantity) || 0;
+        const valueOf = i => qtyOf(i) * (Number(i.costPrice) || 0);
+        const receiving = lines.filter(i => qtyOf(i) > 0);
+        const totalValue = receiving.reduce((t, i) => t + valueOf(i), 0);
+        const shareOf = i => totalValue > 0 ? (valueOf(i) / totalValue) * T : (receiving.length ? T / receiving.length : 0);
+
+        const changes = [], skipped = [], unchanged = [];
+        for (const it of receiving) {
+          const q = qtyOf(it);
+          const newShare = shareOf(it);
+          const newLanded = (Number(it.costPrice) || 0) + newShare / q;
+          it.transportCostShare = newShare; it.landedCostPrice = newLanded;
+          const inv = await inventory.findOne({ productId: it.productId });
+          if (!inv) { skipped.push({ product: it.productName, why: 'no inventory record' }); continue; }
+          const mine = await movements.find({ productId: it.productId, referenceId: id, reason: 'purchase_order' }).sort({ createdAt: -1 }).limit(1).toArray();
+          const since = mine[0]?.createdAt || po.receivedDate || po.createdAt;
+          const later = since ? await movements.findOne({ productId: it.productId, reason: 'purchase_order', referenceId: { $ne: id }, createdAt: { $gt: new Date(since) } }) : null;
+          if (later) { skipped.push({ product: it.productName, why: 'received again on a later PO, which sets its cost' }); continue; }
+          const from = Number(inv.costPrice) || 0;
+          if (Math.abs(from - newLanded) < 0.005) { unchanged.push(it.productName); continue; }
+          changes.push({ productId: it.productId, product: it.productName, from: Number(from.toFixed(2)), to: Number(newLanded.toFixed(2)) });
+        }
+        if (!dryRun) {
+          for (const c of changes) await inventory.updateOne({ productId: c.productId }, { $set: { costPrice: c.to, updatedAt: new Date() } });
+          // Re-save landed figures on the PO lines so later transport changes start from the right numbers
+          await orders.updateOne({ _id: new ObjectId(id) }, { $set: { receivedItems: lines, updatedAt: new Date() } });
+        }
+        return res.status(200).json({
+          success: true, dryRun, changes, skipped, unchangedCount: unchanged.length,
+          message: dryRun ? `${changes.length} product(s) would change.` : `Cost price in Stock updated for ${changes.length} product(s)` + (skipped.length ? `; ${skipped.length} skipped (${skipped.map(x => x.product).join(', ')}).` : '.'),
+        });
+      }
+
       // ── Edit a received PO — corrects qty/cost and adjusts stock by diff ──
       if (action === 'edit_received') {
         if (po.status !== 'received') {
@@ -794,12 +837,42 @@ export default async function handler(req, res) {
         }));
         const newTotal = enrichedItems.reduce((s, i) => s + i.totalCost, 0);
 
+        // ── Keep each product's cost price (landed cost) in step with the corrected prices ──
+        // Before this, correcting a price here changed the PO but the cost price in Stock stayed at the
+        // old figure. A product is updated only if its Stock cost still equals what THIS PO had set it to;
+        // if a later PO or a manual edit has changed it since, it is left alone and reported.
+        const transportTotal = Number(po.transportCost) || 0;
+        const qtyOfL = i => Number(i.quantityReceived ?? i.quantity) || 0;
+        const valOfL = i => qtyOfL(i) * (Number(i.costPrice) || 0);
+        const shareFnFor = list => {
+          const rec = list.filter(i => qtyOfL(i) > 0);
+          const tv = rec.reduce((t, i) => t + valOfL(i), 0);
+          return i => qtyOfL(i) <= 0 ? 0 : (tv > 0 ? (valOfL(i) / tv) * transportTotal : (rec.length ? transportTotal / rec.length : 0));
+        };
+        const oldShareOf = shareFnFor(oldItems), newShareOf = shareFnFor(enrichedItems);
+        let costUpdated = 0; const costSkipped = [];
+        for (const it of enrichedItems) {
+          const q = qtyOfL(it);
+          it.transportCostShare = newShareOf(it);
+          it.landedCostPrice = (Number(it.costPrice) || 0) + (q > 0 ? it.transportCostShare / q : 0);
+          const oldIt = oldItems.find(i => i.productId === it.productId);
+          if (!oldIt || q <= 0) continue;
+          const oq = qtyOfL(oldIt);
+          const oldLanded = typeof oldIt.landedCostPrice === 'number' ? oldIt.landedCostPrice : (Number(oldIt.costPrice) || 0) + (oq > 0 ? oldShareOf(oldIt) / oq : 0);
+          if (Math.abs(it.landedCostPrice - oldLanded) < 0.005) continue;
+          const invDoc = await inventory.findOne({ productId: it.productId });
+          if (!invDoc) continue;
+          if (Math.abs((Number(invDoc.costPrice) || 0) - oldLanded) > 0.01) { costSkipped.push(it.productName); continue; }
+          await inventory.updateOne({ productId: it.productId }, { $set: { costPrice: it.landedCostPrice, updatedAt: new Date() } });
+          costUpdated++;
+        }
+
         await orders.updateOne(
           { _id: new ObjectId(id) },
           { $set: { receivedItems: enrichedItems, totalAmount: newTotal, updatedAt: new Date() } }
         );
 
-        return res.status(200).json({ success: true, message: 'Received PO updated and stock corrected.' });
+        return res.status(200).json({ success: true, costUpdated, costSkipped, message: 'Received PO updated and stock corrected.' + (costUpdated ? ` Cost price in Stock updated for ${costUpdated} product(s).` : '') + (costSkipped.length ? ` Cost price left unchanged for ${costSkipped.join(', ')} (it was changed after this PO).` : '') });
       }
 
       // ── Return to supplier (partial or full) ──
