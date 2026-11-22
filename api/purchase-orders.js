@@ -627,6 +627,102 @@ export default async function handler(req, res) {
         }
       }
 
+      // ── Add / correct the transport cost of a PO that was ALREADY received ──────────────────────
+      // Body: { id, action: 'add_transport', transportCost, transportPaymentMode, transportNotes }
+      // Does exactly what entering transport at receive time does, after the fact:
+      //   • the PO's transport total is set to the new amount (0 removes it)
+      //   • the cash-flow "Transport/Freight" expense is created (or its amount corrected if one exists)
+      //   • the amount is split across the items by received value and each product's inventory cost price
+      //     (landed cost) is moved by the DIFFERENCE. A product whose cost price has changed since this PO
+      //     (a later PO or a manual edit) is left alone and reported, so nothing newer is overwritten.
+      // Stock quantities are not touched. Sales already made keep the cost they were made at.
+      if (action === 'add_transport') {
+        if (po.status !== 'received') return res.status(400).json({ error: 'Transport can only be added to a received PO. For an ordered PO, enter it when receiving the stock.' });
+        const newTransport = Number(req.body.transportCost);
+        if (!Number.isFinite(newTransport) || newTransport < 0) return res.status(400).json({ error: 'Enter a valid transport amount (0 or more).' });
+
+        // One request at a time per PO (double-click / retry safe)
+        const claim = await orders.updateOne(
+          { _id: new ObjectId(id), transportLockAt: { $not: { $gt: new Date(Date.now() - 60000) } } },
+          { $set: { transportLockAt: new Date() } }
+        );
+        if (claim.modifiedCount !== 1) return res.status(409).json({ error: 'Transport is already being saved for this PO. Wait a moment and refresh.' });
+
+        try {
+          const transportPaymentMode = req.body.transportPaymentMode || 'cash';
+          const transportNotes = req.body.transportNotes || '';
+          const existingCash = await cashFlow.findOne({ referenceId: id, referenceType: 'po_transport' });
+          const prevTransport = Number(existingCash?.amount ?? po.transportCost) || 0;
+          if (Math.abs(newTransport - prevTransport) < 0.005) {
+            return res.status(400).json({ error: `Transport for this PO is already ₹${prevTransport.toFixed(2)} — nothing to change.` });
+          }
+
+          const lines = (po.receivedItems || po.items || []).map(i => ({ ...i }));
+          const qtyOf = i => Number(i.quantityReceived ?? i.quantity) || 0;
+          const valueOf = i => qtyOf(i) * (Number(i.costPrice) || 0);
+          const receiving = lines.filter(i => qtyOf(i) > 0);
+          if (receiving.length === 0) return res.status(400).json({ error: 'This PO has no received items to spread the transport over.' });
+          const totalValue = receiving.reduce((t, i) => t + valueOf(i), 0);
+          // Same rule as receiving: proportional to received value, equal split only if every cost is 0
+          const shareOf = (i, total) => totalValue > 0 ? (valueOf(i) / totalValue) * total : total / receiving.length;
+
+          const updated = [], skipped = [];
+          for (const it of receiving) {
+            const qty = qtyOf(it);
+            const costP = Number(it.costPrice) || 0;
+            const oldShare = typeof it.transportCostShare === 'number' ? it.transportCostShare : shareOf(it, prevTransport);
+            const oldLanded = typeof it.landedCostPrice === 'number' ? it.landedCostPrice : costP + oldShare / qty;
+            const newShare = shareOf(it, newTransport);
+            const newLanded = costP + newShare / qty;
+            it.transportCostShare = newShare;
+            it.landedCostPrice = newLanded;
+
+            const inv = await inventory.findOne({ productId: it.productId });
+            if (!inv) { skipped.push({ product: it.productName, why: 'no inventory record' }); continue; }
+            if (Math.abs((Number(inv.costPrice) || 0) - oldLanded) > 0.01) {
+              skipped.push({ product: it.productName, why: `its cost price (₹${(Number(inv.costPrice) || 0).toFixed(2)}) was changed after this PO by a later PO or a manual edit, so it was left as is` });
+              continue;
+            }
+            await inventory.updateOne({ productId: it.productId }, { $set: { costPrice: newLanded, updatedAt: new Date() } });
+            updated.push({ product: it.productName, perUnitTransport: Number((newShare / qty).toFixed(2)), landedCost: Number(newLanded.toFixed(2)) });
+          }
+
+          // Cash flow: the transporter's bill (kept out of the supplier ledger, same as at receive time)
+          if (newTransport === 0) {
+            if (existingCash) await cashFlow.deleteOne({ _id: existingCash._id });
+          } else if (existingCash) {
+            await cashFlow.updateOne({ _id: existingCash._id }, { $set: {
+              amount: newTransport,
+              paymentMode: req.body.transportPaymentMode || existingCash.paymentMode || 'cash',
+              description: `Transport/Freight — PO ${po.poNumber} — ${po.supplier?.name || 'Supplier'}${transportNotes ? ` — ${transportNotes}` : ''}`,
+              updatedAt: new Date(),
+            } });
+          } else {
+            const when = req.body.date ? new Date(req.body.date) : new Date();
+            await cashFlow.insertOne({
+              type: 'expense', category: 'transport_cost', amount: newTransport,
+              paymentMode: transportPaymentMode,
+              description: `Transport/Freight (added after receiving) — PO ${po.poNumber} — ${po.supplier?.name || 'Supplier'}${transportNotes ? ` — ${transportNotes}` : ''}`,
+              referenceId: id, referenceType: 'po_transport',
+              poNumber: po.poNumber, supplierName: po.supplier?.name || '',
+              date: isNaN(when.getTime()) ? new Date() : when, createdAt: new Date(),
+            });
+          }
+
+          await orders.updateOne({ _id: new ObjectId(id) }, {
+            $set: { receivedItems: lines, transportCost: newTransport, transportPaymentMode, transportNotes, updatedAt: new Date() },
+            $push: { transportHistory: { date: new Date(), from: prevTransport, to: newTransport, notes: transportNotes, productsUpdated: updated.length, productsSkipped: skipped.length } },
+          });
+
+          return res.status(200).json({
+            success: true, updated, skipped,
+            message: `Transport ${prevTransport > 0 ? 'changed from ₹' + prevTransport.toFixed(2) + ' to' : 'of'} ₹${newTransport.toFixed(2)} saved for ${po.poNumber}. Cost price updated for ${updated.length} product(s)` + (skipped.length ? `; ${skipped.length} left unchanged (${skipped.map(x => x.product).join(', ')}) — ${skipped[0].why}.` : '.') + ' Sales made earlier keep the cost they were made at.',
+          });
+        } finally {
+          await orders.updateOne({ _id: new ObjectId(id) }, { $unset: { transportLockAt: '' } });
+        }
+      }
+
       // ── Edit a received PO — corrects qty/cost and adjusts stock by diff ──
       if (action === 'edit_received') {
         if (po.status !== 'received') {
