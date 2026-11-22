@@ -2203,6 +2203,22 @@ function PurchaseOrdersModule({ showMsg }: any) {
     finally { setTrSaving(false); }
   };
 
+  // Set Stock cost prices from a received PO's current prices (+ its transport share)
+  const recalcCost = async (po: any) => {
+    try {
+      const call = (dryRun: boolean) => fetch('/api/purchase-orders', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: po._id, action: 'recalc_cost', dryRun }) }).then(r => r.json());
+      const prev = await call(true);
+      if (!prev.success) { showMsg(prev.error || 'Could not check cost prices.', 'error'); return; }
+      if (!prev.changes?.length) { showMsg(`Stock cost prices already match ${po.poNumber}.` + (prev.skipped?.length ? ` ${prev.skipped.length} skipped (received again on a later PO).` : ''), 'success'); return; }
+      const lines = prev.changes.slice(0, 12).map((c: any) => `• ${c.product}: ₹${c.from.toFixed(2)} → ₹${c.to.toFixed(2)}`).join('\n');
+      const more = prev.changes.length > 12 ? `\n…and ${prev.changes.length - 12} more` : '';
+      const skip = prev.skipped?.length ? `\n\nSkipped (${prev.skipped.length}): received again on a later PO or no stock record.` : '';
+      if (!confirm(`Set Stock cost price from ${po.poNumber}?\n\n${lines}${more}${skip}`)) return;
+      const done = await call(false);
+      if (done.success) { showMsg(done.message || 'Cost prices updated.', 'success'); fetchPOs(); } else showMsg(done.error || 'Failed.', 'error');
+    } catch { showMsg('Network problem — please try again.', 'error'); }
+  };
+
   const submitResolve = async () => {
     const data = await handleAction(resolveModal.po._id, 'resolve_shortage', { resolveType: resolveForm.resolveType, amount: Number(resolveForm.amount), paymentMode: resolveForm.paymentMode, notes: resolveForm.notes });
     if (data.success) { setResolveModal({ open: false, po: null }); setResolveForm({ resolveType: 'refund', amount: '', paymentMode: 'cash', notes: '' }); }
@@ -2357,6 +2373,11 @@ function PurchaseOrdersModule({ showMsg }: any) {
                     {po.status === 'received' && (
                       <button onClick={() => openTransport(po)} className="flex items-center gap-1 text-xs text-purple-600 font-bold border border-purple-200 px-3 py-1.5 rounded-full hover:bg-purple-50 transition">
                         🚚 {Number(po.transportCost) > 0 ? `Transport ${fmt(po.transportCost)} · Change` : 'Add Transport Cost'}
+                      </button>
+                    )}
+                    {po.status === 'received' && (
+                      <button onClick={() => recalcCost(po)} title="Set each product's cost price in Stock from this PO's prices (plus its transport share)" className="flex items-center gap-1 text-xs text-green-700 font-bold border border-green-200 px-3 py-1.5 rounded-full hover:bg-green-50 transition">
+                        ↻ Update Stock Cost from this PO
                       </button>
                     )}
                     {po.status === 'draft' && (
