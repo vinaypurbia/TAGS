@@ -103,22 +103,33 @@ async function callGemini(parts) {
 // For a photo/scan, also asks Gemini to locate each item's own product photo on the page (a tight
 // bounding box, 0–1000 normalized) so we can crop the REAL photo out — an exact match, not a guess.
 // PDFs have no pixels to crop from, so that part is skipped there.
-async function extractInvoiceItems(buffer, mimeType) {
+async function extractInvoiceItems(buffer, mimeType, tx = null) {
   const isImage = mimeType.startsWith('image/');
+  const withClass = !!(tx && tx.mains);
   const prompt = `This is a supplier invoice for a toy/gadget shop. Read every line item and return ONLY a JSON array ` +
     `(no markdown, no code fences, no prose) where each element looks like:\n` +
     `{\n` +
     `  "name": string,\n` +
     `  "quantity": number | null,\n` +
     `  "unitCost": number | null,\n` +
-    `  "description": string\n` +
+    `  "description": string` +
+    (withClass ? `,\n  "category": string,\n  "subcategory": string,\n  "newCategory": object | null,\n  "ageGroups": string[]` : '') + `\n` +
     `}\n\n` +
     `Rules:\n` +
-    `- name: the product name as written, cleaned up (title case, no SKU/item codes). Leave out wholesaler words that are not part of the product's name, such as BULK, VIDEO, CARTOON, BOXED, WHOLESALE, and remove brackets that only held those words\n` +
+    `- name: the product name as written, cleaned up (title case, no SKU/item codes). Leave out wholesaler words that are not part of the product's name, such as BULK, VIDEO, CARTOON, BOXED, WHOLESALE\n` +
     `- quantity: the ordered quantity as a plain number\n` +
     `- unitCost: the per-unit cost in the invoice's currency, as a plain number (no symbol, no commas)\n` +
     `- Skip subtotal, tax, discount, shipping and total lines — only real product line items\n` +
     `- If a field is illegible or missing, use null for that field rather than guessing\n` +
+    (withClass
+      ? `\nThe shop's categories (main category: sub-categories) are:\n${taxonomyPromptText(tx)}\n` +
+        `- category: the best MAIN category for the item, copied EXACTLY as written in the list above, or "" if none fits.\n` +
+        `- subcategory: the best sub-category of THAT main category, copied EXACTLY, or "" if none of its sub-categories fits.\n` +
+        `- newCategory: null when category and subcategory were both found in the list. If no main category fits, or the right sub-category does not exist, ` +
+        `return {"category": "<existing main category if one fits, otherwise a short new main category name>", "subcategory": "<short new sub-category name>"}. ` +
+        `Never propose a new category when an existing one fits; use plain shop-style names such as "RC Toys" or "Musical Toys".\n` +
+        `- ${AGE_RULES_TEXT}\n`
+      : '') +
     `Return only the JSON array, nothing else.`;
 
   const items = await callGemini([
@@ -129,12 +140,17 @@ async function extractInvoiceItems(buffer, mimeType) {
 
   return items
     .filter(it => it && typeof it.name === 'string' && it.name.trim())
-    .map(it => ({
-      name: cleanInvoiceName(it.name),
-      quantity: Number.isFinite(it.quantity) ? it.quantity : null,
-      unitCost: Number.isFinite(it.unitCost) ? it.unitCost : null,
-      description: typeof it.description === 'string' ? it.description.trim() : '',
-    }));
+    .map(it => {
+      const base = {
+        name: cleanInvoiceName(it.name),
+        quantity: Number.isFinite(it.quantity) ? it.quantity : null,
+        unitCost: Number.isFinite(it.unitCost) ? it.unitCost : null,
+        description: typeof it.description === 'string' ? it.description.trim() : '',
+      };
+      if (!withClass) return base;
+      const n = normalizeClassification(it, tx);
+      return { ...base, category: n.category, subcategory: n.subcategory, newCategory: n.newCategory, ageGroups: n.ageGroups };
+    });
 }
 
 // Wholesaler words on the invoice that are not part of the product's real name (e.g. "SMALL TRAIN (VIDEO)(BULK)").
@@ -1111,6 +1127,136 @@ function cleanCloudinaryUrl(url) {
   }
 }
 
+// ── Categories + age groups (AI) ──────────────────────────────────────────────────────────────
+// Age bands a toy can be filed under (a product can have 1–3 of them: product.ageGroups = ['3-5','6-8']).
+const AGE_GROUPS = [
+  { key: '0-2', label: '0–2 years' }, { key: '3-5', label: '3–5 years' }, { key: '6-8', label: '6–8 years' },
+  { key: '9-12', label: '9–12 years' }, { key: '13+', label: '13+ years' },
+];
+const AGE_KEYS = AGE_GROUPS.map(a => a.key);
+
+// The shop's real category list (main categories + their sub-categories) from the `categories` collection
+async function loadTaxonomy(db) {
+  if (!db) db = (await getClient()).db('tagsdb');
+  const all = await db.collection('categories').find({}).sort({ createdAt: 1 }).toArray();
+  const mains = all.filter(c => !c.parentId && c.name).map(c => ({ id: String(c._id), name: String(c.name).trim(), subs: [] }));
+  const byId = new Map(mains.map(m => [m.id, m]));
+  all.filter(c => c.parentId && c.name).forEach(c => { const m = byId.get(String(c.parentId)); if (m) m.subs.push({ id: String(c._id), name: String(c.name).trim() }); });
+  return { mains };
+}
+
+function taxonomyPromptText(tx) {
+  if (!tx || !tx.mains.length) return '(no categories exist yet)';
+  return tx.mains.map(m => `- ${m.name}: ${m.subs.length ? m.subs.map(x => x.name).join(' | ') : '(no sub-categories)'}`).join('\n');
+}
+
+const AGE_RULES_TEXT =
+  `ageGroups: choose one to three bands (from "0-2", "3-5", "6-8", "9-12", "13+") that this toy is genuinely designed for, as an array of those exact strings. Guide:\n` +
+  `  "0-2": babies/toddlers — rattles, soft toys, teethers, stacking/push-pull toys, big chunky pieces, NO small parts.\n` +
+  `  "3-5": pre-school — simple pretend play, kitchen/doctor sets, basic blocks, ride-ons, big puzzles, simple RC cars.\n` +
+  `  "6-8": action figures, RC cars/trucks, simple board games, science/art kits, medium building sets, toy guns/blasters.\n` +
+  `  "9-12": larger building sets, strategy games, drones, advanced RC, craft/electronic kits.\n` +
+  `  "13+": hobby-grade RC, complex models, advanced electronics, games for teens/adults.\n` +
+  `  Choose neighbouring bands only. Everyday items with no real age limit (bubbles, balloons, sticker books) may take "3-5","6-8","9-12". Anything with small parts, projectiles or batteries that can be swallowed must NOT include "0-2". If you truly cannot tell, return an empty array [] rather than guessing.`;
+
+// Turns the AI's raw answer into values that are guaranteed to be real: category/sub-category must exist in the shop's list
+// (names are corrected to the exact spelling); anything that doesn't exist is reported as `newCategory` for the admin to approve.
+function normalizeClassification(o, tx) {
+  const clean = v => String(v ?? '').replace(/\s+/g, ' ').trim().slice(0, 60);
+  const lc = v => clean(v).toLowerCase();
+  const findMain = n => tx.mains.find(m => m.name.toLowerCase() === lc(n));
+  const out = { category: '', subcategory: '', newCategory: null, ageGroups: [] };
+  o = o && typeof o === 'object' ? o : {};
+
+  const main = findMain(o.category);
+  if (main) {
+    out.category = main.name;
+    const sub = main.subs.find(x => x.name.toLowerCase() === lc(o.subcategory));
+    if (sub) out.subcategory = sub.name;
+  }
+  const nc = o.newCategory && typeof o.newCategory === 'object' ? o.newCategory : null;
+  if (nc) {
+    let nCat = clean(nc.category); const nSub = clean(nc.subcategory);
+    const m2 = findMain(nCat);
+    if (m2) nCat = m2.name;
+    const existingSub = m2 && nSub ? m2.subs.find(x => x.name.toLowerCase() === nSub.toLowerCase()) : null;
+    if (nCat) {
+      if (m2 && (!nSub || existingSub)) {            // it already exists after all → a normal pick
+        out.category = m2.name; if (existingSub) out.subcategory = existingSub.name;
+      } else {
+        out.newCategory = { category: nCat, subcategory: nSub, categoryIsNew: !m2 };
+        if (m2) { out.category = m2.name; out.subcategory = ''; } else { out.category = ''; out.subcategory = ''; }
+      }
+    }
+  }
+  const ages = Array.isArray(o.ageGroups) ? o.ageGroups : (typeof o.ageGroups === 'string' ? o.ageGroups.split(/[,\s]+/) : []);
+  out.ageGroups = AGE_KEYS.filter(k => ages.map(a => String(a).trim()).includes(k)).slice(0, 3);
+  return out;
+}
+
+// Classifies a batch of existing products (name + current category + picture) for the mass tidy-up tool
+async function classifyProducts(items, tasks, tx) {
+  const parts = [];
+  for (const [i, it] of items.entries()) {
+    let img = null;
+    if (it.imageUrl) { try { img = await loadCloudinaryImagePart(it.imageUrl); } catch { img = null; } }
+    parts.push({ text: `ITEM ${i + 1} — name: "${it.name}"` + (tasks.category ? `, current category: "${it.category || '(none)'}"${it.subcategory ? ` › "${it.subcategory}"` : ''}` : '') + (img ? ' — its picture:' : ' — (no picture)') });
+    if (img) parts.push(img);
+  }
+  parts.push({ text:
+    `You organise the catalogue of an Indian toy & gadget shop. For EACH item above (use its picture when there is one) decide:\n` +
+    (tasks.category
+      ? `\nCATEGORY. The shop's categories (main category: sub-categories) are:\n${taxonomyPromptText(tx)}\n` +
+        `- "category": the best MAIN category, copied EXACTLY as written above, or "" if none fits.\n` +
+        `- "subcategory": the best sub-category of THAT main category, copied EXACTLY, or "" if none of its sub-categories fits.\n` +
+        `- Keep the item's current category when it is already correct. Change it only when it is clearly wrong or empty.\n` +
+        `- "newCategory": null when the category and sub-category were both found in the list. If NO main category fits, or the right sub-category does not exist, ` +
+        `return {"category": "<existing main category if one fits, otherwise a short new main category name>", "subcategory": "<short new sub-category name>"} describing what should be created. ` +
+        `Never invent a new category when an existing one fits; use plain shop-style names such as "RC Toys" or "Musical Toys".\n`
+      : '') +
+    (tasks.age ? `\nAGE GROUP. ${AGE_RULES_TEXT}\n` : '') +
+    `\nReturn ONLY a JSON array with EXACTLY ${items.length} elements in the SAME ORDER as the items: [{"item": <item number>` +
+    (tasks.category ? `, "category": string, "subcategory": string, "newCategory": object|null` : '') + (tasks.age ? `, "ageGroups": string[]` : '') + `}]` });
+
+  const out = await callGemini(parts);
+  let arr = Array.isArray(out) ? out : (out && typeof out === 'object' ? (Object.values(out).find(Array.isArray) || null) : null);
+  if (!arr) throw new Error('The AI answered in a format that could not be read. Please try again.');
+  const map = {};
+  items.forEach((it, idx) => {
+    const hit = arr.find(o => o && typeof o === 'object' && Number(o.item) === idx + 1) || (arr.length === items.length ? arr[idx] : null);
+    if (!hit) return;
+    const n = normalizeClassification(hit, tx);
+    map[it.id] = {
+      ...(tasks.category ? { category: n.category, subcategory: n.subcategory, newCategory: n.newCategory } : {}),
+      ...(tasks.age ? { ageGroups: n.ageGroups } : {}),
+    };
+  });
+  return map;
+}
+
+// Makes sure "Main › Sub" exists in the categories collection (creating what's missing); returns the exact names to use
+async function ensureCategoryPair(catCol, category, subcategory) {
+  const lc = v => String(v || '').trim().toLowerCase();
+  const catName = String(category || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+  const subName = String(subcategory || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+  if (!catName) return { category: '', subcategory: '', created: [] };
+  const created = [];
+  const mains = await catCol.find({ $or: [{ parentId: null }, { parentId: { $exists: false } }] }).toArray();
+  let main = mains.find(m => lc(m.name) === lc(catName));
+  if (!main) {
+    const r = await catCol.insertOne({ name: catName, parentId: null, createdAt: new Date() });
+    main = { _id: r.insertedId, name: catName }; created.push(catName);
+  }
+  let finalSub = '';
+  if (subName) {
+    const subs = await catCol.find({ parentId: String(main._id) }).toArray();
+    let sub = subs.find(x => lc(x.name) === lc(subName));
+    if (!sub) { await catCol.insertOne({ name: subName, parentId: String(main._id), createdAt: new Date() }); created.push(`${main.name} › ${subName}`); sub = { name: subName }; }
+    finalSub = sub.name;
+  }
+  return { category: main.name, subcategory: finalSub, created };
+}
+
 export default async function handler(req, res) {
 
     // ── Full database backup — POST /api/products?backup=true  (header: x-backup-key) ──────────
@@ -1199,7 +1345,8 @@ export default async function handler(req, res) {
         return res.status(400).json({ error: 'Upload a PDF or a photo/scan (JPEG, PNG) of the invoice' });
       }
       try {
-        const items = await extractInvoiceItems(buffer, mt);
+        const tx = await loadTaxonomy().catch(() => null); // the shop's own category list; if it can't be read, import still works without categories
+        const items = await extractInvoiceItems(buffer, mt, tx);
         if (items.length === 0) return res.status(422).json({ error: 'No line items found in this invoice. Try a clearer scan.' });
         // Pictures are added by the admin (upload / supplier site / link) — Gemini is NOT used to crop photos.
         const withPhotos = items.map(it => ({ ...it, imageUrl: '', imageSource: '' }));
@@ -1359,6 +1506,67 @@ export default async function handler(req, res) {
     const purchaseOrders = db.collection('purchaseOrders');
     const salesCol = db.collection('sales');
     const shareLog = db.collection('shareLog');
+
+    // ── Tidy-up tool (AI) — POST /api/products?classifyProducts=true  { items: [{ id, name, category?, subcategory?, imageUrl? }], tasks?: { category, age } }
+    // → { results: { [id]: { category, subcategory, newCategory, ageGroups } } }   (max 8 products per call). Nothing is saved here.
+    if (req.method === 'POST' && req.query.classifyProducts === 'true') {
+      const list = (Array.isArray(req.body?.items) ? req.body.items : []).filter(i => i && i.id && i.name).slice(0, 8)
+        .map(i => ({ id: String(i.id), name: String(i.name).slice(0, 200), category: String(i.category || ''), subcategory: String(i.subcategory || ''), imageUrl: i.imageUrl ? String(i.imageUrl) : '' }));
+      if (list.length === 0) return res.status(400).json({ error: 'items are required' });
+      const tasks = { category: req.body?.tasks?.category !== false, age: req.body?.tasks?.age !== false };
+      if (!tasks.category && !tasks.age) return res.status(400).json({ error: 'Choose at least one thing to check' });
+      try {
+        const tx = await loadTaxonomy(db);
+        if (tasks.category && tx.mains.length === 0) return res.status(400).json({ error: 'There are no categories yet. Add your categories in the CATS tab first.' });
+        return res.status(200).json({ success: true, results: await classifyProducts(list, tasks, tx) });
+      } catch (error) {
+        console.error('Classify error:', error);
+        return res.status(500).json({ error: error.message || 'Could not check these products' });
+      }
+    }
+
+    // ── Tidy-up tool — POST /api/products?applyClassification=true
+    //    { updates: [{ id, category?, subcategory?, ageGroups?, ensure?: boolean }] }
+    // ensure:true = create the category/sub-category first if it does not exist yet (the admin approved a "new category").
+    // Without ensure, a category that is not in the shop's list is ignored, so a typo can never create a stray category.
+    if (req.method === 'POST' && req.query.applyClassification === 'true') {
+      const updates = (Array.isArray(req.body?.updates) ? req.body.updates : []).filter(u => u && u.id).slice(0, 400);
+      if (updates.length === 0) return res.status(400).json({ error: 'updates are required' });
+      try {
+        const catCol = db.collection('categories');
+        const tx = await loadTaxonomy(db);
+        const lc = v => String(v || '').trim().toLowerCase();
+        const createdAll = [];
+        const ops = [];
+        for (const u of updates) {
+          if (!ObjectId.isValid(String(u.id))) continue;
+          const set = {};
+          if (typeof u.category === 'string' && u.category.trim()) {
+            if (u.ensure === true) {
+              const r = await ensureCategoryPair(catCol, u.category, u.subcategory);
+              set.category = r.category; set.subcategory = r.subcategory; createdAll.push(...r.created);
+            } else {
+              const main = tx.mains.find(m => lc(m.name) === lc(u.category));
+              if (main) {
+                set.category = main.name;
+                const sub = main.subs.find(x => lc(x.name) === lc(u.subcategory));
+                set.subcategory = sub ? sub.name : '';
+              }
+            }
+          }
+          if (Array.isArray(u.ageGroups)) set.ageGroups = AGE_KEYS.filter(k => u.ageGroups.map(String).includes(k)).slice(0, 3);
+          if (Object.keys(set).length === 0) continue;
+          set.updatedAt = new Date();
+          ops.push({ updateOne: { filter: { _id: new ObjectId(String(u.id)) }, update: { $set: set } } });
+        }
+        if (ops.length === 0) return res.status(200).json({ success: true, modified: 0, created: [] });
+        const r = await collection.bulkWrite(ops, { ordered: false });
+        return res.status(200).json({ success: true, modified: r.modifiedCount, matched: r.matchedCount, created: Array.from(new Set(createdAll)) });
+      } catch (error) {
+        console.error('Apply classification error:', error);
+        return res.status(500).json({ error: error.message || 'Could not save the changes' });
+      }
+    }
 
     // ── Broadcast share history (WhatsApp / Telegram / Instagram / Facebook) ────
     // GET  /api/products?shareLog=true  → { history: { [productId]: { lastAt, channel, count } } }
@@ -1660,7 +1868,7 @@ export default async function handler(req, res) {
       const {
         id, withStock, syncMeta, pushAll,
         page, limit, category, subcategory, search,
-        adminView
+        adminView, ageGroup
       } = req.query;
 
       // ── Special ops ───────────────────────────────────────────
@@ -1850,6 +2058,11 @@ export default async function handler(req, res) {
       if (category && category !== '') mongoFilter.category = category;
       if (subcategory && subcategory.trim() !== '') {
         mongoFilter.subcategory = { $regex: `^${subcategory.trim()}$`, $options: 'i' };
+      }
+      // Age filter (shop page): ?ageGroup=3-5  or  ?ageGroup=3-5,6-8 — products tagged with any of the chosen bands
+      if (ageGroup && String(ageGroup).trim() !== '') {
+        const keys = String(ageGroup).split(',').map(k => k.trim()).filter(k => AGE_KEYS.includes(k));
+        if (keys.length) mongoFilter.ageGroups = { $in: keys };
       }
       if (search && search.trim() !== '') {
         // Escape regex characters (so "(" or "+" can't break the query) and let any run of spaces match
