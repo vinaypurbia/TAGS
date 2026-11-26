@@ -2016,6 +2016,7 @@ function PurchaseOrdersModule({ showMsg }: any) {
       setImportNote(`Matching ${allItems.length} items with your products…`);
       const rows: any[] = allItems.map((it: any) => ({
         productId: '', productName: it.name, sku: '', imageUrl: '', suggestions: [] as any[],
+        _pack: Number(it.packSize) > 1 ? Number(it.packSize) : 0,
         quantity: String(it.quantity ?? 1),
         costPrice: it.unitCost != null ? String(it.unitCost) : '',
         _kind: '' as '' | 'exact' | 'close',
@@ -2044,7 +2045,8 @@ function PurchaseOrdersModule({ showMsg }: any) {
       const exact = rows.filter(r => r._kind === 'exact').length;
       const close = rows.filter(r => r._kind === 'close').length;
       const unmatched = rows.filter(r => !r.productId).length;
-      rows.forEach(r => { delete r._kind; });
+      const packedCount = rows.filter(r => r._pack > 0).length;
+      rows.forEach(r => { delete r._kind; delete r._pack; });
 
       // Same product appearing twice (e.g. a page photographed twice, or pages that overlap)
       const seen = new Map<string, number>(); const dupNames: string[] = [];
@@ -2057,6 +2059,7 @@ function PurchaseOrdersModule({ showMsg }: any) {
         + (close ? `, ${close} matched by similar name (please check the picture)` : '')
         + (unmatched ? `, ${unmatched} not found in your products (orange rows: tap a suggestion or search)` : '')
         + '.'
+        + (packedCount ? ` 📦 ${packedCount} box/pack line${packedCount === 1 ? '' : 's'} split into single pieces (cost ÷ pack size, quantity × pack size, same total): check ${packedCount === 1 ? 'it' : 'them'}.` : '')
         + (failed.length ? ` ⚠ Could not read: ${reasons.join(' | ')} — import those again.` : '')
         + (dupNames.length ? ` ⚠ Appears more than once: ${dupNames.slice(0, 4).join(', ')}${dupNames.length > 4 ? '…' : ''} — delete the repeat if a page was uploaded twice.` : '')
         + ' Check each line total against the invoice, delete rows you did not order, then Create PO.');
