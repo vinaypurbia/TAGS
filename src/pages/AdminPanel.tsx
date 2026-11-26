@@ -3657,6 +3657,7 @@ function ImportProductsSection() {
 type InvoiceRow = {
   id: string;
   name: string; description: string; quantity: number | null; unitCost: number | null;
+  packSize: number; packCost: number | null;   // pieces per invoice unit, and the price of one whole pack as printed
   category: string; subcategory: string; originalPrice: string; discountedPrice: string;
   ageGroups: string[];
   newCategory: { category: string; subcategory: string; categoryIsNew: boolean } | null; approveNew: boolean;
@@ -3886,6 +3887,7 @@ function InvoiceImportSection() {
         id: `${Date.now()}-${i}`,
         name: it.name || '', description: it.description || '',
         quantity: it.quantity, unitCost: it.unitCost,
+        packSize: it.packSize > 1 ? it.packSize : 1, packCost: it.packCost ?? it.unitCost ?? null,
         imagePrompt: it.imagePrompt || it.name || '',
         category: it.category || '', subcategory: it.subcategory || '',
         ageGroups: Array.isArray(it.ageGroups) ? it.ageGroups : [],
@@ -3913,6 +3915,20 @@ function InvoiceImportSection() {
     }
   };
 
+  // Change the number of pieces in the pack: cost per piece = pack price ÷ pieces, and both selling prices are recalculated
+  const setPackSize = (id: string, raw: string) => setRows(rs => rs.map(r => {
+    if (r.id !== id) return r;
+    const n = Math.max(1, Math.min(500, Math.round(Number(raw) || 1)));
+    const packCost = r.packCost ?? r.unitCost;
+    if (packCost == null) return { ...r, packSize: n };
+    const unitCost = Math.round((packCost / n) * 100) / 100;
+    const boxes = r.quantity != null ? r.quantity / (r.packSize || 1) : null;
+    return {
+      ...r, packSize: n, unitCost, quantity: boxes != null ? boxes * n : r.quantity,
+      originalPrice: String(Math.round(unitCost * (1 + INVOICE_ORIGINAL_MARKUP))),
+      discountedPrice: String(Math.round(unitCost * (1 + INVOICE_DISCOUNTED_MARKUP))),
+    };
+  }));
   const updateRow = (id: string, patch: Partial<InvoiceRow>) => setRows(rs => rs.map(r => r.id === id ? { ...r, ...patch } : r));
   const removeRow = (id: string) => setRows(rs => rs.filter(r => r.id !== id));
 
@@ -4087,6 +4103,14 @@ function InvoiceImportSection() {
                     placeholder="Selling price *" className="text-[11px] border border-gray-200 rounded-lg px-2 py-1.5 disabled:bg-gray-50" />
                   <input value={row.discountedPrice} onChange={e => updateRow(row.id, { discountedPrice: e.target.value })} disabled={stage !== 'review'}
                     placeholder="Discounted price" className="text-[11px] border border-gray-200 rounded-lg px-2 py-1.5 disabled:bg-gray-50" />
+                  <div className={`col-span-2 flex items-center gap-2 flex-wrap text-[11px] rounded-lg px-2.5 py-1.5 border ${row.packSize > 1 ? 'bg-blue-50 border-blue-200 text-blue-800' : 'bg-gray-50 border-gray-200 text-gray-500'}`}>
+                    <span className="font-black">📦 Pieces in pack</span>
+                    <input type="number" min={1} max={500} value={row.packSize} onChange={e => setPackSize(row.id, e.target.value)} disabled={stage !== 'review'}
+                      className="w-16 text-[11px] font-black border border-gray-300 rounded-md px-1.5 py-0.5 bg-white text-gray-800 disabled:bg-gray-50" />
+                    <span>{row.packSize > 1 && row.packCost != null
+                      ? <>Invoice ₹{row.packCost} ÷ {row.packSize} = <b>₹{row.unitCost} each</b> — prices below use this per-piece cost</>
+                      : <>1 = sold as one item. If the invoice line is a box/pack of identical pieces, enter how many.</>}</span>
+                  </div>
                   <p className="col-span-2 text-[10px] text-gray-400">
                     {row.quantity != null && <>Qty {row.quantity} · </>}
                     {row.unitCost != null && <>Cost ₹{row.unitCost} · </>}
