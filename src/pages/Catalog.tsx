@@ -6,8 +6,18 @@ import { cn } from '../lib/utils';
 
 const PAGE_SIZE = 20;
 
+// Age bands shoppers can filter by (products are tagged with these in the admin: Items → Age Group)
+const AGE_GROUPS = [
+  { key: '0-2',  label: '0–2 yrs',  emoji: '🍼' },
+  { key: '3-5',  label: '3–5 yrs',  emoji: '🧸' },
+  { key: '6-8',  label: '6–8 yrs',  emoji: '🚗' },
+  { key: '9-12', label: '9–12 yrs', emoji: '🎮' },
+  { key: '13+',  label: '13+ yrs',  emoji: '🛸' },
+];
+
 interface FilterState {
   subcategory: string;
+  ageGroup: string;
   priceMin: string;
   priceMax: string;
   discount: string;
@@ -17,6 +27,7 @@ interface FilterState {
 
 const DEFAULT_FILTERS: FilterState = {
   subcategory: '',
+  ageGroup: '',
   priceMin: '',
   priceMax: '',
   discount: '',
@@ -92,12 +103,13 @@ export function Catalog() {
     // subcategory is server-side so ALL pages are scanned, not just the loaded 20
     const sub = subcategoryOverride !== undefined ? subcategoryOverride : filters.subcategory;
     if (sub) params.set('subcategory', sub);
+    if (filters.ageGroup) params.set('ageGroup', filters.ageGroup);
     return `/api/products?${params.toString()}`;
-  }, [categoryFilter, searchQuery, filters.subcategory]);
+  }, [categoryFilter, searchQuery, filters.subcategory, filters.ageGroup]);
 
   // ── Initial / reset fetch when category, search, or subcategory changes ─
   useEffect(() => {
-    const key = `${categoryFilter}||${searchQuery}||${filters.subcategory}`;
+    const key = `${categoryFilter}||${searchQuery}||${filters.subcategory}||${filters.ageGroup}`;
     if (lastFetchKey.current === key) return;
     lastFetchKey.current = key;
 
@@ -117,7 +129,7 @@ export function Catalog() {
       })
       .catch(() => setError('Failed to load products. Please refresh.'))
       .finally(() => setLoading(false));
-  }, [categoryFilter, searchQuery, filters.subcategory, buildUrl]);
+  }, [categoryFilter, searchQuery, filters.subcategory, filters.ageGroup, buildUrl]);
 
   // ── Load more (append next page) ─────────────────────────
   const loadMore = useCallback(() => {
@@ -166,6 +178,7 @@ export function Catalog() {
   const activeFilterCount = useMemo(() => {
     let count = 0;
     if (filters.subcategory)    count++;
+    if (filters.ageGroup)       count++;
     if (filters.priceMin)       count++;
     if (filters.priceMax)       count++;
     if (filters.discount)       count++;
@@ -292,6 +305,23 @@ export function Catalog() {
                   : 'text-gray-600 hover:bg-orange-50 hover:text-[#FA5600]'
               )}>
               {opt.label}
+            </button>
+          ))}
+        </div>
+      </FilterSection>
+
+      <FilterSection title="Shop by Age">
+        <div className="flex flex-col gap-1">
+          <button onClick={() => setFilter('ageGroup', '')}
+            className={cn('text-left text-xs font-semibold px-3 py-2 rounded-lg transition-colors',
+              !filters.ageGroup ? 'bg-[#FA5600] text-white' : 'text-gray-600 hover:bg-orange-50 hover:text-[#FA5600]')}>
+            All Ages
+          </button>
+          {AGE_GROUPS.map(a => (
+            <button key={a.key} onClick={() => setFilter('ageGroup', filters.ageGroup === a.key ? '' : a.key)}
+              className={cn('text-left text-xs font-semibold px-3 py-2 rounded-lg transition-colors',
+                filters.ageGroup === a.key ? 'bg-[#FA5600] text-white' : 'text-gray-600 hover:bg-orange-50 hover:text-[#FA5600]')}>
+              {a.emoji} {a.label}
             </button>
           ))}
         </div>
@@ -529,6 +559,12 @@ export function Catalog() {
           {/* Active filter chips */}
           {activeFilterCount > 0 && (
             <div className="flex flex-wrap gap-2 mb-4">
+              {filters.ageGroup && (
+                <span className="flex items-center gap-1 bg-orange-50 text-[#FA5600] border border-orange-200 text-[10px] font-bold px-2.5 py-1 rounded-full">
+                  Age {AGE_GROUPS.find(a => a.key === filters.ageGroup)?.label || filters.ageGroup}
+                  <button onClick={() => setFilter('ageGroup', '')} className="hover:text-red-500"><X className="w-3 h-3" /></button>
+                </span>
+              )}
               {filters.subcategory && (
                 <span className="flex items-center gap-1 bg-orange-50 text-[#FA5600] border border-orange-200 text-[10px] font-bold px-2.5 py-1 rounded-full">
                   {filters.subcategory}
@@ -592,6 +628,18 @@ export function Catalog() {
                 className={cn('shrink-0 px-3 py-1.5 rounded-full text-xs font-bold transition-colors',
                   categoryFilter === cat.name ? 'bg-[#FA5600] text-white' : 'bg-gray-100 text-gray-700 hover:bg-orange-50 hover:text-[#FA5600]')}>
                 {cat.name}
+              </button>
+            ))}
+          </div>
+
+          {/* Shop by age — quick pills */}
+          <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-2 mb-4">
+            <span className="shrink-0 text-[10px] font-black uppercase tracking-widest text-gray-400">Shop by age</span>
+            {AGE_GROUPS.map(a => (
+              <button key={a.key} onClick={() => setFilter('ageGroup', filters.ageGroup === a.key ? '' : a.key)}
+                className={cn('shrink-0 px-3 py-1.5 rounded-full text-xs font-bold border transition-colors',
+                  filters.ageGroup === a.key ? 'bg-[#FA5600] border-[#FA5600] text-white' : 'bg-white border-gray-200 text-gray-600 hover:border-[#FA5600] hover:text-[#FA5600]')}>
+                {a.emoji} {a.label}
               </button>
             ))}
           </div>
