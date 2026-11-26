@@ -89,7 +89,8 @@ export function EditProductForm() {
 
   const [formData, setFormData] = useState({
     name: '', originalPrice: '', discountedPrice: '',
-    category: '', subcategory: '', description: '', videoUrl: ''
+    category: '', subcategory: '', description: '', videoUrl: '',
+    ageGroups: [] as string[]
   });
 
   const [existingImageUrls, setExistingImageUrls] = useState<string[]>([]);
@@ -123,7 +124,8 @@ export function EditProductForm() {
             name: product.name || '', originalPrice: product.originalPrice || '',
             discountedPrice: product.discountedPrice || '', category: product.category || '',
             subcategory: product.subcategory || '', description: product.description || '',
-            videoUrl: product.videoUrl || ''
+            videoUrl: product.videoUrl || '',
+            ageGroups: Array.isArray(product.ageGroups) ? product.ageGroups : []
           });
           const imgs = product.imageUrls?.length > 0 ? product.imageUrls
             : product.imageUrl ? [product.imageUrl] : [];
@@ -409,6 +411,22 @@ export function EditProductForm() {
                 <option value="">{subcategories.length === 0 ? 'No subcategories' : 'Select Subcategory'}</option>
                 {subcategories.map(sub => <option key={sub._id} value={sub.name}>{sub.name}</option>)}
               </select>
+            </div>
+
+            <div>
+              <label className="block text-sm font-semibold text-gray-700">Age Group <span className="text-gray-400 font-normal">(tick all that suit — customers can filter the shop by age)</span></label>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {[['0-2', '0–2 yrs'], ['3-5', '3–5 yrs'], ['6-8', '6–8 yrs'], ['9-12', '9–12 yrs'], ['13+', '13+ yrs']].map(([key, label]) => {
+                  const on = formData.ageGroups.includes(key);
+                  return (
+                    <button type="button" key={key}
+                      onClick={() => setFormData(f => ({ ...f, ageGroups: on ? f.ageGroups.filter(k => k !== key) : [...f.ageGroups, key] }))}
+                      className={`px-3 py-1.5 rounded-full text-xs font-bold border-2 transition ${on ? 'bg-[#FA5600] border-[#FA5600] text-white' : 'bg-white border-gray-200 text-gray-600 hover:border-[#FA5600]'}`}>
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
 
             <div>
