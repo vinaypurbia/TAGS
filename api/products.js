@@ -112,13 +112,17 @@ async function extractInvoiceItems(buffer, mimeType, tx = null) {
     `  "name": string,\n` +
     `  "quantity": number | null,\n` +
     `  "unitCost": number | null,\n` +
+    `  "packSize": number,\n` +
     `  "description": string` +
     (withClass ? `,\n  "category": string,\n  "subcategory": string,\n  "newCategory": object | null,\n  "ageGroups": string[]` : '') + `\n` +
     `}\n\n` +
     `Rules:\n` +
     `- name: the product name as written, cleaned up (title case, no SKU/item codes). Leave out wholesaler words that are not part of the product's name, such as BULK, VIDEO, CARTOON, BOXED, WHOLESALE\n` +
     `- quantity: the ordered quantity as a plain number\n` +
-    `- unitCost: the per-unit cost in the invoice's currency, as a plain number (no symbol, no commas)\n` +
+    `- unitCost: the price of ONE invoice line unit exactly as printed (for a "12 Pcs ... Box" line this is the price of the whole box), as a plain number (no symbol, no commas)\n` +
+    `- packSize: how many separate, identical pieces ONE invoice unit contains when the line is a box / pack / carton / dozen that the shop will sell piece by piece, e.g. "12 Pcs Catapult Car Box" → 12, "Pack of 6" → 6, "1 Dozen" → 12. Use 1 for everything else. ` +
+    `Do NOT count pieces that together make ONE product: a "4 PCS City Set", "24 pcs building blocks" or a "108 pcs puzzle" is a single product → 1. When in doubt use 1.\n` +
+    `- When packSize is more than 1, leave the pack wording ("12 Pcs", "Box of 12", "Dozen") out of name\n` +
     `- Skip subtotal, tax, discount, shipping and total lines — only real product line items\n` +
     `- If a field is illegible or missing, use null for that field rather than guessing\n` +
     (withClass
@@ -141,10 +145,18 @@ async function extractInvoiceItems(buffer, mimeType, tx = null) {
   return items
     .filter(it => it && typeof it.name === 'string' && it.name.trim())
     .map(it => {
+      // Pack lines ("12 Pcs Catapult Car Box", cost ₹840 for the box) are split into single pieces:
+      // cost per piece = box cost ÷ pack size, and the quantity becomes boxes × pack size (the line total stays the same).
+      const ps = Number(it.packSize);
+      const packSize = Number.isFinite(ps) && ps >= 2 && ps <= 500 ? Math.round(ps) : 1;
+      const qtyRaw = Number.isFinite(it.quantity) ? it.quantity : null;
+      const costRaw = Number.isFinite(it.unitCost) ? it.unitCost : null;
       const base = {
         name: cleanInvoiceName(it.name),
-        quantity: Number.isFinite(it.quantity) ? it.quantity : null,
-        unitCost: Number.isFinite(it.unitCost) ? it.unitCost : null,
+        quantity: qtyRaw != null ? qtyRaw * packSize : null,
+        unitCost: costRaw != null ? Math.round((costRaw / packSize) * 100) / 100 : null,
+        packSize,                 // pieces in one invoice unit (1 = not a pack)
+        packCost: costRaw,        // price of one whole pack as printed on the invoice
         description: typeof it.description === 'string' ? it.description.trim() : '',
       };
       if (!withClass) return base;
