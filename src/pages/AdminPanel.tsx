@@ -3658,11 +3658,15 @@ type InvoiceRow = {
   id: string;
   name: string; description: string; quantity: number | null; unitCost: number | null;
   category: string; subcategory: string; originalPrice: string; discountedPrice: string;
+  ageGroups: string[];
+  newCategory: { category: string; subcategory: string; categoryIsNew: boolean } | null; approveNew: boolean;
   imagePrompt: string;
   matchedTitle: string; descStatus: 'idle' | 'loading' | 'done' | 'error'; descError: string;
   imageUrl: string; imageSource: 'invoice' | 'supplier' | 'link' | 'upload' | 'ai' | ''; imageStatus: 'pending' | 'loading' | 'done' | 'error';
   include: boolean;
 };
+
+const INVOICE_AGE_GROUPS = [['0-2', '0–2 yrs'], ['3-5', '3–5 yrs'], ['6-8', '6–8 yrs'], ['9-12', '9–12 yrs'], ['13+', '13+ yrs']];
 
 // Selling prices are derived from the invoice unit cost: cost + 60% (original) and cost + 35% (discounted)
 const INVOICE_ORIGINAL_MARKUP = 0.60;
@@ -3883,7 +3887,9 @@ function InvoiceImportSection() {
         name: it.name || '', description: it.description || '',
         quantity: it.quantity, unitCost: it.unitCost,
         imagePrompt: it.imagePrompt || it.name || '',
-        category: '', subcategory: '',
+        category: it.category || '', subcategory: it.subcategory || '',
+        ageGroups: Array.isArray(it.ageGroups) ? it.ageGroups : [],
+        newCategory: it.newCategory && it.newCategory.category ? it.newCategory : null, approveNew: false,
         originalPrice: it.unitCost ? String(Math.round(it.unitCost * (1 + INVOICE_ORIGINAL_MARKUP))) : '',
         discountedPrice: it.unitCost ? String(Math.round(it.unitCost * (1 + INVOICE_DISCOUNTED_MARKUP))) : '',
         matchedTitle: '', descStatus: 'idle', descError: '',
@@ -3912,7 +3918,7 @@ function InvoiceImportSection() {
 
   const saveRow = async (row: InvoiceRow) => {
     const payload = {
-      name: row.name, category: row.category, subcategory: row.subcategory,
+      name: row.name, category: row.category, subcategory: row.subcategory, ageGroups: row.ageGroups,
       originalPrice: row.originalPrice, discountedPrice: row.discountedPrice,
       description: row.description, videoUrl: '',
       imageUrl: row.imageUrl, image: row.imageUrl, imageUrls: row.imageUrl ? [row.imageUrl] : [],
@@ -3922,11 +3928,47 @@ function InvoiceImportSection() {
     return res.json();
   };
 
+  // Approve / un-approve creating the new category the AI suggested for a row
+  const setApproveNew = (id: string, on: boolean) => setRows(rs => rs.map(r => {
+    if (r.id !== id || !r.newCategory) return r;
+    return on
+      ? { ...r, approveNew: true, category: r.newCategory.category, subcategory: r.newCategory.subcategory }
+      : { ...r, approveNew: false, category: r.newCategory.categoryIsNew ? '' : r.newCategory.category, subcategory: '' };
+  }));
+  const approveAllNew = () => setRows(rs => rs.map(r => r.newCategory && !r.approveNew
+    ? { ...r, approveNew: true, category: r.newCategory.category, subcategory: r.newCategory.subcategory } : r));
+
+  // Creates the categories / sub-categories you approved (once each), before the products are saved
+  const ensureApprovedCategories = async (wanted: InvoiceRow[]) => {
+    const approved = wanted.filter(r => r.newCategory && r.approveNew);
+    if (approved.length === 0) return;
+    const cats: any[] = [...allCats];
+    const lc = (v: string) => String(v || '').trim().toLowerCase();
+    const post = async (body: any) => {
+      const res = await fetch('/api/categories', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok || !(d.success || d._id)) throw new Error(d.error || 'category was not created');
+      return String(d._id);
+    };
+    for (const r of approved) {
+      const nc = r.newCategory!;
+      let main = cats.find(c => !c.parentId && lc(c.name) === lc(nc.category));
+      if (!main) { const id = await post({ name: nc.category }); main = { _id: id, name: nc.category, parentId: null }; cats.push(main); }
+      if (nc.subcategory && !cats.some(c => c.parentId && String(c.parentId) === String(main._id) && lc(c.name) === lc(nc.subcategory))) {
+        const id = await post({ name: nc.subcategory, parentId: String(main._id) });
+        cats.push({ _id: id, name: nc.subcategory, parentId: String(main._id) });
+      }
+    }
+    setAllCats(cats);
+  };
+
   const handleImportAll = async () => {
     const wanted = rows.filter(r => r.include);
     const missingCategory = wanted.find(r => !r.category.trim());
     if (missingCategory) { setError(`"${missingCategory.name}" needs a category before importing.`); return; }
     setError(''); setStage('importing'); setImportProgress({ current: 0, total: wanted.length });
+    try { await ensureApprovedCategories(wanted); }
+    catch (e: any) { setError(`Could not create the new categories (${e.message}). Nothing was imported.`); setStage('review'); return; }
     const results: { name: string; ok: boolean; error?: string }[] = [];
     for (let i = 0; i < wanted.length; i++) {
       try { await saveRow(wanted[i]); results.push({ name: wanted[i].name, ok: true }); }
@@ -3987,6 +4029,12 @@ function InvoiceImportSection() {
                   className="text-[10px] font-black uppercase tracking-widest px-3 py-1.5 rounded-lg bg-orange-50 text-[#FA5600] hover:bg-[#FA5600] hover:text-white transition disabled:opacity-50">
                   {rows.some(r => r.descStatus === 'loading') ? 'Writing…' : '✨ Rewrite all descriptions'}
                 </button>
+                {rows.some(r => r.newCategory && !r.approveNew) && (
+                  <button onClick={approveAllNew} title="Create every new category the AI suggested"
+                    className="text-[10px] font-black uppercase tracking-widest px-3 py-1.5 rounded-lg bg-amber-50 text-amber-700 hover:bg-amber-500 hover:text-white transition">
+                    ＋ Create all {rows.filter(r => r.newCategory && !r.approveNew).length} suggested categories
+                  </button>
+                )}
                 <button onClick={reset} className="text-[10px] font-black uppercase tracking-widest text-gray-400 hover:text-[#FA5600]">Start over</button>
               </div>
             )}
@@ -4012,10 +4060,29 @@ function InvoiceImportSection() {
                 <div className="flex-1 min-w-0 grid grid-cols-2 gap-2">
                   <input value={row.name} onChange={e => updateRow(row.id, { name: e.target.value })} disabled={stage !== 'review'}
                     placeholder="Product name" className="col-span-2 text-xs font-black text-gray-800 border border-gray-200 rounded-lg px-2 py-1.5 disabled:bg-gray-50" />
-                  <input value={row.category} onChange={e => updateRow(row.id, { category: e.target.value, subcategory: '' })} disabled={stage !== 'review'} list="invoice-cats"
+                  <input value={row.category} onChange={e => updateRow(row.id, { category: e.target.value, subcategory: '', approveNew: false })} disabled={stage !== 'review'} list="invoice-cats"
                     placeholder="Category *" className="text-[11px] border border-gray-200 rounded-lg px-2 py-1.5 disabled:bg-gray-50" />
-                  <input value={row.subcategory} onChange={e => updateRow(row.id, { subcategory: e.target.value })} disabled={stage !== 'review'} list={`invoice-subs-${row.id}`}
+                  <input value={row.subcategory} onChange={e => updateRow(row.id, { subcategory: e.target.value, ...(row.approveNew ? { approveNew: false } : {}) })} disabled={stage !== 'review'} list={`invoice-subs-${row.id}`}
                     placeholder="Subcategory" className="text-[11px] border border-gray-200 rounded-lg px-2 py-1.5 disabled:bg-gray-50" />
+                  {row.newCategory && (
+                    <label className="col-span-2 flex items-start gap-2 text-[11px] bg-amber-50 border border-amber-300 rounded-lg px-2.5 py-2 cursor-pointer">
+                      <input type="checkbox" checked={row.approveNew} onChange={e => setApproveNew(row.id, e.target.checked)} disabled={stage !== 'review'} className="mt-0.5 accent-[#FA5600]" />
+                      <span className="text-amber-800"><b>⚠ Not in your category list.</b> AI suggests creating <b>{row.newCategory.category}{row.newCategory.subcategory ? ` › ${row.newCategory.subcategory}` : ''}</b>{row.newCategory.categoryIsNew ? ' (new main category)' : ' (new sub-category)'} — tick to create it and use it for this item, or pick an existing category above.</span>
+                    </label>
+                  )}
+                  <div className="col-span-2 flex items-center gap-1.5 flex-wrap">
+                    <span className="text-[10px] font-black uppercase tracking-widest text-gray-400 mr-1">Age</span>
+                    {INVOICE_AGE_GROUPS.map(([key, label]) => {
+                      const on = row.ageGroups.includes(key);
+                      return (
+                        <button type="button" key={key} disabled={stage !== 'review'}
+                          onClick={() => updateRow(row.id, { ageGroups: on ? row.ageGroups.filter(k => k !== key) : [...row.ageGroups, key] })}
+                          className={`px-2 py-0.5 rounded-full text-[10px] font-black border transition disabled:opacity-60 ${on ? 'bg-[#FA5600] border-[#FA5600] text-white' : 'bg-white border-gray-200 text-gray-500 hover:border-[#FA5600] hover:text-[#FA5600]'}`}>
+                          {label}
+                        </button>
+                      );
+                    })}
+                  </div>
                   <input value={row.originalPrice} onChange={e => updateRow(row.id, { originalPrice: e.target.value })} disabled={stage !== 'review'}
                     placeholder="Selling price *" className="text-[11px] border border-gray-200 rounded-lg px-2 py-1.5 disabled:bg-gray-50" />
                   <input value={row.discountedPrice} onChange={e => updateRow(row.id, { discountedPrice: e.target.value })} disabled={stage !== 'review'}
