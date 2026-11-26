@@ -11,6 +11,7 @@ interface Product {
   name: string;
   category: string;
   subcategory?: string;
+  ageGroups?: string[];
   originalPrice: number | string;
   discountedPrice?: number | string;
   description?: string;
@@ -27,8 +28,33 @@ interface EditState {
   discountedPrice: string;
   category: string;
   subcategory: string;
+  ageGroups: string[];
   description: string;
   videoUrl: string;
+}
+
+// ─── Age groups (customers filter the shop by these) ─────────────────────────
+const AGE_GROUPS = [
+  { key: '0-2', label: '0–2 yrs' }, { key: '3-5', label: '3–5 yrs' }, { key: '6-8', label: '6–8 yrs' },
+  { key: '9-12', label: '9–12 yrs' }, { key: '13+', label: '13+ yrs' },
+];
+const ageLabelOf = (keys?: string[]) => (keys || []).map(k => AGE_GROUPS.find(a => a.key === k)?.label || k).join(', ');
+const sameAges = (a?: string[], b?: string[]) => [...(a || [])].sort().join(',') === [...(b || [])].sort().join(',');
+
+function AgeChips({ value, onChange }: { value: string[]; onChange: (v: string[]) => void }) {
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {AGE_GROUPS.map(a => {
+        const on = value.includes(a.key);
+        return (
+          <button type="button" key={a.key} onClick={() => onChange(on ? value.filter(k => k !== a.key) : [...value, a.key])}
+            className={`px-2.5 py-1 rounded-full text-[11px] font-black border-2 transition ${on ? 'bg-[#FA5600] border-[#FA5600] text-white' : 'bg-white border-gray-200 text-gray-500 hover:border-[#FA5600] hover:text-[#FA5600]'}`}>
+            {a.label}
+          </button>
+        );
+      })}
+    </div>
+  );
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -751,7 +777,7 @@ function ProductCard({ product, onEdit, onFindHd }: { product: Product; onEdit: 
       <div className="p-3 flex-1 flex flex-col justify-between gap-1">
         <div>
           <p className="text-xs font-black text-gray-900 line-clamp-2 leading-tight">{product.name}</p>
-          <p className="text-[10px] text-gray-400 mt-0.5 font-bold">{product.category}{product.subcategory ? ` › ${product.subcategory}` : ''}</p>
+          <p className="text-[10px] text-gray-400 mt-0.5 font-bold">{product.category}{product.subcategory ? ` › ${product.subcategory}` : ''}{product.ageGroups?.length ? ` · 🎂 ${ageLabelOf(product.ageGroups)}` : ''}</p>
         </div>
         <div className="flex items-center justify-between mt-1">
           <div>
@@ -796,6 +822,7 @@ function EditModal({
     discountedPrice: String(product.discountedPrice || ''),
     category: product.category || '',
     subcategory: product.subcategory || '',
+    ageGroups: Array.isArray(product.ageGroups) ? product.ageGroups : [],
     description: product.description || '',
     videoUrl: product.videoUrl || '',
   });
@@ -1039,6 +1066,12 @@ function EditModal({
                 {subcategories.map((sub: any) => <option key={sub._id} value={sub.name}>{sub.name}</option>)}
               </select>
             </div>
+          </div>
+
+          {/* Age group (customers can filter the shop by this) */}
+          <div>
+            <label className="block text-[10px] font-black uppercase tracking-widest text-gray-500 mb-1.5">Age Group <span className="normal-case font-bold text-gray-400">(tick all that suit — shown as a shop filter)</span></label>
+            <AgeChips value={formData.ageGroups} onChange={v => setFormData(prev => ({ ...prev, ageGroups: v }))} />
           </div>
 
           {/* Prices */}
@@ -1474,6 +1507,265 @@ function DedupeModal({ onClose, onDeleted }: { onClose: () => void; onDeleted: (
   );
 }
 
+// ── Mass tidy-up of categories + age groups (AI) ──────────────────────────────────────────
+// Checks the products currently shown (respects search + filters). The AI may only choose from YOUR category list; when nothing
+// fits it proposes a NEW category, which is created only if you approve it. Nothing is saved until you review and press Save.
+function AiOrganizeModal({ products, categories, onClose, onApplied }: {
+  products: Product[]; categories: any[]; onClose: () => void;
+  onApplied: (updates: { id: string; category?: string; subcategory?: string; ageGroups?: string[] }[], categoriesChanged: boolean) => void;
+}) {
+  type NewCat = { category: string; subcategory: string; categoryIsNew: boolean };
+  type Row = { category?: string; subcategory?: string; newCategory?: NewCat | null; ageGroups?: string[] };
+  const [doCategory, setDoCategory] = useState(true);
+  const [doAge, setDoAge] = useState(true);
+  const [onlyTodo, setOnlyTodo] = useState(false);
+  const [phase, setPhase] = useState<'setup' | 'running' | 'review' | 'saving' | 'done'>('setup');
+  const [results, setResults] = useState<Record<string, Row>>({});
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [approvedNew, setApprovedNew] = useState<Record<string, boolean>>({});
+  const [progress, setProgress] = useState({ done: 0, total: 0 });
+  const [saveInfo, setSaveInfo] = useState({ ok: 0, failed: 0, created: [] as string[] });
+  const stopRef = useRef(false);
+
+  const mains = categories.filter((c: any) => !c.parentId);
+  const subsOf = (name: string) => { const m = mains.find((c: any) => c.name === name); return m ? categories.filter((c: any) => c.parentId === String(m._id)) : []; };
+
+  const list = products.filter(p => p.name?.trim() && (!onlyTodo || (doAge && !(p.ageGroups?.length)) || (doCategory && !(p.category || '').trim())));
+  const newKey = (n: NewCat) => `${n.category}||${n.subcategory}`;
+
+  // What would change for a product, given what the AI answered (an empty/unsure AI answer never wipes existing data)
+  const changesFor = (p: Product) => {
+    const r = results[p._id];
+    if (!r) return null;
+    const catChange = doCategory && !r.newCategory && !!r.category && (r.category !== (p.category || '') || (!!r.subcategory && r.subcategory !== (p.subcategory || '')));
+    const newCat = doCategory && r.newCategory ? r.newCategory : null;
+    const ageChange = doAge && !!r.ageGroups && r.ageGroups.length > 0 && !sameAges(r.ageGroups, p.ageGroups);
+    return { catChange, newCat, ageChange };
+  };
+  const reviewList = list.filter(p => { const c = changesFor(p); return c && (c.catChange || c.newCat || c.ageChange); });
+  const checkedOk = list.filter(p => results[p._id] && !reviewList.includes(p)).length;
+  const notChecked = list.filter(p => results[p._id] === undefined).length;
+  const newPairs = Array.from(new Map(reviewList.map(p => changesFor(p)!.newCat).filter((n): n is NewCat => !!n).map(n => [newKey(n), n])).values());
+  const effectiveAgeNote = doAge ? ' and age group' : '';
+
+  const run = async () => {
+    stopRef.current = false; setPhase('running');
+    const todo = list.filter(p => results[p._id] === undefined);
+    setProgress({ done: 0, total: todo.length });
+    const acc = { ...results }; const errs: Record<string, string> = {};
+    for (let i = 0; i < todo.length; i += 8) {
+      if (stopRef.current) break;
+      const chunk = todo.slice(i, i + 8);
+      try {
+        const res = await fetch('/api/products?classifyProducts=true', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ items: chunk.map(p => ({ id: p._id, name: p.name, category: p.category || '', subcategory: p.subcategory || '', imageUrl: getImg(p) || '' })), tasks: { category: doCategory, age: doAge } }),
+        });
+        const text = await res.text();
+        let data: any; try { data = JSON.parse(text); } catch { throw new Error('The server took too long or sent an error. Please try again.'); }
+        if (!res.ok || !data.success) throw new Error(data.error || `Server error (${res.status})`);
+        chunk.forEach(p => { const d = data.results?.[p._id]; if (d) acc[p._id] = d; else errs[p._id] = 'The AI returned nothing for this product'; });
+      } catch (e: any) {
+        const msg = e?.message || 'Network error';
+        chunk.forEach(p => { errs[p._id] = msg; });
+        if (/limit|quota/i.test(msg)) stopRef.current = true; // free AI limit hit — stop instead of failing every batch
+      }
+      setResults({ ...acc }); setErrors({ ...errs });
+      setProgress({ done: Math.min(i + 8, todo.length), total: todo.length });
+      if (i + 8 < todo.length && !stopRef.current) await new Promise(r => setTimeout(r, 3000));
+    }
+    // pre-tick everything that would change
+    const ids = new Set<string>();
+    list.forEach(p => {
+      const r = acc[p._id]; if (!r) return;
+      const catChange = doCategory && !r.newCategory && !!r.category && (r.category !== (p.category || '') || (!!r.subcategory && r.subcategory !== (p.subcategory || '')));
+      const ageChange = doAge && !!r.ageGroups && r.ageGroups.length > 0 && !sameAges(r.ageGroups, p.ageGroups);
+      if (catChange || (doCategory && r.newCategory) || ageChange) ids.add(p._id);
+    });
+    setPicked(ids);
+    setPhase('review');
+  };
+
+  const save = async () => {
+    setPhase('saving');
+    const updates: any[] = [];
+    reviewList.filter(p => picked.has(p._id)).forEach(p => {
+      const c = changesFor(p)!; const r = results[p._id];
+      const u: any = { id: p._id };
+      if (c.catChange) { u.category = r.category; u.subcategory = r.subcategory || ''; }
+      else if (c.newCat && approvedNew[newKey(c.newCat)]) { u.category = c.newCat.category; u.subcategory = c.newCat.subcategory; u.ensure = true; }
+      if (c.ageChange) u.ageGroups = r.ageGroups;
+      if (u.category !== undefined || u.ageGroups !== undefined) updates.push(u);
+    });
+    let ok = 0, failed = 0; const created: string[] = [];
+    for (let i = 0; i < updates.length; i += 80) {
+      const chunk = updates.slice(i, i + 80);
+      try {
+        const res = await fetch('/api/products?applyClassification=true', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ updates: chunk }) });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.success) throw new Error(data.error || 'failed');
+        ok += chunk.length; (data.created || []).forEach((c: string) => { if (!created.includes(c)) created.push(c); });
+      } catch { failed += chunk.length; }
+      setSaveInfo({ ok, failed, created });
+    }
+    onApplied(updates.map(u => ({ id: u.id, category: u.category, subcategory: u.subcategory, ageGroups: u.ageGroups })), created.length > 0);
+    setSaveInfo({ ok, failed, created });
+    setPhase('done');
+  };
+
+  const busy = phase === 'running' || phase === 'saving';
+  const toggle = (id: string) => setPicked(prev => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+  const setRow = (id: string, patch: Partial<Row>) => setResults(r => ({ ...r, [id]: { ...r[id], ...patch } }));
+  const batches = Math.ceil(list.length / 8);
+
+  return (
+    <div className="fixed inset-0 z-[100] bg-black/60 flex items-center justify-center p-4" onClick={() => !busy && onClose()}>
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[92vh] flex flex-col" onClick={e => e.stopPropagation()}>
+        <div className="p-4 border-b border-gray-100 flex items-start justify-between gap-3">
+          <div>
+            <p className="text-sm font-black uppercase tracking-widest text-gray-800 flex items-center gap-2"><Tag className="w-4 h-4 text-[#FA5600]" /> Organise with AI — categories &amp; age groups</p>
+            <p className="text-[11px] text-gray-400 mt-0.5">AI looks at each product's name and picture and chooses from YOUR category list. Nothing is saved until you review and press Save.</p>
+          </div>
+          <button onClick={onClose} disabled={busy} className="text-gray-400 hover:text-gray-700 text-lg leading-none disabled:opacity-40">✕</button>
+        </div>
+
+        <div className="p-4 overflow-y-auto flex-1 space-y-3">
+          {phase === 'setup' && (
+            <>
+              <div className="bg-orange-50 border border-orange-200 rounded-xl p-3 text-xs text-gray-700">
+                <p className="font-black">{list.length} product{list.length === 1 ? '' : 's'} will be checked</p>
+                <p className="mt-1 text-gray-500">This is the list currently shown on the page. To check only one category or search result, close this, set the filter, and open this again. To check everything, reset all filters first.</p>
+              </div>
+              <div className="space-y-2">
+                <label className="flex items-start gap-2 text-xs text-gray-700 cursor-pointer"><input type="checkbox" checked={doCategory} onChange={e => setDoCategory(e.target.checked)} className="mt-0.5 accent-[#FA5600]" /><span><b>Fix categories &amp; sub-categories</b> — move products that are in the wrong place; suggest a new category when none of yours fits</span></label>
+                <label className="flex items-start gap-2 text-xs text-gray-700 cursor-pointer"><input type="checkbox" checked={doAge} onChange={e => setDoAge(e.target.checked)} className="mt-0.5 accent-[#FA5600]" /><span><b>Assign age groups</b> — 0–2, 3–5, 6–8, 9–12, 13+ (used by the customers' age filter)</span></label>
+                <label className="flex items-start gap-2 text-xs text-gray-600 cursor-pointer"><input type="checkbox" checked={onlyTodo} onChange={e => setOnlyTodo(e.target.checked)} className="mt-0.5 accent-[#FA5600]" /><span>Only products that have no age group yet{doCategory ? ' or no category' : ''}</span></label>
+              </div>
+              <p className="text-[11px] text-gray-400">About {batches} AI request{batches === 1 ? '' : 's'} (8 products each) · roughly {Math.max(1, Math.ceil(batches * 8 / 60))} minute{Math.ceil(batches * 8 / 60) <= 1 ? '' : 's'}. If Google's free AI limit is reached it stops by itself and you can continue later — products already checked are kept.</p>
+            </>
+          )}
+
+          {phase === 'running' && (
+            <div className="py-6 text-center">
+              <Loader2 className="w-7 h-7 text-[#FA5600] mx-auto mb-3 animate-spin" />
+              <p className="text-sm font-black text-gray-700">Checking products… {progress.done} / {progress.total}</p>
+              <div className="w-full bg-gray-100 rounded-full h-2.5 mt-3"><div className="bg-[#FA5600] h-2.5 rounded-full transition-all" style={{ width: `${progress.total ? (progress.done / progress.total) * 100 : 0}%` }} /></div>
+            </div>
+          )}
+
+          {phase === 'review' && (
+            <>
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <p className="text-xs font-black text-gray-600">{reviewList.length} to change · {picked.size} selected · {checkedOk} already correct{notChecked > 0 ? ` · ${notChecked} not checked` : ''}</p>
+                <div className="flex gap-2">
+                  <button onClick={() => setPicked(new Set(reviewList.map(p => p._id)))} className="text-[10px] font-black uppercase px-2.5 py-1.5 rounded-lg bg-gray-100 text-gray-600 hover:bg-gray-200">Select all</button>
+                  <button onClick={() => setPicked(new Set())} className="text-[10px] font-black uppercase px-2.5 py-1.5 rounded-lg bg-gray-100 text-gray-600 hover:bg-gray-200">Select none</button>
+                </div>
+              </div>
+
+              {notChecked > 0 && (
+                <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-xs text-red-600">
+                  {notChecked} product{notChecked === 1 ? '' : 's'} could not be checked{Object.values(errors)[0] ? ` — ${String(Object.values(errors)[0]).slice(0, 200)}` : ''}.
+                  <button onClick={run} className="ml-2 font-black underline">Check the missing ones</button>
+                </div>
+              )}
+
+              {newPairs.length > 0 && (
+                <div className="bg-amber-50 border-2 border-amber-300 rounded-xl p-3 space-y-2">
+                  <p className="text-xs font-black text-amber-800">⚠ Not in your category list — the AI suggests creating:</p>
+                  {newPairs.map(n => {
+                    const count = reviewList.filter(p => { const c = changesFor(p)!; return c.newCat && newKey(c.newCat) === newKey(n); }).length;
+                    return (
+                      <label key={newKey(n)} className="flex items-start gap-2 text-xs text-gray-700 cursor-pointer">
+                        <input type="checkbox" checked={!!approvedNew[newKey(n)]} onChange={e => setApprovedNew(a => ({ ...a, [newKey(n)]: e.target.checked }))} className="mt-0.5 accent-[#FA5600]" />
+                        <span><b>{n.categoryIsNew ? 'New category' : 'New sub-category'}: {n.category}{n.subcategory ? ` › ${n.subcategory}` : ''}</b> <span className="text-gray-400">· for {count} product{count === 1 ? '' : 's'} — tick to create it and move them there</span></span>
+                      </label>
+                    );
+                  })}
+                  <p className="text-[10px] text-amber-700">Left unticked, nothing is created and those products keep their current category{doAge ? ' (their age group can still be saved)' : ''}.</p>
+                </div>
+              )}
+
+              {reviewList.map(p => {
+                const c = changesFor(p)!; const r = results[p._id];
+                const subOptions = subsOf(r.category || p.category || '');
+                return (
+                  <div key={p._id} className={`border rounded-xl p-3 flex gap-3 ${picked.has(p._id) ? 'border-[#FA5600]/40 bg-orange-50/30' : 'border-gray-200'}`}>
+                    <input type="checkbox" checked={picked.has(p._id)} onChange={() => toggle(p._id)} className="mt-1 w-4 h-4 accent-[#FA5600] shrink-0" />
+                    {getImg(p) && <img src={getImg(p) || undefined} alt="" className="w-14 h-14 rounded-lg object-cover border border-gray-100 shrink-0" />}
+                    <div className="flex-1 min-w-0 space-y-1.5">
+                      <p className="text-xs font-black text-gray-800 truncate">{p.name}</p>
+                      {doCategory && (c.catChange || c.newCat) && (
+                        <div className="text-[11px]">
+                          <p className="text-gray-400"><span className="font-black uppercase">Now:</span> {p.category || '— none —'}{p.subcategory ? ` › ${p.subcategory}` : ''}</p>
+                          {c.newCat ? (
+                            <p className="text-amber-700 font-black">→ {c.newCat.category}{c.newCat.subcategory ? ` › ${c.newCat.subcategory}` : ''} <span className="font-bold">(new — approve above)</span></p>
+                          ) : (
+                            <div className="flex gap-1.5 mt-0.5 flex-wrap items-center">
+                              <span className="text-gray-400 font-black">→</span>
+                              <select value={r.category || ''} onChange={e => setRow(p._id, { category: e.target.value, subcategory: '', newCategory: null })}
+                                className="border border-gray-200 rounded-lg px-1.5 py-1 text-[11px] font-bold focus:border-[#FA5600] outline-none bg-white">
+                                {mains.map((m: any) => <option key={m._id} value={m.name}>{m.name}</option>)}
+                              </select>
+                              <select value={r.subcategory || ''} onChange={e => setRow(p._id, { subcategory: e.target.value })}
+                                className="border border-gray-200 rounded-lg px-1.5 py-1 text-[11px] font-bold focus:border-[#FA5600] outline-none bg-white">
+                                <option value="">{subOptions.length ? '— no sub-category —' : 'None'}</option>
+                                {subOptions.map((sc: any) => <option key={sc._id} value={sc.name}>{sc.name}</option>)}
+                              </select>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                      {doAge && (r.ageGroups?.length ?? 0) > 0 && (
+                        <div className="text-[11px]">
+                          <p className="text-gray-400"><span className="font-black uppercase">Age now:</span> {ageLabelOf(p.ageGroups) || '— not set —'}</p>
+                          <div className="mt-1"><AgeChips value={r.ageGroups || []} onChange={v => setRow(p._id, { ageGroups: v })} /></div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+              {reviewList.length === 0 && <p className="text-xs text-gray-400 text-center py-8">{checkedOk > 0 ? `Nothing to change: all ${checkedOk} checked products already have the right category${effectiveAgeNote}.` : `Nothing could be checked. ${Object.values(errors)[0] ? String(Object.values(errors)[0]).slice(0, 220) : ''}`}</p>}
+            </>
+          )}
+
+          {phase === 'saving' && (
+            <div className="py-6 text-center">
+              <Loader2 className="w-7 h-7 text-[#FA5600] mx-auto mb-3 animate-spin" />
+              <p className="text-sm font-black text-gray-700">Saving changes…</p>
+              <p className="text-xs text-gray-400 mt-1 font-bold">Please don't close this window</p>
+            </div>
+          )}
+
+          {phase === 'done' && (
+            <div className="py-8 text-center">
+              <Check className="w-9 h-9 text-green-600 mx-auto mb-2" />
+              <p className="text-sm font-black text-gray-800">{saveInfo.ok} product{saveInfo.ok === 1 ? '' : 's'} updated</p>
+              {saveInfo.created.length > 0 && <p className="text-xs text-gray-500 mt-1 font-bold">Created: {saveInfo.created.join(', ')}</p>}
+              {saveInfo.failed > 0 && <p className="text-xs text-red-500 mt-1">{saveInfo.failed} could not be saved — run the check again for those.</p>}
+            </div>
+          )}
+        </div>
+
+        <div className="p-4 border-t border-gray-100 flex gap-2 justify-end">
+          {phase === 'setup' && <button onClick={run} disabled={list.length === 0 || (!doCategory && !doAge)}
+            className="px-5 py-2.5 bg-[#FA5600] text-white font-black uppercase tracking-widest text-xs rounded-xl hover:bg-[#E04A00] transition disabled:opacity-50">Check {list.length} products</button>}
+          {phase === 'running' && <button onClick={() => { stopRef.current = true; }}
+            className="px-5 py-2.5 border-2 border-gray-200 text-gray-600 font-black uppercase tracking-widest text-xs rounded-xl hover:border-red-400 hover:text-red-500 transition">Stop after this batch</button>}
+          {phase === 'review' && <>
+            <button onClick={onClose} className="px-4 py-2.5 border-2 border-gray-200 text-gray-600 font-black uppercase tracking-widest text-xs rounded-xl">Discard</button>
+            <button onClick={save} disabled={picked.size === 0}
+              className="px-5 py-2.5 bg-[#FA5600] text-white font-black uppercase tracking-widest text-xs rounded-xl hover:bg-[#E04A00] transition disabled:opacity-50">Save {picked.size} change{picked.size === 1 ? '' : 's'}</button>
+          </>}
+          {phase === 'done' && <button onClick={onClose} className="px-5 py-2.5 bg-[#FA5600] text-white font-black uppercase tracking-widest text-xs rounded-xl">Close</button>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Mass rewrite of product descriptions (AI) ─────────────────────────────
 // Writes new descriptions for the products currently shown (respects search + filters), lets you review and
 // edit every one, and only saves the ones you tick. Nothing is changed until you press Save.
@@ -1678,6 +1970,8 @@ export function ProductManagerEmbed() {
 
   // Mass rewrite of descriptions modal
   const [showBulkDesc, setShowBulkDesc] = useState(false);
+  const [showAiOrg, setShowAiOrg] = useState(false);
+  const [filterAge, setFilterAge] = useState<string>('all');
 
   // High-resolution picture finder (one product / many products)
   const [hdProduct, setHdProduct] = useState<Product | null>(null);
@@ -1750,6 +2044,8 @@ export function ProductManagerEmbed() {
     if (filterDiscount === 'no' && hasDiscount(p)) return false;
     if (filterCatSet === 'has' && !p.category?.trim()) return false;
     if (filterCatSet === 'none' && p.category?.trim()) return false;
+    if (filterAge === 'none' && p.ageGroups?.length) return false;
+    if (filterAge !== 'all' && filterAge !== 'none' && !(p.ageGroups || []).includes(filterAge)) return false;
     const price = getOrigPrice(p);
     if (priceMin && price < Number(priceMin)) return false;
     if (priceMax && price > Number(priceMax)) return false;
@@ -1794,6 +2090,7 @@ export function ProductManagerEmbed() {
     priceMin !== '',
     priceMax !== '',
     filterCatSet !== 'all',
+    filterAge !== 'all',
   ].filter(Boolean).length;
 
   const resetFilters = () => {
@@ -1805,6 +2102,7 @@ export function ProductManagerEmbed() {
     setPriceMax('');
     setSearch('');
     setFilterCatSet('all');
+    setFilterAge('all');
   };
 
   // ── Render ─────────────────────────────────────────────────────────────────
@@ -1848,6 +2146,14 @@ export function ProductManagerEmbed() {
             )}
           </button>
 
+          {/* Organise categories + age groups (AI) */}
+          <button
+            onClick={() => setShowAiOrg(true)}
+            className="flex items-center gap-2 px-4 py-2.5 rounded-xl border-2 border-gray-200 text-gray-500 hover:border-[#FA5600] hover:text-[#FA5600] text-sm font-black uppercase tracking-widest transition">
+            <Tag className="w-4 h-4" />
+            Organise with AI
+          </button>
+
           {/* Rewrite descriptions (AI) */}
           <button
             onClick={() => setShowBulkDesc(true)}
@@ -1880,6 +2186,22 @@ export function ProductManagerEmbed() {
             Add Product
           </button>
         </div>
+
+        {showAiOrg && (
+          <AiOrganizeModal
+            products={filtered}
+            categories={categories}
+            onClose={() => setShowAiOrg(false)}
+            onApplied={(updates, categoriesChanged) => {
+              const m = new Map(updates.map(u => [u.id, u]));
+              setAllProducts(prev => prev.map(p => {
+                const u = m.get(p._id); if (!u) return p;
+                return { ...p, ...(u.category !== undefined ? { category: u.category, subcategory: u.subcategory || '' } : {}), ...(u.ageGroups !== undefined ? { ageGroups: u.ageGroups } : {}) };
+              }));
+              if (categoriesChanged) fetch('/api/categories').then(r => r.json()).then(c => setCategories(Array.isArray(c) ? c : [])).catch(() => {});
+            }}
+          />
+        )}
 
         {showBulkDesc && (
           <BulkDescriptionModal
@@ -1967,6 +2289,16 @@ export function ProductManagerEmbed() {
                   <FilterPill label="All" active={filterCatSet === 'all'} onClick={() => setFilterCatSet('all')} />
                   <FilterPill label="Has Category" active={filterCatSet === 'has'} onClick={() => setFilterCatSet('has')} />
                   <FilterPill label="No Category" active={filterCatSet === 'none'} onClick={() => setFilterCatSet('none')} />
+                </div>
+              </div>
+
+              {/* Age group filter */}
+              <div>
+                <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-2">Age Group</p>
+                <div className="flex gap-2 flex-wrap">
+                  <FilterPill label="All" active={filterAge === 'all'} onClick={() => setFilterAge('all')} />
+                  {AGE_GROUPS.map(a => <FilterPill key={a.key} label={a.label} active={filterAge === a.key} onClick={() => setFilterAge(a.key)} />)}
+                  <FilterPill label="No age set" active={filterAge === 'none'} onClick={() => setFilterAge('none')} />
                 </div>
               </div>
 
@@ -2106,7 +2438,7 @@ function ListRow({ product, onEdit, onFindHd }: { product: Product; onEdit: () =
       )}
       <div className="flex-1 min-w-0">
         <p className="text-sm font-black text-gray-900 truncate">{product.name}</p>
-        <p className="text-[10px] text-gray-400 font-bold">{product.category}{product.subcategory ? ` › ${product.subcategory}` : ''}</p>
+        <p className="text-[10px] text-gray-400 font-bold">{product.category}{product.subcategory ? ` › ${product.subcategory}` : ''}{product.ageGroups?.length ? ` · 🎂 ${ageLabelOf(product.ageGroups)}` : ''}</p>
       </div>
       {img && <QualityBadge url={img} className="shrink-0 hidden sm:inline-block" />}
       <div className="text-right shrink-0 mr-3">
@@ -2154,7 +2486,7 @@ function AddProductInline({
 }) {
   const [formData, setFormData] = useState({
     name: '', originalPrice: '', discountedPrice: '',
-    category: '', subcategory: '', description: '', videoUrl: ''
+    category: '', subcategory: '', ageGroups: [] as string[], description: '', videoUrl: ''
   });
   const [subcategories, setSubcategories] = useState<any[]>([]);
   // Pictures added by link — they sit in the "Current Images" strip, exactly like the Edit form
@@ -2363,6 +2695,12 @@ function AddProductInline({
                 {subcategories.map((sub: any) => <option key={sub._id} value={sub.name}>{sub.name}</option>)}
               </select>
             </div>
+          </div>
+
+          {/* Age group (customers can filter the shop by this) */}
+          <div>
+            <label className="block text-[10px] font-black uppercase tracking-widest text-gray-500 mb-1.5">Age Group <span className="normal-case font-bold text-gray-400">(tick all that suit — shown as a shop filter)</span></label>
+            <AgeChips value={formData.ageGroups} onChange={v => setFormData(prev => ({ ...prev, ageGroups: v }))} />
           </div>
 
           {/* Prices */}
