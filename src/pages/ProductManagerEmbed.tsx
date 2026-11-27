@@ -1507,6 +1507,190 @@ function DedupeModal({ onClose, onDeleted }: { onClose: () => void; onDeleted: (
   );
 }
 
+// ── Fill product pictures from a supplier's website ───────────────────────────────────────
+// For products already in the system. Looks each product up on the supplier's site (item number first, then name),
+// saves the supplier's picture in our own storage, and shows old vs new for you to tick before anything is changed.
+// Purchase orders show the product's picture, so they pick these up automatically.
+function SupplierImagesModal({ products, onClose, onApplied }: {
+  products: Product[]; onClose: () => void;
+  onApplied: (updates: { id: string; imageUrl: string }[]) => void;
+}) {
+  type Found = { imageUrl: string; matchedTitle: string };
+  const [site, setSite] = useState('');
+  const [recent, setRecent] = useState<string[]>([]);
+  const [onlyMissing, setOnlyMissing] = useState(true);
+  const [phase, setPhase] = useState<'setup' | 'running' | 'review' | 'saving' | 'done'>('setup');
+  const [found, setFound] = useState<Record<string, Found>>({});
+  const [notFound, setNotFound] = useState<string[]>([]);
+  const [failedMsg, setFailedMsg] = useState('');
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [progress, setProgress] = useState({ done: 0, total: 0 });
+  const [saved, setSaved] = useState({ ok: 0, failed: 0 });
+  const stopRef = useRef(false);
+
+  useEffect(() => {
+    try { const r = JSON.parse(localStorage.getItem('tags_invoice_suppliers') || '[]'); setRecent(r); if (r[0]) setSite(String(r[0]).replace(/^https?:\/\//, '')); } catch {}
+  }, []);
+  const normalizeSite = (v: string) => { const t = v.trim(); return !t ? '' : /^https?:\/\//i.test(t) ? t : `https://${t}`; };
+
+  const list = products.filter(p => p.name?.trim() && (!onlyMissing || !getImg(p)));
+  const foundList = list.filter(p => found[p._id]);
+
+  const run = async () => {
+    const siteUrl = normalizeSite(site); if (!siteUrl) return;
+    try { const next = [siteUrl, ...recent.filter(x => x !== siteUrl)].slice(0, 8); localStorage.setItem('tags_invoice_suppliers', JSON.stringify(next)); setRecent(next); } catch {}
+    stopRef.current = false; setPhase('running'); setFailedMsg('');
+    const todo = list.filter(p => !found[p._id]);
+    setProgress({ done: 0, total: todo.length });
+    const acc: Record<string, Found> = { ...found }; const miss: string[] = []; let done = 0; let hardError = '';
+    const queue = [...todo];
+    const worker = async () => {
+      let p: Product | undefined;
+      while (!stopRef.current && (p = queue.shift())) {
+        const it = p;
+        try {
+          const res = await fetch('/api/products?supplierImage=true', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: it.name, siteUrl, itemCode: (it as any).sku || '' }) });
+          const d = await res.json().catch(() => ({}));
+          if (d.found && d.imageUrl) acc[it._id] = { imageUrl: d.imageUrl, matchedTitle: d.matchedTitle || '' };
+          else { miss.push(it._id); if (d.error && !hardError) hardError = d.error; }
+        } catch { miss.push(it._id); }
+        done++; setProgress({ done, total: todo.length }); setFound({ ...acc });
+      }
+    };
+    await Promise.all(Array.from({ length: 3 }, worker));
+    setNotFound(miss); setFound({ ...acc }); if (hardError && Object.keys(acc).length === 0) setFailedMsg(hardError);
+    setPicked(new Set(list.filter(p => acc[p._id]).map(p => p._id)));
+    setPhase('review');
+  };
+
+  const save = async () => {
+    setPhase('saving');
+    const updates = foundList.filter(p => picked.has(p._id)).map(p => ({ id: p._id, imageUrl: found[p._id].imageUrl }));
+    let ok = 0, failed = 0; const applied: { id: string; imageUrl: string }[] = [];
+    for (let i = 0; i < updates.length; i += 80) {
+      const chunk = updates.slice(i, i + 80);
+      try {
+        const res = await fetch('/api/products?applyImages=true', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ updates: chunk }) });
+        const d = await res.json().catch(() => ({}));
+        if (!res.ok || !d.success) throw new Error(d.error || 'failed');
+        ok += chunk.length; applied.push(...chunk);
+      } catch { failed += chunk.length; }
+    }
+    onApplied(applied);
+    setSaved({ ok, failed }); setPhase('done');
+  };
+
+  const busy = phase === 'running' || phase === 'saving';
+  const toggle = (id: string) => setPicked(prev => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+
+  return (
+    <div className="fixed inset-0 z-[100] bg-black/60 flex items-center justify-center p-4" onClick={() => !busy && onClose()}>
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[92vh] flex flex-col" onClick={e => e.stopPropagation()}>
+        <div className="p-4 border-b border-gray-100 flex items-start justify-between gap-3">
+          <div>
+            <p className="text-sm font-black uppercase tracking-widest text-gray-800 flex items-center gap-2"><ImageIcon className="w-4 h-4 text-[#FA5600]" /> Fill pictures from supplier website</p>
+            <p className="text-[11px] text-gray-400 mt-0.5">Finds each product on the supplier's site and shows old vs new. Nothing changes until you tick and save. Purchase orders show product pictures, so they update too.</p>
+          </div>
+          <button onClick={onClose} disabled={busy} className="text-gray-400 hover:text-gray-700 text-lg leading-none disabled:opacity-40">✕</button>
+        </div>
+
+        <div className="p-4 overflow-y-auto flex-1 space-y-3">
+          {phase === 'setup' && (
+            <>
+              <label className="block">
+                <span className="text-[10px] font-black uppercase tracking-widest text-gray-500">Supplier website</span>
+                <input value={site} onChange={e => setSite(e.target.value)} list="pm-suppliers" placeholder="e.g. toyszone.co.in"
+                  className="mt-1 w-full text-sm border-2 border-gray-200 rounded-xl px-3 py-2.5 focus:outline-none focus:border-[#FA5600]" />
+                <datalist id="pm-suppliers">{recent.map(r => <option key={r} value={String(r).replace(/^https?:\/\//, '')} />)}</datalist>
+              </label>
+              <div className="bg-orange-50 border border-orange-200 rounded-xl p-3 text-xs text-gray-700">
+                <p className="font-black">{list.length} product{list.length === 1 ? '' : 's'} will be looked up</p>
+                <p className="mt-1 text-gray-500">This is the list currently shown on the page. To do just one category or supplier's items, set the filter first and open this again.</p>
+              </div>
+              <label className="flex items-start gap-2 text-xs text-gray-700 cursor-pointer"><input type="checkbox" checked={onlyMissing} onChange={e => setOnlyMissing(e.target.checked)} className="mt-0.5 accent-[#FA5600]" /><span>Only products that have <b>no picture</b> yet <span className="text-gray-400">(untick to also look for a replacement for products that already have one — the old picture stays in the gallery)</span></span></label>
+              <p className="text-[11px] text-gray-400">Roughly {Math.max(1, Math.ceil(list.length * 4 / 3 / 60))} minute{Math.ceil(list.length * 4 / 3 / 60) <= 1 ? '' : 's'}. You can stop at any time and keep what was found.</p>
+            </>
+          )}
+
+          {phase === 'running' && (
+            <div className="py-6 text-center">
+              <Loader2 className="w-7 h-7 text-[#FA5600] mx-auto mb-3 animate-spin" />
+              <p className="text-sm font-black text-gray-700">Looking up pictures… {progress.done} / {progress.total}</p>
+              <p className="text-xs text-gray-400 mt-1 font-bold">{Object.keys(found).length} found so far</p>
+              <div className="w-full bg-gray-100 rounded-full h-2.5 mt-3"><div className="bg-[#FA5600] h-2.5 rounded-full transition-all" style={{ width: `${progress.total ? (progress.done / progress.total) * 100 : 0}%` }} /></div>
+            </div>
+          )}
+
+          {phase === 'review' && (
+            <>
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <p className="text-xs font-black text-gray-600">{foundList.length} found · {picked.size} selected · {notFound.length} not found</p>
+                <div className="flex gap-2">
+                  <button onClick={() => setPicked(new Set(foundList.map(p => p._id)))} className="text-[10px] font-black uppercase px-2.5 py-1.5 rounded-lg bg-gray-100 text-gray-600 hover:bg-gray-200">Select all</button>
+                  <button onClick={() => setPicked(new Set())} className="text-[10px] font-black uppercase px-2.5 py-1.5 rounded-lg bg-gray-100 text-gray-600 hover:bg-gray-200">Select none</button>
+                </div>
+              </div>
+              {failedMsg && <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-xl p-3 font-bold">{failedMsg}</p>}
+              {foundList.map(p => (
+                <label key={p._id} className={`border rounded-xl p-2.5 flex items-center gap-3 cursor-pointer ${picked.has(p._id) ? 'border-[#FA5600]/40 bg-orange-50/30' : 'border-gray-200 opacity-60'}`}>
+                  <input type="checkbox" checked={picked.has(p._id)} onChange={() => toggle(p._id)} className="w-4 h-4 accent-[#FA5600] shrink-0" />
+                  <div className="w-14 h-14 rounded-lg border border-gray-200 bg-gray-50 overflow-hidden shrink-0 flex items-center justify-center">
+                    {getImg(p) ? <img src={getImg(p) || undefined} alt="" className="w-full h-full object-cover" /> : <span className="text-[9px] text-gray-300 font-bold">No picture</span>}
+                  </div>
+                  <span className="text-gray-300 font-black">→</span>
+                  <img src={found[p._id].imageUrl} alt="" className="w-14 h-14 rounded-lg object-cover border border-green-300 shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-black text-gray-800 truncate">{p.name}</p>
+                    <p className="text-[10px] text-gray-400 font-bold truncate">Supplier's listing: {found[p._id].matchedTitle || '—'}</p>
+                  </div>
+                </label>
+              ))}
+              {foundList.length === 0 && <p className="text-xs text-gray-400 text-center py-8">No pictures were found{failedMsg ? '' : ' on that website for these products'}. Check the website address, or try another supplier.</p>}
+              {notFound.length > 0 && (
+                <details className="text-xs">
+                  <summary className="cursor-pointer font-black text-gray-500 uppercase tracking-widest text-[10px]">Not found ({notFound.length})</summary>
+                  <div className="mt-2 space-y-0.5 max-h-40 overflow-y-auto">
+                    {notFound.map(id => <p key={id} className="text-gray-500 font-bold truncate">{products.find(p => p._id === id)?.name}</p>)}
+                  </div>
+                </details>
+              )}
+            </>
+          )}
+
+          {phase === 'saving' && (
+            <div className="py-6 text-center">
+              <Loader2 className="w-7 h-7 text-[#FA5600] mx-auto mb-3 animate-spin" />
+              <p className="text-sm font-black text-gray-700">Saving pictures…</p>
+              <p className="text-xs text-gray-400 mt-1 font-bold">Please don't close this window</p>
+            </div>
+          )}
+
+          {phase === 'done' && (
+            <div className="py-8 text-center">
+              <Check className="w-9 h-9 text-green-600 mx-auto mb-2" />
+              <p className="text-sm font-black text-gray-800">{saved.ok} product picture{saved.ok === 1 ? '' : 's'} updated</p>
+              {saved.failed > 0 && <p className="text-xs text-red-500 mt-1">{saved.failed} could not be saved — run it again for those.</p>}
+            </div>
+          )}
+        </div>
+
+        <div className="p-4 border-t border-gray-100 flex gap-2 justify-end">
+          {phase === 'setup' && <button onClick={run} disabled={list.length === 0 || !site.trim()}
+            className="px-5 py-2.5 bg-[#FA5600] text-white font-black uppercase tracking-widest text-xs rounded-xl hover:bg-[#E04A00] transition disabled:opacity-50">Look up {list.length} products</button>}
+          {phase === 'running' && <button onClick={() => { stopRef.current = true; }}
+            className="px-5 py-2.5 border-2 border-gray-200 text-gray-600 font-black uppercase tracking-widest text-xs rounded-xl hover:border-red-400 hover:text-red-500 transition">Stop and review what was found</button>}
+          {phase === 'review' && <>
+            <button onClick={onClose} className="px-4 py-2.5 border-2 border-gray-200 text-gray-600 font-black uppercase tracking-widest text-xs rounded-xl">Discard</button>
+            <button onClick={save} disabled={picked.size === 0}
+              className="px-5 py-2.5 bg-[#FA5600] text-white font-black uppercase tracking-widest text-xs rounded-xl hover:bg-[#E04A00] transition disabled:opacity-50">Save {picked.size} picture{picked.size === 1 ? '' : 's'}</button>
+          </>}
+          {phase === 'done' && <button onClick={onClose} className="px-5 py-2.5 bg-[#FA5600] text-white font-black uppercase tracking-widest text-xs rounded-xl">Close</button>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Mass tidy-up of categories + age groups (AI) ──────────────────────────────────────────
 // Checks the products currently shown (respects search + filters). The AI may only choose from YOUR category list; when nothing
 // fits it proposes a NEW category, which is created only if you approve it. Nothing is saved until you review and press Save.
@@ -1971,6 +2155,7 @@ export function ProductManagerEmbed() {
   // Mass rewrite of descriptions modal
   const [showBulkDesc, setShowBulkDesc] = useState(false);
   const [showAiOrg, setShowAiOrg] = useState(false);
+  const [showSupImg, setShowSupImg] = useState(false);
   const [filterAge, setFilterAge] = useState<string>('all');
 
   // High-resolution picture finder (one product / many products)
@@ -2146,6 +2331,14 @@ export function ProductManagerEmbed() {
             )}
           </button>
 
+          {/* Fill pictures from a supplier's website */}
+          <button
+            onClick={() => setShowSupImg(true)}
+            className="flex items-center gap-2 px-4 py-2.5 rounded-xl border-2 border-gray-200 text-gray-500 hover:border-[#FA5600] hover:text-[#FA5600] text-sm font-black uppercase tracking-widest transition">
+            <ImageIcon className="w-4 h-4" />
+            Pictures from Supplier
+          </button>
+
           {/* Organise categories + age groups (AI) */}
           <button
             onClick={() => setShowAiOrg(true)}
@@ -2186,6 +2379,21 @@ export function ProductManagerEmbed() {
             Add Product
           </button>
         </div>
+
+        {showSupImg && (
+          <SupplierImagesModal
+            products={filtered}
+            onClose={() => setShowSupImg(false)}
+            onApplied={(updates) => {
+              const m = new Map(updates.map(u => [u.id, u.imageUrl]));
+              setAllProducts(prev => prev.map(p => {
+                const url = m.get(p._id); if (!url) return p;
+                const rest = getAllImages(p).filter(u => u !== url);
+                return { ...p, image: url, imageUrl: url, imageUrls: [url, ...rest] };
+              }));
+            }}
+          />
+        )}
 
         {showAiOrg && (
           <AiOrganizeModal
