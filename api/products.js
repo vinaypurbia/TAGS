@@ -333,13 +333,28 @@ const feedImageUrls = (feed, p) => {
 };
 const normCode = v => String(v || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 
+// Our product names are "code + name" (e.g. "7634-25 Super Clay Set" or "Rocket Launcher TK-1869") while the supplier lists just the code.
+// Pull the code-looking words out of our name: they contain a digit and are not sizes/quantities such as "12pcs", "3D", "2in1" or a year.
+const CODE_NOISE = /^\d+(pcs|pc|piece|pieces|in1|d|cm|mm|ml|kg|gm|g|inch|in|yrs?|years?|m|v|w|a|ah|mah|x\d+)$/i;
+function splitNameAndCodes(name) {
+  const codes = [], words = [];
+  for (const raw of String(name || '').split(/[\s,;|()]+/)) {
+    const t = raw.replace(/^[^A-Za-z0-9]+|[^A-Za-z0-9]+$/g, '');
+    if (!t) continue;
+    const isCode = /\d/.test(t) && !CODE_NOISE.test(t) && !/^(19|20)\d{2}$/.test(t) && normCode(t).length >= 3;
+    (isCode ? codes : words).push(t);
+  }
+  return { codes, nameOnly: words.join(' ') };
+}
+
 // Item number first (exact → unambiguous part such as "7634" of "7634-25"), then the product name
 async function findInFeed(feed, name, code) {
   const items = (await loadFeed(feed)).filter(p => p.imageUrl);
   const toHit = p => ({ image: feedImageUrls(feed, p)[0], images: feedImageUrls(feed, p), title: `${p.name}${p.itemNumber && p.itemNumber !== p.name ? ` (${p.itemNumber})` : ''}`, page: feed.origin });
 
+  const parts = splitNameAndCodes(name);
   const codes = new Set();
-  [code, ...(String(name || '').match(/[A-Za-z]{0,3}-?\d{3,}[A-Za-z0-9-]*/g) || [])].forEach(c => { const n = normCode(c); if (n.length >= 3) codes.add(n); });
+  [code, ...parts.codes].forEach(c => { const n = normCode(c); if (n.length >= 3) codes.add(n); });
   for (const c of codes) {
     const exact = items.filter(p => normCode(p.itemNumber) === c || normCode(p.id) === c || normCode(p.name) === c);
     if (exact.length >= 1) return toHit(exact[0]);
@@ -348,7 +363,9 @@ async function findInFeed(feed, name, code) {
     const part = items.filter(p => String(p.itemNumber || p.id || '').toLowerCase().split(/[^a-z0-9]+/).includes(c));
     if (part.length === 1) return toHit(part[0]);
   }
-  const best = bestCandidate(name, items.map(p => ({ title: String(p.name || ''), image: p.imageUrl, p })));
+  // No code matched: compare the words of our name (with its code removed) against supplier listings that have real names
+  const wordsOnly = parts.nameOnly || String(name || '');
+  const best = bestCandidate(wordsOnly, items.filter(p => !/\d/.test(String(p.name || '')) || /[A-Za-z]{3,}.*\s.*[A-Za-z]{3,}/.test(String(p.name || ''))).map(p => ({ title: String(p.name || ''), image: p.imageUrl, p })));
   return best ? toHit(best.p) : null;
 }
 
