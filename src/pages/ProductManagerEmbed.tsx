@@ -1548,7 +1548,7 @@ function SupplierImagesModal({ products, onClose, onApplied }: {
     const siteUrl = normalizeSite(site); if (!siteUrl) return;
     setChecking(true); setCheck(null);
     try {
-      const res = await fetch('/api/products?supplierCheck=true', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ siteUrl }) });
+      const res = await fetch('/api/products?supplierCheck=true', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ siteUrl, sampleName: (list[0] || products[0])?.name || '' }) });
       setCheck(await res.json().catch(() => ({ ok: false, error: 'The server sent an unexpected reply.' })));
     } catch { setCheck({ ok: false, error: 'Network problem — please try again.' }); }
     finally { setChecking(false); }
@@ -1656,14 +1656,25 @@ function SupplierImagesModal({ products, onClose, onApplied }: {
               </label>
               <div className="bg-orange-50 border border-orange-200 rounded-xl p-3 text-xs text-gray-700">
                 <p className="font-black">{list.length} product{list.length === 1 ? '' : 's'} will be looked up</p>
+                {products.length === 0 && <p className="mt-1 text-red-600 font-bold">The product list is still loading. Wait until the products appear on the page, then close this and open it again.</p>}
                 <p className="mt-1 text-gray-500">This is the list currently shown on the page. To do just one category or supplier's items, set the filter first and open this again.</p>
               </div>
               <div className="space-y-2">
                 <button onClick={testConnection} disabled={checking || !site.trim()}
                   className="text-[11px] font-black uppercase tracking-widest px-3 py-2 rounded-lg bg-gray-900 text-white hover:bg-gray-700 disabled:opacity-50">{checking ? 'Testing…' : 'Test connection to this supplier'}</button>
                 {check && (
-                  <div className={`text-xs rounded-xl p-3 border ${check.ok && check.image?.ok ? 'bg-green-50 border-green-200 text-green-800' : 'bg-red-50 border-red-200 text-red-700'}`}>
-                    {check.supported === false && <p className="font-bold">This website isn't connected yet — only Toys Zone can be read automatically for now.</p>}
+                  <div className={`text-xs rounded-xl p-3 border ${(check.ok && check.image?.ok) || check.verdict === 'ok' ? 'bg-green-50 border-green-200 text-green-800' : check.verdict === 'javascript' || check.verdict === 'unknown' ? 'bg-amber-50 border-amber-200 text-amber-800' : 'bg-red-50 border-red-200 text-red-700'}`}>
+                    {check.supported === false && check.generic && (
+                      <div className="space-y-1 font-bold">
+                        {check.verdict === 'ok' && <p>✔ This website can be searched automatically{check.sample?.found ? ` — trial lookup of “${check.sample.name}” found “${check.sample.title}”` : ` (${check.platform} store, ${check.listed} products readable)`}. You can run the lookup.</p>}
+                        {check.verdict === 'javascript' && <><p>This website builds its product list with JavaScript (like Toys Zone did), so it can't be read automatically yet.</p><p className="font-normal">To connect it: open the site in Chrome → press F12 → Network → Fetch/XHR → reload → find the request that returns the products → right-click it → Copy → Copy response, and send me one product from it. Adding it afterwards is a small change.</p></>}
+                        {check.verdict === 'blocked' && <p>The website refused our server ({check.error}). It blocks automated visitors, so it can't be read automatically.</p>}
+                        {check.verdict === 'unreachable' && <p>Could not open the website: {check.error}. Check the address.</p>}
+                        {check.verdict === 'invalid' && <p>{check.note}</p>}
+                        {check.verdict === 'unknown' && <><p>The page opened ({check.platform} site) but no product list could be found{check.sample && !check.sample.found ? `, and a trial lookup of “${check.sample.name}” found nothing` : ''}.</p><p className="font-normal">Send me the website address and one product-page link and I'll check how to read it.</p></>}
+                      </div>
+                    )}
+                    {check.supported === false && !check.generic && <p className="font-bold">This website isn't connected yet.</p>}
                     {check.supported !== false && !check.ok && <p className="font-bold">Could not read the supplier's product list: {check.error}</p>}
                     {check.ok && (
                       <>
