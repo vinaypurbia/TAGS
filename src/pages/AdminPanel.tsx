@@ -3658,6 +3658,7 @@ type InvoiceRow = {
   id: string;
   name: string; description: string; quantity: number | null; unitCost: number | null;
   packSize: number; packCost: number | null;   // pieces per invoice unit, and the price of one whole pack as printed
+  itemCode: string;                            // item / model number printed on the invoice line
   category: string; subcategory: string; originalPrice: string; discountedPrice: string;
   ageGroups: string[];
   newCategory: { category: string; subcategory: string; categoryIsNew: boolean } | null; approveNew: boolean;
@@ -3795,10 +3796,34 @@ function InvoiceImportSection() {
   const [viewSize, setViewSize] = useState('');
   const uploadRef = useRef<HTMLInputElement>(null);
   const viewRow = rows.find(r => r.id === viewId) || null;
-  const openViewer = (id: string) => { setViewId(id); setLinkInput(''); setViewMsg(null); setViewSize(''); };
+  // Search the supplier's catalogue (name or item number) and tap the right picture
+  const [supQuery, setSupQuery] = useState('');
+  const [supResults, setSupResults] = useState<{ title: string; code: string; category: string; image: string; image2: string }[]>([]);
+  const [supBusy, setSupBusy] = useState(false);
+  const [supNote, setSupNote] = useState('');
+  const openViewer = (id: string) => {
+    setViewId(id); setLinkInput(''); setViewMsg(null); setViewSize('');
+    const r = rows.find(x => x.id === id);
+    const guessCode = (n: string) => n.split(/[\s,;|()]+/).map(t => t.replace(/^[^A-Za-z0-9]+|[^A-Za-z0-9]+$/g, '')).find(t => /\d/.test(t) && t.replace(/[^A-Za-z0-9]/g, '').length >= 3 && !/^\d+(pcs|pc|in1|d|cm|mm|ml|kg|g)$/i.test(t)) || '';
+    setSupQuery(r ? (r.itemCode || guessCode(r.name) || r.name) : ''); setSupResults([]); setSupNote('');
+  };
+  const searchSupplierCatalogue = async () => {
+    const site = normalizeSite(supplierSite);
+    if (!site || !supQuery.trim()) return;
+    setSupBusy(true); setSupNote(''); setSupResults([]);
+    try {
+      const res = await fetch('/api/products?supplierSearch=true', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ siteUrl: site, q: supQuery.trim() }) });
+      const d = await res.json().catch(() => ({}));
+      if (d.supported === false) setSupNote("This supplier's website can't be searched here yet. Use the picture link or upload below.");
+      else if (d.error) setSupNote(d.error);
+      else if (!d.results?.length) setSupNote('Nothing found. Try a shorter name or the item number.');
+      else setSupResults(d.results);
+    } catch { setSupNote('Network problem — please try again.'); }
+    finally { setSupBusy(false); }
+  };
 
   // link = a new link to use; omit it to only clean the picture that is already there
-  const applyPicture = async (row: InvoiceRow, link: string) => {
+  const applyPicture = async (row: InvoiceRow, link: string, source: InvoiceRow['imageSource'] = 'link') => {
     if (!link.trim()) return;
     setApplying(true); setViewMsg(null);
     try {
@@ -3808,7 +3833,7 @@ function InvoiceImportSection() {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.imageUrl) throw new Error(data.error || 'Could not use that picture');
-      setRows(rs => rs.map(r => r.id === row.id ? { ...r, imageUrl: data.imageUrl, imageSource: 'link', imageStatus: 'done' } : r));
+      setRows(rs => rs.map(r => r.id === row.id ? { ...r, imageUrl: data.imageUrl, imageSource: source, imageStatus: 'done' } : r));
       setViewMsg({ ok: true, text: 'Picture replaced.' });
       setLinkInput('');
       setViewSize('');
@@ -3849,7 +3874,7 @@ function InvoiceImportSection() {
         setRows(rs => rs.map(r => r.id === it.id ? { ...r, imageStatus: 'loading' } : r));
         try {
           const r = await fetch('/api/products?supplierImage=true', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: it.name, siteUrl: site }),
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: it.name, siteUrl: site, itemCode: it.itemCode || '' }),
           });
           const data = await r.json().catch(() => ({}));
           if (data.found && data.imageUrl) {
@@ -3887,7 +3912,7 @@ function InvoiceImportSection() {
         id: `${Date.now()}-${i}`,
         name: it.name || '', description: it.description || '',
         quantity: it.quantity, unitCost: it.unitCost,
-        packSize: it.packSize > 1 ? it.packSize : 1, packCost: it.packCost ?? it.unitCost ?? null,
+        packSize: it.packSize > 1 ? it.packSize : 1, packCost: it.packCost ?? it.unitCost ?? null, itemCode: it.itemCode || '',
         imagePrompt: it.imagePrompt || it.name || '',
         category: it.category || '', subcategory: it.subcategory || '',
         ageGroups: Array.isArray(it.ageGroups) ? it.ageGroups : [],
@@ -4214,6 +4239,30 @@ function InvoiceImportSection() {
                   className="w-full py-2.5 bg-[#FA5600] text-white font-black uppercase tracking-widest text-xs rounded-xl hover:bg-[#E04A00] transition disabled:opacity-50 flex items-center justify-center gap-2">
                   {applying ? <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Working…</> : <><Upload className="w-3.5 h-3.5" /> Upload picture from this computer</>}
                 </button>
+                {normalizeSite(supplierSite) && (
+                  <div className="space-y-2 border border-gray-100 rounded-xl p-3 bg-gray-50/60">
+                    <span className="text-[10px] font-black uppercase tracking-widest text-gray-500">Search the supplier's catalogue</span>
+                    <div className="flex gap-2">
+                      <input value={supQuery} onChange={e => setSupQuery(e.target.value)} onKeyDown={e => e.key === 'Enter' && searchSupplierCatalogue()} placeholder="Name or item number"
+                        className="flex-1 text-xs border border-gray-200 rounded-xl px-3 py-2 focus:outline-none focus:border-[#FA5600] bg-white" disabled={applying} />
+                      <button onClick={searchSupplierCatalogue} disabled={supBusy || applying || !supQuery.trim()}
+                        className="px-4 py-2 bg-gray-900 text-white text-[11px] font-black uppercase tracking-widest rounded-xl hover:bg-gray-700 disabled:opacity-50">{supBusy ? '…' : 'Search'}</button>
+                    </div>
+                    {supNote && <p className="text-[11px] text-gray-500 font-bold">{supNote}</p>}
+                    {supResults.length > 0 && (
+                      <div className="grid grid-cols-3 sm:grid-cols-4 gap-2 max-h-64 overflow-y-auto">
+                        {supResults.map((c, i) => (
+                          <button key={i} onClick={() => viewRow && applyPicture(viewRow, c.image, 'supplier')} disabled={applying}
+                            className="border border-gray-200 hover:border-[#FA5600] rounded-lg bg-white overflow-hidden text-left transition disabled:opacity-50" title={`${c.title} ${c.code && c.code !== c.title ? `(${c.code})` : ''}`}>
+                            <img src={c.image} alt="" loading="lazy" className="w-full aspect-square object-cover bg-gray-100"
+                              onError={e => { const im = e.currentTarget; if (c.image2 && im.src !== c.image2) im.src = c.image2; else im.style.opacity = '0.2'; }} />
+                            <p className="text-[9px] font-black text-gray-700 px-1.5 py-1 truncate">{c.title}</p>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
                 <div className="flex items-center gap-2 pt-1"><div className="flex-1 h-px bg-gray-100" /><span className="text-[10px] font-black uppercase tracking-widest text-gray-300">or</span><div className="flex-1 h-px bg-gray-100" /></div>
                 <span className="text-[10px] font-black uppercase tracking-widest text-gray-500">Picture link</span>
                 <input value={linkInput} onChange={e => setLinkInput(e.target.value)} placeholder="Paste the image link (or product page link) from the supplier's site"
