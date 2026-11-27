@@ -1548,8 +1548,45 @@ export default async function handler(req, res) {
     // ── Supplier connection test — POST /api/products?supplierCheck=true  { siteUrl }
     // Reports whether the supplier's product list can be read from our server, what it contains, and whether its pictures load.
     if (req.method === 'POST' && req.query.supplierCheck === 'true') {
-      const feed = feedForSite(String(req.body?.siteUrl || ''));
-      if (!feed) return res.status(200).json({ supported: false });
+      const rawSite = String(req.body?.siteUrl || '');
+      const feed = feedForSite(rawSite);
+      if (!feed) {
+        // Not one of the built-in feed suppliers: find out what kind of website it is and whether the normal page reader can use it
+        const out = { supported: false, generic: true, verdict: 'unknown' };
+        let origin;
+        try { origin = assertPublicUrl(/^https?:\/\//i.test(rawSite) ? rawSite : `https://${rawSite}`).origin; }
+        catch (e) { return res.status(200).json({ ...out, verdict: 'invalid', note: e.message || 'That website address is not valid' }); }
+        out.origin = origin;
+        let platform = 'other';
+        try {
+          const html = await supplierFetch(origin, { timeout: 10000 });
+          const lower = html.toLowerCase();
+          const text = html.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>|<[^>]+>/gi, ' ').replace(/\s+/g, ' ').trim();
+          out.reachable = true; out.textChars = text.length; out.images = (lower.match(/<img\b/g) || []).length;
+          platform = /cdn\.shopify\.com|shopify\.theme/.test(lower) ? 'shopify'
+            : /woocommerce|wp-content/.test(lower) ? 'woocommerce'
+            : (/__next_data__|id="__next"|id="root"|id="app"|ng-version|data-reactroot|nuxt/.test(lower) || (text.length < 400 && out.images < 6)) ? 'javascript' : 'other';
+        } catch (e) {
+          out.reachable = false; out.error = e.message || 'Could not open the website';
+          out.verdict = /HTTP (401|403|429|503)/.test(out.error) ? 'blocked' : 'unreachable';
+          return res.status(200).json(out);
+        }
+        out.platform = platform;
+        let listed = 0;
+        if (platform === 'shopify') { try { const d = await supplierFetch(`${origin}/products.json?limit=3`, { json: true, timeout: 8000 }); listed = (d.products || []).length; } catch {} }
+        if (platform === 'woocommerce') { try { const d = await supplierFetch(`${origin}/wp-json/wc/store/v1/products?per_page=3`, { json: true, timeout: 8000 }); listed = Array.isArray(d) ? d.length : 0; } catch {} }
+        out.listed = listed;
+        // Real trial with one of your own product names
+        const sample = String(req.body?.sampleName || '').trim();
+        if (sample) {
+          try {
+            const hit = await Promise.race([findSupplierProduct(origin, sample, ''), new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 20000))]);
+            out.sample = { name: sample, found: !!hit, title: hit?.title || '' };
+          } catch (e) { out.sample = { name: sample, found: false, error: e.message }; }
+        }
+        out.verdict = out.sample?.found || listed > 0 ? 'ok' : platform === 'javascript' ? 'javascript' : 'unknown';
+        return res.status(200).json(out);
+      }
       try {
         feedCache.delete(feed.id);
         const all = await loadFeed(feed);
