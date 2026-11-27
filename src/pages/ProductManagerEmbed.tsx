@@ -1523,6 +1523,14 @@ function SupplierImagesModal({ products, onClose, onApplied }: {
   const [found, setFound] = useState<Record<string, Found>>({});
   const [notFound, setNotFound] = useState<string[]>([]);
   const [failedMsg, setFailedMsg] = useState('');
+  const [lastProblem, setLastProblem] = useState('');
+  const [check, setCheck] = useState<any>(null);
+  const [checking, setChecking] = useState(false);
+  const [pickFor, setPickFor] = useState<string | null>(null);
+  const [pickQuery, setPickQuery] = useState('');
+  const [pickResults, setPickResults] = useState<{ title: string; code: string; image: string; image2: string }[]>([]);
+  const [pickBusy, setPickBusy] = useState(false);
+  const [pickMsg, setPickMsg] = useState('');
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [progress, setProgress] = useState({ done: 0, total: 0 });
   const [saved, setSaved] = useState({ ok: 0, failed: 0 });
@@ -1536,10 +1544,53 @@ function SupplierImagesModal({ products, onClose, onApplied }: {
   const list = products.filter(p => p.name?.trim() && (!onlyMissing || !getImg(p)));
   const foundList = list.filter(p => found[p._id]);
 
+  const testConnection = async () => {
+    const siteUrl = normalizeSite(site); if (!siteUrl) return;
+    setChecking(true); setCheck(null);
+    try {
+      const res = await fetch('/api/products?supplierCheck=true', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ siteUrl }) });
+      setCheck(await res.json().catch(() => ({ ok: false, error: 'The server sent an unexpected reply.' })));
+    } catch { setCheck({ ok: false, error: 'Network problem — please try again.' }); }
+    finally { setChecking(false); }
+  };
+
+  const guessCode = (n: string) => n.split(/[\s,;|()]+/).map(t => t.replace(/^[^A-Za-z0-9]+|[^A-Za-z0-9]+$/g, '')).find(t => /\d/.test(t) && t.replace(/[^A-Za-z0-9]/g, '').length >= 3 && !/^\d+(pcs|pc|in1|d|cm|mm|ml|kg|g)$/i.test(t)) || '';
+  const searchFor = async (q: string) => {
+    const siteUrl = normalizeSite(site); if (!siteUrl || !q.trim()) return;
+    setPickBusy(true); setPickMsg(''); setPickResults([]);
+    try {
+      const res = await fetch('/api/products?supplierSearch=true', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ siteUrl, q: q.trim() }) });
+      const d = await res.json().catch(() => ({}));
+      if (d.supported === false) setPickMsg("This supplier's website can't be searched here yet.");
+      else if (d.error) setPickMsg(d.error);
+      else if (!d.results?.length) setPickMsg('Nothing found. Try one word of the name, or the item number.');
+      else setPickResults(d.results);
+    } catch { setPickMsg('Network problem — please try again.'); }
+    finally { setPickBusy(false); }
+  };
+  const openPick = (p: Product) => {
+    if (pickFor === p._id) { setPickFor(null); return; }
+    const q = guessCode(p.name) || p.name.split(/\s+/).filter(w => w.length >= 4)[0] || p.name;
+    setPickFor(p._id); setPickQuery(q); searchFor(q);
+  };
+  const choosePicture = async (p: Product, c: { title: string; image: string }) => {
+    setPickBusy(true); setPickMsg('');
+    try {
+      const res = await fetch('/api/products?imageFromLink=true', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: c.image, name: p.name }) });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok || !d.imageUrl) throw new Error(d.error || 'Could not use that picture');
+      setFound(f => ({ ...f, [p._id]: { imageUrl: d.imageUrl, matchedTitle: c.title } }));
+      setNotFound(nf => nf.filter(id => id !== p._id));
+      setPicked(pk => new Set([...pk, p._id]));
+      setPickFor(null);
+    } catch (e: any) { setPickMsg(e.message || 'Something went wrong'); }
+    finally { setPickBusy(false); }
+  };
+
   const run = async () => {
     const siteUrl = normalizeSite(site); if (!siteUrl) return;
     try { const next = [siteUrl, ...recent.filter(x => x !== siteUrl)].slice(0, 8); localStorage.setItem('tags_invoice_suppliers', JSON.stringify(next)); setRecent(next); } catch {}
-    stopRef.current = false; setPhase('running'); setFailedMsg('');
+    stopRef.current = false; setPhase('running'); setFailedMsg(''); setLastProblem('');
     const todo = list.filter(p => !found[p._id]);
     setProgress({ done: 0, total: todo.length });
     const acc: Record<string, Found> = { ...found }; const miss: string[] = []; let done = 0; let hardError = '';
@@ -1552,8 +1603,8 @@ function SupplierImagesModal({ products, onClose, onApplied }: {
           const res = await fetch('/api/products?supplierImage=true', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: it.name, siteUrl, itemCode: (it as any).sku || '' }) });
           const d = await res.json().catch(() => ({}));
           if (d.found && d.imageUrl) acc[it._id] = { imageUrl: d.imageUrl, matchedTitle: d.matchedTitle || '' };
-          else { miss.push(it._id); if (d.error && !hardError) hardError = d.error; }
-        } catch { miss.push(it._id); }
+          else { miss.push(it._id); if (d.error) { if (!hardError) hardError = d.error; setLastProblem(d.error); } }
+        } catch { miss.push(it._id); setLastProblem('The server did not answer — check your connection'); }
         done++; setProgress({ done, total: todo.length }); setFound({ ...acc });
       }
     };
@@ -1607,6 +1658,23 @@ function SupplierImagesModal({ products, onClose, onApplied }: {
                 <p className="font-black">{list.length} product{list.length === 1 ? '' : 's'} will be looked up</p>
                 <p className="mt-1 text-gray-500">This is the list currently shown on the page. To do just one category or supplier's items, set the filter first and open this again.</p>
               </div>
+              <div className="space-y-2">
+                <button onClick={testConnection} disabled={checking || !site.trim()}
+                  className="text-[11px] font-black uppercase tracking-widest px-3 py-2 rounded-lg bg-gray-900 text-white hover:bg-gray-700 disabled:opacity-50">{checking ? 'Testing…' : 'Test connection to this supplier'}</button>
+                {check && (
+                  <div className={`text-xs rounded-xl p-3 border ${check.ok && check.image?.ok ? 'bg-green-50 border-green-200 text-green-800' : 'bg-red-50 border-red-200 text-red-700'}`}>
+                    {check.supported === false && <p className="font-bold">This website isn't connected yet — only Toys Zone can be read automatically for now.</p>}
+                    {check.supported !== false && !check.ok && <p className="font-bold">Could not read the supplier's product list: {check.error}</p>}
+                    {check.ok && (
+                      <>
+                        <p className="font-black">✔ Product list readable: {check.total} products ({check.withPictures} with pictures · {check.withRealNames} with real names · {check.withPictures - check.withRealNames} code only)</p>
+                        <p className="mt-1 font-bold">{check.image?.ok ? '✔ Pictures load correctly' : `✘ Pictures could not be downloaded (${(check.image?.tried || []).map((t: any) => `${t.status}`).join(', ') || 'no picture address'}) — nothing can be saved until this is fixed`}</p>
+                        <p className="mt-1 text-[11px] opacity-80">Examples: {(check.sample || []).map((x: any) => x.name === x.code ? x.code : `${x.code} — ${x.name}`).join(' · ')}</p>
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
               <label className="flex items-start gap-2 text-xs text-gray-700 cursor-pointer"><input type="checkbox" checked={onlyMissing} onChange={e => setOnlyMissing(e.target.checked)} className="mt-0.5 accent-[#FA5600]" /><span>Only products that have <b>no picture</b> yet <span className="text-gray-400">(untick to also look for a replacement for products that already have one — the old picture stays in the gallery)</span></span></label>
               <p className="text-[11px] text-gray-400">Roughly {Math.max(1, Math.ceil(list.length * 4 / 3 / 60))} minute{Math.ceil(list.length * 4 / 3 / 60) <= 1 ? '' : 's'}. You can stop at any time and keep what was found.</p>
             </>
@@ -1617,6 +1685,8 @@ function SupplierImagesModal({ products, onClose, onApplied }: {
               <Loader2 className="w-7 h-7 text-[#FA5600] mx-auto mb-3 animate-spin" />
               <p className="text-sm font-black text-gray-700">Looking up pictures… {progress.done} / {progress.total}</p>
               <p className="text-xs text-gray-400 mt-1 font-bold">{Object.keys(found).length} found so far</p>
+              {lastProblem && <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2 mt-3 font-bold">Problem: {lastProblem}</p>}
+              {!lastProblem && progress.done >= 15 && Object.keys(found).length === 0 && <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mt-3 font-bold">Nothing matched in the first {progress.done} products. You can stop and use “Test connection” to check the supplier's data.</p>}
               <div className="w-full bg-gray-100 rounded-full h-2.5 mt-3"><div className="bg-[#FA5600] h-2.5 rounded-full transition-all" style={{ width: `${progress.total ? (progress.done / progress.total) * 100 : 0}%` }} /></div>
             </div>
           )}
@@ -1647,12 +1717,44 @@ function SupplierImagesModal({ products, onClose, onApplied }: {
               ))}
               {foundList.length === 0 && <p className="text-xs text-gray-400 text-center py-8">No pictures were found{failedMsg ? '' : ' on that website for these products'}. Check the website address, or try another supplier.</p>}
               {notFound.length > 0 && (
-                <details className="text-xs">
-                  <summary className="cursor-pointer font-black text-gray-500 uppercase tracking-widest text-[10px]">Not found ({notFound.length})</summary>
-                  <div className="mt-2 space-y-0.5 max-h-40 overflow-y-auto">
-                    {notFound.map(id => <p key={id} className="text-gray-500 font-bold truncate">{products.find(p => p._id === id)?.name}</p>)}
+                <div className="space-y-1.5">
+                  <p className="font-black text-gray-500 uppercase tracking-widest text-[10px]">Not found automatically ({notFound.length}) — tap one to choose its picture yourself</p>
+                  <div className="max-h-72 overflow-y-auto space-y-1.5">
+                    {notFound.map(id => {
+                      const p = products.find(x => x._id === id); if (!p) return null;
+                      return (
+                        <div key={id} className="border border-gray-200 rounded-xl">
+                          <button onClick={() => openPick(p)} className="w-full text-left px-3 py-2 flex items-center justify-between gap-2 hover:bg-gray-50 rounded-xl">
+                            <span className="text-xs font-bold text-gray-700 truncate">{p.name}</span>
+                            <span className="text-[10px] font-black uppercase tracking-widest text-[#FA5600] shrink-0">{pickFor === id ? 'Close' : 'Choose picture'}</span>
+                          </button>
+                          {pickFor === id && (
+                            <div className="px-3 pb-3 space-y-2">
+                              <div className="flex gap-2">
+                                <input value={pickQuery} onChange={e => setPickQuery(e.target.value)} onKeyDown={e => e.key === 'Enter' && searchFor(pickQuery)} placeholder="Item number or a word of the name"
+                                  className="flex-1 text-xs border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:border-[#FA5600]" />
+                                <button onClick={() => searchFor(pickQuery)} disabled={pickBusy} className="px-3 py-2 bg-gray-900 text-white text-[11px] font-black uppercase rounded-lg disabled:opacity-50">{pickBusy ? '…' : 'Search'}</button>
+                              </div>
+                              {pickMsg && <p className="text-[11px] text-gray-500 font-bold">{pickMsg}</p>}
+                              {pickResults.length > 0 && (
+                                <div className="grid grid-cols-4 sm:grid-cols-6 gap-2 max-h-52 overflow-y-auto">
+                                  {pickResults.map((c, i) => (
+                                    <button key={i} onClick={() => choosePicture(p, c)} disabled={pickBusy} title={`${c.title}${c.code && c.code !== c.title ? ` (${c.code})` : ''}`}
+                                      className="border border-gray-200 hover:border-[#FA5600] rounded-lg overflow-hidden bg-white text-left disabled:opacity-50">
+                                      <img src={c.image} alt="" loading="lazy" className="w-full aspect-square object-cover bg-gray-100"
+                                        onError={e => { const im = e.currentTarget; if (c.image2 && im.src !== c.image2) im.src = c.image2; else im.style.opacity = '0.2'; }} />
+                                      <p className="text-[9px] font-black text-gray-700 px-1 py-0.5 truncate">{c.title}</p>
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
-                </details>
+                </div>
               )}
             </>
           )}
