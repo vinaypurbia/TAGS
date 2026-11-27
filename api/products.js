@@ -366,7 +366,26 @@ async function findInFeed(feed, name, code) {
   // No code matched: compare the words of our name (with its code removed) against supplier listings that have real names
   const wordsOnly = parts.nameOnly || String(name || '');
   const best = bestCandidate(wordsOnly, items.filter(p => !/\d/.test(String(p.name || '')) || /[A-Za-z]{3,}.*\s.*[A-Za-z]{3,}/.test(String(p.name || ''))).map(p => ({ title: String(p.name || ''), image: p.imageUrl, p })));
-  return best ? toHit(best.p) : null;
+  if (best) return toHit(best.p);
+
+  // 3) Common word: our name shares a distinctive word with a supplier listing that has a real name.
+  //    Used only when that is clear: two or more shared words, or one shared word that points to a single listing / clearly the closest one.
+  //    A vague single word ("car", "gun") that fits many listings returns nothing, so a wrong picture is never picked quietly.
+  const GENERIC = new Set(['toy', 'toys', 'kids', 'kid', 'baby', 'new', 'mini', 'big', 'small', 'large', 'pcs', 'set', 'pack', 'box', 'with', 'and', 'for', 'the', 'combo', 'item', 'bulk', 'play']);
+  const want = nameTokens(wordsOnly).filter(t => t.length >= 3 && !/\d/.test(t) && !GENERIC.has(t));
+  if (want.length) {
+    const named = items.filter(p => /[A-Za-z]{3,}/.test(String(p.name || '')));
+    const scored = named.map(p => {
+      const have = nameTokens(p.name);
+      const shared = want.filter(t => tokenMatches(t, have));
+      return { p, n: shared.length, frac: shared.length / want.length };
+    }).filter(x => x.n >= 1).sort((a, b) => b.n - a.n || b.frac - a.frac);
+    if (scored.length) {
+      const top = scored[0], second = scored[1];
+      if (top.n >= 2 || !second || top.n > second.n) return toHit(top.p);
+    }
+  }
+  return null;
 }
 
 // For the "search the supplier's catalogue" picker: top matches by name / item number / category
@@ -1523,6 +1542,33 @@ export default async function handler(req, res) {
       } catch (error) {
         console.warn('Supplier image lookup failed:', error.message);
         return res.status(200).json({ found: false, error: error.message });
+      }
+    }
+
+    // ── Supplier connection test — POST /api/products?supplierCheck=true  { siteUrl }
+    // Reports whether the supplier's product list can be read from our server, what it contains, and whether its pictures load.
+    if (req.method === 'POST' && req.query.supplierCheck === 'true') {
+      const feed = feedForSite(String(req.body?.siteUrl || ''));
+      if (!feed) return res.status(200).json({ supported: false });
+      try {
+        feedCache.delete(feed.id);
+        const all = await loadFeed(feed);
+        const withImg = all.filter(p => p.imageUrl);
+        const named = withImg.filter(p => /[A-Za-z]{3,}/.test(String(p.name || ''))).length;
+        const image = { ok: false, tried: [] };
+        if (withImg[0]) {
+          for (const u of feedImageUrls(feed, withImg[0])) {
+            try {
+              const r = await fetch(u, { headers: { 'User-Agent': SUPPLIER_UA }, signal: AbortSignal.timeout(8000) });
+              image.tried.push({ url: u, status: r.status });
+              if (r.ok && (r.headers.get('content-type') || '').startsWith('image/')) { image.ok = true; image.url = u; break; }
+            } catch (e) { image.tried.push({ url: u, status: String(e.message || e) }); }
+          }
+        }
+        return res.status(200).json({ supported: true, ok: true, total: all.length, withPictures: withImg.length, withRealNames: named,
+          sample: withImg.slice(0, 6).map(p => ({ code: p.itemNumber || p.id, name: p.name })), image });
+      } catch (error) {
+        return res.status(200).json({ supported: true, ok: false, error: error.message || 'Could not read the supplier product list' });
       }
     }
 
