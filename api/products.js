@@ -113,6 +113,7 @@ async function extractInvoiceItems(buffer, mimeType, tx = null) {
     `  "quantity": number | null,\n` +
     `  "unitCost": number | null,\n` +
     `  "packSize": number,\n` +
+    `  "itemCode": string,\n` +
     `  "description": string` +
     (withClass ? `,\n  "category": string,\n  "subcategory": string,\n  "newCategory": object | null,\n  "ageGroups": string[]` : '') + `\n` +
     `}\n\n` +
@@ -120,6 +121,7 @@ async function extractInvoiceItems(buffer, mimeType, tx = null) {
     `- name: the product name as written, cleaned up (title case, no SKU/item codes). Leave out wholesaler words that are not part of the product's name, such as BULK, VIDEO, CARTOON, BOXED, WHOLESALE\n` +
     `- quantity: the ordered quantity as a plain number\n` +
     `- unitCost: the price of ONE invoice line unit exactly as printed (for a "12 Pcs ... Box" line this is the price of the whole box), as a plain number (no symbol, no commas)\n` +
+    `- itemCode: the item / model / article number printed for this line (e.g. "7142" from "ITEM NO.7142", or "CF-927"), exactly as written, or "" if the line has none\n` +
     `- packSize: how many separate, identical pieces ONE invoice unit contains when the line is a box / pack / carton / dozen that the shop will sell piece by piece, e.g. "12 Pcs Catapult Car Box" → 12, "Pack of 6" → 6, "1 Dozen" → 12. Use 1 for everything else. ` +
     `Do NOT count pieces that together make ONE product: a "4 PCS City Set", "24 pcs building blocks" or a "108 pcs puzzle" is a single product → 1. When in doubt use 1.\n` +
     `- When packSize is more than 1, leave the pack wording ("12 Pcs", "Box of 12", "Dozen") out of name\n` +
@@ -157,6 +159,7 @@ async function extractInvoiceItems(buffer, mimeType, tx = null) {
         unitCost: costRaw != null ? Math.round((costRaw / packSize) * 100) / 100 : null,
         packSize,                 // pieces in one invoice unit (1 = not a pack)
         packCost: costRaw,        // price of one whole pack as printed on the invoice
+        itemCode: typeof it.itemCode === 'string' ? it.itemCode.trim().slice(0, 40) : '',
         description: typeof it.description === 'string' ? it.description.trim() : '',
       };
       if (!withClass) return base;
@@ -295,7 +298,78 @@ async function productPageImage(pageUrl) {
   return '';
 }
 
-async function findSupplierProduct(siteUrl, name) {
+// ── Supplier sites that build their product list with JavaScript ──────────────────────────────
+// A plain page read sees nothing on those sites, but their pages load a JSON product feed we can read directly.
+// To add another supplier: find the feed in the browser (F12 → Network → Fetch/XHR) and add an entry below.
+const SUPPLIER_FEEDS = [
+  { id: 'toyszone', hosts: ['toyszone.co.in'], url: 'https://api.toyszone.co.in/api/products',
+    imageBases: ['https://api.toyszone.co.in', 'https://toyszone.co.in'], origin: 'https://toyszone.co.in' },
+];
+const feedCache = new Map(); // feed id → { at, items }
+
+function feedForSite(siteUrl) {
+  try {
+    const host = new URL(/^https?:\/\//i.test(siteUrl) ? siteUrl : `https://${siteUrl}`).hostname.replace(/^www\./, '').toLowerCase();
+    return SUPPLIER_FEEDS.find(f => f.hosts.some(h => host === h || host.endsWith(`.${h}`))) || null;
+  } catch { return null; }
+}
+
+async function loadFeed(feed) {
+  const c = feedCache.get(feed.id);
+  if (c && Date.now() - c.at < 10 * 60 * 1000) return c.items;
+  const data = await supplierFetch(feed.url, { json: true, timeout: 15000 });
+  const arr = Array.isArray(data) ? data : (data?.products || data?.items || data?.data || []);
+  const items = arr.filter(p => p && p.isActive !== false && (p.itemNumber || p.id || p.name));
+  feedCache.set(feed.id, { at: Date.now(), items });
+  return items;
+}
+
+const feedImageUrls = (feed, p) => {
+  let path = String(p.imageUrl || '');
+  if (!path) return [];
+  try { path = encodeURI(decodeURI(path)); } catch { path = encodeURI(path); }   // names like "SUPER CLAY.jpg" contain spaces
+  if (/^https?:\/\//i.test(path)) return [path];
+  return feed.imageBases.map(b => `${b}${path.startsWith('/') ? '' : '/'}${path}`);
+};
+const normCode = v => String(v || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+// Item number first (exact → unambiguous part such as "7634" of "7634-25"), then the product name
+async function findInFeed(feed, name, code) {
+  const items = (await loadFeed(feed)).filter(p => p.imageUrl);
+  const toHit = p => ({ image: feedImageUrls(feed, p)[0], images: feedImageUrls(feed, p), title: `${p.name}${p.itemNumber && p.itemNumber !== p.name ? ` (${p.itemNumber})` : ''}`, page: feed.origin });
+
+  const codes = new Set();
+  [code, ...(String(name || '').match(/[A-Za-z]{0,3}-?\d{3,}[A-Za-z0-9-]*/g) || [])].forEach(c => { const n = normCode(c); if (n.length >= 3) codes.add(n); });
+  for (const c of codes) {
+    const exact = items.filter(p => normCode(p.itemNumber) === c || normCode(p.id) === c || normCode(p.name) === c);
+    if (exact.length >= 1) return toHit(exact[0]);
+  }
+  for (const c of codes) {
+    const part = items.filter(p => String(p.itemNumber || p.id || '').toLowerCase().split(/[^a-z0-9]+/).includes(c));
+    if (part.length === 1) return toHit(part[0]);
+  }
+  const best = bestCandidate(name, items.map(p => ({ title: String(p.name || ''), image: p.imageUrl, p })));
+  return best ? toHit(best.p) : null;
+}
+
+// For the "search the supplier's catalogue" picker: top matches by name / item number / category
+async function searchFeed(feed, q) {
+  const items = (await loadFeed(feed)).filter(p => p.imageUrl);
+  const raw = String(q || '').toLowerCase().trim();
+  if (!raw) return [];
+  const toks = Array.from(new Set([...raw.split(/[^a-z0-9]+/).filter(t => t.length >= 2)]));
+  const scored = items.map(p => {
+    const hay = `${p.name || ''} ${p.itemNumber || ''} ${p.category || ''} ${p.subcategory || ''} ${p.description || ''}`.toLowerCase();
+    const hit = toks.filter(t => hay.includes(t)).length;
+    const codeBonus = raw.length >= 3 && normCode(p.itemNumber).includes(normCode(raw)) ? 1 : 0;
+    return { p, score: (toks.length ? hit / toks.length : 0) + codeBonus };
+  }).filter(x => x.score >= 0.5).sort((a, b) => b.score - a.score).slice(0, 24);
+  return scored.map(({ p }) => { const u = feedImageUrls(feed, p); return { title: String(p.name || ''), code: String(p.itemNumber || ''), category: String(p.category || ''), price: p.pricePerPiece ?? null, image: u[0], image2: u[1] || '' }; });
+}
+
+async function findSupplierProduct(siteUrl, name, code = '') {
+  const feed = feedForSite(String(siteUrl));
+  if (feed) return findInFeed(feed, name, code);   // JavaScript-built site: read its feed (a normal page read would see nothing)
   const origin = assertPublicUrl(siteUrl).origin;
   const q = encodeURIComponent(name);
   const deadline = Date.now() + 40000;
@@ -1417,17 +1491,33 @@ export default async function handler(req, res) {
     // ── Invoice Import (AI) — POST /api/products?supplierImage=true  { name, siteUrl } ─────────
     // Looks the item up on the supplier's own website and returns its product photo (uploaded to Cloudinary).
     if (req.method === 'POST' && req.query.supplierImage === 'true') {
-      const { name, siteUrl } = req.body || {};
+      const { name, siteUrl, itemCode } = req.body || {};
       if (!name || !siteUrl) return res.status(400).json({ error: 'name and siteUrl are required' });
       try {
-        const hit = await findSupplierProduct(String(siteUrl), String(name));
+        const hit = await findSupplierProduct(String(siteUrl), String(name), String(itemCode || ''));
         if (!hit) return res.status(200).json({ found: false });
-        const imageUrl = await uploadInvoiceItemImage(await downloadImage(hit.image));
+        let buf = null, lastErr = null;
+        for (const u of (hit.images && hit.images.length ? hit.images : [hit.image])) {   // some feeds give a path that works on only one of their hosts
+          try { buf = await downloadImage(u); break; } catch (e) { lastErr = e; }
+        }
+        if (!buf) throw lastErr || new Error('Could not download the supplier picture');
+        const imageUrl = await uploadInvoiceItemImage(buf);
         return res.status(200).json({ found: true, imageUrl, matchedTitle: hit.title, productUrl: hit.page });
       } catch (error) {
         console.warn('Supplier image lookup failed:', error.message);
         return res.status(200).json({ found: false, error: error.message });
       }
+    }
+
+    // ── Invoice Import — POST /api/products?supplierSearch=true  { siteUrl, q }
+    // Lets the admin search a supplier's catalogue by name or item number and tap the right picture.
+    if (req.method === 'POST' && req.query.supplierSearch === 'true') {
+      const { siteUrl, q } = req.body || {};
+      if (!siteUrl || !q) return res.status(400).json({ error: 'siteUrl and q are required' });
+      const feed = feedForSite(String(siteUrl));
+      if (!feed) return res.status(200).json({ supported: false, results: [] });
+      try { return res.status(200).json({ supported: true, results: await searchFeed(feed, String(q)) }); }
+      catch (error) { return res.status(200).json({ supported: true, results: [], error: error.message || 'Could not read the supplier catalogue' }); }
     }
 
     // ── Invoice Import (AI) — POST /api/products?invoiceDescriptions=true  { items: [{ id, name, hint?, imageUrl? }] } ──
@@ -1534,6 +1624,32 @@ export default async function handler(req, res) {
       } catch (error) {
         console.error('Classify error:', error);
         return res.status(500).json({ error: error.message || 'Could not check these products' });
+      }
+    }
+
+    // ── Items tab — POST /api/products?applyImages=true  { updates: [{ id, imageUrl }] }
+    // Makes imageUrl the product's main picture (the old main picture, if any, stays in the gallery after it).
+    // Only pictures stored in our own Cloudinary are accepted (they come from the supplier lookup, which uploads them there).
+    if (req.method === 'POST' && req.query.applyImages === 'true') {
+      const updates = (Array.isArray(req.body?.updates) ? req.body.updates : []).filter(u => u && u.id && u.imageUrl).slice(0, 200);
+      if (updates.length === 0) return res.status(400).json({ error: 'updates are required' });
+      try {
+        const ops = [];
+        for (const u of updates) {
+          if (!ObjectId.isValid(String(u.id))) continue;
+          const url = String(u.imageUrl);
+          try { const h = new URL(url); if (h.protocol !== 'https:' || !h.hostname.endsWith('cloudinary.com')) continue; } catch { continue; }
+          ops.push({ updateOne: { filter: { _id: new ObjectId(String(u.id)) }, update: [{ $set: {
+            image: url, imageUrl: url, updatedAt: new Date(),
+            imageUrls: { $concatArrays: [[url], { $filter: { input: { $ifNull: ['$imageUrls', []] }, cond: { $and: [{ $ne: ['$$this', '$image'] }, { $ne: ['$$this', '$imageUrl'] }, { $ne: ['$$this', url] }] } } }] },
+          } }] } });
+        }
+        if (ops.length === 0) return res.status(200).json({ success: true, modified: 0 });
+        const r = await collection.bulkWrite(ops, { ordered: false });
+        return res.status(200).json({ success: true, modified: r.modifiedCount, matched: r.matchedCount });
+      } catch (error) {
+        console.error('Apply images error:', error);
+        return res.status(500).json({ error: error.message || 'Could not save the pictures' });
       }
     }
 
