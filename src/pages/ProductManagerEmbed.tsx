@@ -20,6 +20,7 @@ interface Product {
   imageUrl?: string;
   imageUrls?: string[];
   image?: string;
+  stock?: any;   // stock/inventory info attached by the products API (when available)
 }
 
 interface EditState {
@@ -58,6 +59,16 @@ function AgeChips({ value, onChange }: { value: string[]; onChange: (v: string[]
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
+
+// "Active" = live in the shop and has some stock activity: not hidden, and stock on hand / reserved, or any stock movement recorded.
+// If the list carries no stock information at all, every product counts as active (see hasStockData in the picture finder).
+const isActiveProduct = (p: Product): boolean => {
+  const st = p.stock;
+  if (!st) return false;
+  if (st.frontendStatus === 'hidden') return false;
+  return (Number(st.available ?? st.availableStock) || 0) > 0 || (Number(st.total ?? st.currentStock) || 0) > 0
+    || (Number(st.reserved ?? st.reservedStock) || 0) > 0 || (Array.isArray(st.adjustmentLog) && st.adjustmentLog.length > 0);
+};
 
 const getImg = (p: Product): string | null =>
   p.imageUrls?.[0] || p.imageUrl || p.image || null;
@@ -501,6 +512,8 @@ function BulkHdImageModal({ products, onClose, onApplied }: { products: Product[
   const [mode, setMode] = useState<'free' | 'auto'>('free');   // free = you pick each picture; auto = uses a search key
   const [queue, setQueue] = useState<Product[]>([]);
   const [qIdx, setQIdx] = useState(0);
+  const [tab, setTab] = useState<'all' | 'noimg'>('all');   // all products  |  only products with NO picture that are active
+  const [onlyActive, setOnlyActive] = useState(true);
   const [skipAbove, setSkipAbove] = useState(800);   // skip products whose picture is already at least this many pixels (0 = replace all)
   const [maxCount, setMaxCount] = useState(50);
   const [keepOld, setKeepOld] = useState(false);
@@ -511,10 +524,16 @@ function BulkHdImageModal({ products, onClose, onApplied }: { products: Product[
   const [saveInfo, setSaveInfo] = useState({ ok: 0, failed: 0 });
   const stopRef = useRef(false);
 
+  const hasStockData = products.some(p => !!p.stock);
+  const activeOk = (p: Product) => !onlyActive || !hasStockData || isActiveProduct(p);
+  const noImgList = products.filter(p => p.name?.trim() && !getImg(p) && activeOk(p));
+  const allList = products.filter(p => p.name?.trim());
+  const shownCount = tab === 'noimg' ? noImgList.length : allList.length;
+
   const run = async () => {
     stopRef.current = false; setError(''); setErrorCode(''); setPhase('working');
     // 1. which products actually need a better picture?
-    const pool = products.filter(p => p.name?.trim());
+    const pool = tab === 'noimg' ? noImgList : allList;
     const sizes = new Map<string, { w: number; h: number } | null>();
     setProgress({ done: 0, total: pool.length, label: 'Checking current picture sizes…' });
     let idx = 0, doneCount = 0;
@@ -525,8 +544,9 @@ function BulkHdImageModal({ products, onClose, onApplied }: { products: Product[
         setProgress({ done: ++doneCount, total: pool.length, label: 'Checking current picture sizes…' });
       }
     };
-    await Promise.all(Array.from({ length: 6 }, worker));
-    const targets = pool.filter(p => {
+    if (tab !== 'noimg') await Promise.all(Array.from({ length: 6 }, worker));   // the no-picture tab has nothing to measure
+    const targets = (tab === 'noimg' ? pool : pool).filter(p => {
+      if (tab === 'noimg') return true;                     // every product here has no picture
       const sz = sizes.get(p._id);
       if (!getImg(p) || !sz) return true;                  // no picture (or unreadable) → needs one
       return skipAbove === 0 || Math.min(sz.w, sz.h) < skipAbove;
@@ -600,10 +620,30 @@ function BulkHdImageModal({ products, onClose, onApplied }: { products: Product[
 
           {phase === 'setup' && (
             <>
-              <div className="bg-orange-50 border border-orange-200 rounded-xl p-3 text-xs text-gray-700">
-                <p className="font-black">{products.length} product{products.length === 1 ? '' : 's'} in the current list</p>
-                <p className="mt-1 text-gray-500">Use the page filters (category, search, no-image…) first to choose which products to process.</p>
+              <div className="flex gap-1.5 border-b border-gray-200">
+                {([['all', 'All products', allList.length], ['noimg', 'No picture · active', noImgList.length]] as const).map(([key, label, n]) => (
+                  <button key={key} onClick={() => setTab(key)}
+                    className={`px-4 py-2 text-xs font-black uppercase tracking-widest rounded-t-xl border-b-2 -mb-px transition ${tab === key ? 'border-[#FA5600] text-[#FA5600] bg-orange-50/60' : 'border-transparent text-gray-400 hover:text-gray-600'}`}>
+                    {label} <span className={`ml-1 px-1.5 py-0.5 rounded-full text-[10px] ${tab === key ? 'bg-[#FA5600] text-white' : 'bg-gray-100 text-gray-500'}`}>{n}</span>
+                  </button>
+                ))}
               </div>
+              {tab === 'all' ? (
+                <div className="bg-orange-50 border border-orange-200 rounded-xl p-3 text-xs text-gray-700">
+                  <p className="font-black">{allList.length} product{allList.length === 1 ? '' : 's'} in the current list</p>
+                  <p className="mt-1 text-gray-500">Products whose picture is already large enough are skipped automatically (see the size setting below). Use the page filters (category, search, no-image…) first to choose which products to process.</p>
+                </div>
+              ) : (
+                <div className="bg-orange-50 border border-orange-200 rounded-xl p-3 text-xs text-gray-700 space-y-2">
+                  <p className="font-black">{noImgList.length} product{noImgList.length === 1 ? '' : 's'} with no picture{onlyActive && hasStockData ? ' that are active' : ''}</p>
+                  <p className="text-gray-500">Only products with <b>no picture at all</b> are listed, so you never have to skip past products that already have one.</p>
+                  <label className="flex items-start gap-2 cursor-pointer text-gray-700">
+                    <input type="checkbox" checked={onlyActive} onChange={e => setOnlyActive(e.target.checked)} className="mt-0.5 accent-[#FA5600]" />
+                    <span><b>Only active products</b> — in stock, reserved, or with stock activity recorded (hidden products are left out). Untick to include every product with no picture.</span>
+                  </label>
+                  {!hasStockData && <p className="text-[11px] text-amber-700 font-bold">Stock information is not loaded in this list, so every product with no picture is shown.</p>}
+                </div>
+              )}
               <label className="text-xs font-bold text-gray-600 space-y-1 block">
                 <span>How do you want to find pictures?</span>
                 <select value={mode} onChange={e => setMode(e.target.value as 'free' | 'auto')} className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold">
@@ -612,13 +652,13 @@ function BulkHdImageModal({ products, onClose, onApplied }: { products: Product[
                 </select>
               </label>
               {mode === 'free' && <p className="text-[11px] text-gray-500 bg-gray-50 rounded-xl p-2.5">For each product that needs a better picture, you open Google Images, copy the picture you like and paste it here. One click then saves it. Products that already have a large picture are skipped.</p>}
-              <div className="grid sm:grid-cols-2 gap-3">
-                <label className="text-xs font-bold text-gray-600 space-y-1 block">
+              <div className={`grid gap-3 ${tab === 'all' ? 'sm:grid-cols-2' : ''}`}>
+                {tab === 'all' && <label className="text-xs font-bold text-gray-600 space-y-1 block">
                   <span>Skip products whose picture is already at least</span>
                   <select value={skipAbove} onChange={e => setSkipAbove(Number(e.target.value))} className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold">
                     <option value={600}>600 px</option><option value={800}>800 px (recommended)</option><option value={1000}>1000 px</option><option value={1200}>1200 px</option><option value={0}>Don't skip — look for every product</option>
                   </select>
-                </label>
+                </label>}
                 <label className="text-xs font-bold text-gray-600 space-y-1 block">
                   <span>Process at most</span>
                   <select value={maxCount} onChange={e => setMaxCount(Number(e.target.value))} className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm font-bold">
@@ -707,7 +747,7 @@ function BulkHdImageModal({ products, onClose, onApplied }: { products: Product[
         </div>
 
         <div className="p-4 border-t border-gray-100 flex gap-2 justify-end">
-          {phase === 'setup' && <button onClick={run} disabled={products.length === 0} className="px-5 py-2.5 bg-[#FA5600] text-white font-black uppercase tracking-widest text-xs rounded-xl hover:bg-[#E04A00] disabled:opacity-50">{mode === 'free' ? 'Start' : 'Find pictures'}</button>}
+          {phase === 'setup' && <button onClick={run} disabled={shownCount === 0} className="px-5 py-2.5 bg-[#FA5600] text-white font-black uppercase tracking-widest text-xs rounded-xl hover:bg-[#E04A00] disabled:opacity-50">{mode === 'free' ? 'Start' : 'Find pictures'}</button>}
           {phase === 'working' && <button onClick={() => { stopRef.current = true; }} className="px-5 py-2.5 border-2 border-gray-200 text-gray-600 font-black uppercase tracking-widest text-xs rounded-xl hover:border-red-400 hover:text-red-500">Stop and review what's found</button>}
           {phase === 'review' && <>
             <button onClick={onClose} className="px-4 py-2.5 border-2 border-gray-200 text-gray-600 font-black uppercase tracking-widest text-xs rounded-xl">Discard</button>
